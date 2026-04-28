@@ -89,19 +89,4 @@ read -r -p "Proceed? [y/N] " ans
 
 git tag "$TAG"
 git push origin "$TAG"
-echo "pushed $TAG"
-
-if command -v gh >/dev/null 2>&1; then
-  echo "waiting 3s for GitHub to register the run..."
-  sleep 3
-  RUN_ID="$(gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId')"
-  if [[ -n "$RUN_ID" ]]; then
-    echo "watching run $RUN_ID..."
-    gh run watch --exit-status "$RUN_ID" || die "release workflow failed — see logs"
-    echo "release $TAG completed."
-  else
-    echo "no run found yet; check Actions tab manually."
-  fi
-else
-  echo "gh CLI not installed; check Actions tab manually."
-fi
+echo "pushed $TAG — release.yml will run on GitHub Actions."
