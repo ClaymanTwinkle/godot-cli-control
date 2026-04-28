@@ -108,16 +108,26 @@ jobs:
           $dest = Join-Path $env:GITHUB_WORKSPACE 'godot-bin'
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
           Expand-Archive -Path $tmpZip -DestinationPath $dest -Force
-          # zip 里是 Godot_vX.Y.Z_win64.exe；统一改名 godot.exe，便于后续步骤引用
-          $exe = Get-ChildItem -Path $dest -Filter 'Godot_*.exe' | Select-Object -First 1
-          if (-not $exe) { throw "找不到解压后的 Godot exe" }
-          Move-Item -Force -Path $exe.FullName -Destination (Join-Path $dest 'godot.exe')
+          # 不重命名 exe —— Godot Windows 通过 exe stem 找 *_console.exe
+          # 包装器，改名（如 godot.exe）会触发 "Invalid wrapper executable name."
+
+      - name: Resolve Godot exe path (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'godot-bin'
+          $exe = Get-ChildItem -Path $dest -Filter 'Godot_*_win64.exe' |
+            Where-Object { $_.Name -notlike '*_console.exe' } |
+            Select-Object -First 1
+          if (-not $exe) { throw "找不到 Godot _win64.exe（dest=$dest）" }
+          "GODOT_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "GODOT_BIN=$($exe.FullName)"
 
       - name: Verify Godot (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          & "$env:GITHUB_WORKSPACE\godot-bin\godot.exe" --version
+          & $env:GODOT_BIN --version
 
       # ---- bash shim walkthrough（仅 Linux —— PowerShell 等价 walkthrough 待跟进） ----
       - name: Run walkthrough (bash shim path, Linux only)
@@ -136,6 +146,5 @@ jobs:
       - name: Run walkthrough (godot-cli-control init path, Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        env:
-          GODOT_BIN: ${{ github.workspace }}\godot-bin\godot.exe
+        # GODOT_BIN 由前面 Resolve Godot exe path step 写到 $GITHUB_ENV
         run: python addons/godot_cli_control/tests/test_init_walkthrough.py
