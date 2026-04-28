@@ -19,6 +19,7 @@ import json
 import sys
 import traceback
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -101,19 +102,119 @@ async def cmd_release_all(client: GameClient, _args: list[str]) -> None:
     print(f"released all: {result}")
 
 
+@dataclass(frozen=True)
+class Positional:
+    """RPC 子命令的位置参数描述（喂给 argparse + 帮助文本）。"""
+
+    name: str  # ns 上的属性名
+    nargs: str | None  # None=必填一个；"?"=可选；"*"=0..N
+    help: str
+
+
+@dataclass(frozen=True)
+class RpcSpec:
+    name: str
+    handler: Callable[[GameClient, list[str]], Coroutine[Any, Any, None]]
+    description: str
+    positionals: tuple[Positional, ...]
+    example: str  # 不带 prog 前缀的示例命令，如 "click /root/Main/StartButton"
+
+
+RPC_SPECS: tuple[RpcSpec, ...] = (
+    RpcSpec(
+        name="click",
+        handler=cmd_click,
+        description="对 Control/Button 节点触发点击。",
+        positionals=(
+            Positional("node_path", None, "目标节点路径，如 /root/Main/StartButton"),
+        ),
+        example="click /root/Main/StartButton",
+    ),
+    RpcSpec(
+        name="screenshot",
+        handler=cmd_screenshot,
+        description="截屏。带路径则保存 PNG，不带则把 base64 写到 stdout。",
+        positionals=(
+            Positional("output_path", "?", "PNG 输出路径；省略则输出 base64"),
+        ),
+        example="screenshot out.png",
+    ),
+    RpcSpec(
+        name="tree",
+        handler=cmd_tree,
+        description="dump 当前场景树为 JSON。",
+        positionals=(
+            Positional("depth", "?", "遍历深度，默认 3"),
+        ),
+        example="tree 5",
+    ),
+    RpcSpec(
+        name="press",
+        handler=cmd_press,
+        description="按下输入动作（持续按住，需配 release 释放）。",
+        positionals=(
+            Positional("action", None, "InputMap 动作名，如 jump"),
+        ),
+        example="press jump",
+    ),
+    RpcSpec(
+        name="release",
+        handler=cmd_release,
+        description="释放之前 press 按下的输入动作。",
+        positionals=(
+            Positional("action", None, "InputMap 动作名"),
+        ),
+        example="release jump",
+    ),
+    RpcSpec(
+        name="tap",
+        handler=cmd_tap,
+        description="短按动作（press → 等待 → release）。",
+        positionals=(
+            Positional("action", None, "InputMap 动作名"),
+            Positional("duration", "?", "按下时长（秒），默认 0.1"),
+        ),
+        example="tap jump 0.2",
+    ),
+    RpcSpec(
+        name="hold",
+        handler=cmd_hold,
+        description="按住动作指定时长（秒），到点自动释放。",
+        positionals=(
+            Positional("action", None, "InputMap 动作名"),
+            Positional("duration", None, "按住时长（秒）"),
+        ),
+        example="hold jump 1.5",
+    ),
+    RpcSpec(
+        name="combo",
+        handler=cmd_combo,
+        description="从 JSON 文件读步骤数组并依次执行（press/release/wait）。",
+        positionals=(
+            Positional(
+                "json_file",
+                None,
+                "JSON 文件路径；可为 [...steps] 或 {\"steps\": [...]}",
+            ),
+        ),
+        example="combo combo.json",
+    ),
+    RpcSpec(
+        name="release-all",
+        handler=cmd_release_all,
+        description="释放所有当前持有的输入动作。",
+        positionals=(),
+        example="release-all",
+    ),
+)
+
+
+RPC_BY_NAME: dict[str, RpcSpec] = {s.name: s for s in RPC_SPECS}
+
+# 保持原有名称：仅留作对外语义检查（main 走 RPC_BY_NAME）
 RPC_COMMANDS: dict[
     str, Callable[[GameClient, list[str]], Coroutine[Any, Any, None]]
-] = {
-    "click": cmd_click,
-    "screenshot": cmd_screenshot,
-    "tree": cmd_tree,
-    "press": cmd_press,
-    "release": cmd_release,
-    "tap": cmd_tap,
-    "hold": cmd_hold,
-    "combo": cmd_combo,
-    "release-all": cmd_release_all,
-}
+] = {s.name: s.handler for s in RPC_SPECS}
 
 
 # ── Daemon / run 子命令 ──
@@ -242,40 +343,108 @@ def cmd_init(ns: argparse.Namespace) -> int:
 # ── argparse 装配 ──
 
 
+_TOP_EPILOG = """\
+命令分组：
+
+  Daemon 管理:
+    daemon start    启动 Godot daemon（可选录制 / headless）
+    daemon stop     停止当前 daemon
+    run <script>    自动启停 daemon 并跑用户脚本（脚本需定义 run(bridge)）
+
+  接入:
+    init            在 Godot 项目根一键复制插件、patch project.godot
+
+  RPC 单发（需先有 daemon 在跑）:
+    click           对节点触发点击
+    screenshot      截屏（PNG 或 base64）
+    tree            dump 场景树 JSON
+    press / release 按下 / 释放输入动作
+    tap / hold      短按 / 按住一段时长
+    combo           从 JSON 文件批量执行输入动作
+    release-all     释放所有当前持有的动作
+
+任意子命令后追加 -h 查看详情，例如：
+  godot-cli-control click -h
+  godot-cli-control daemon start -h
+"""
+
+
+_DAEMON_FLAG_HELP = {
+    "record": "启动后录制 demo（写到 .cli_control/movie_path）",
+    "movie_path": "demo 输出路径，默认 .cli_control 下自动命名",
+    "headless": "无窗口模式，CI/无显示器环境用",
+    "fps": "录制帧率，默认 30",
+    "port": f"GameBridge 监听端口（默认 {DEFAULT_PORT}）",
+}
+
+
+def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--record", action="store_true", help=_DAEMON_FLAG_HELP["record"])
+    p.add_argument("--movie-path", default=None, help=_DAEMON_FLAG_HELP["movie_path"])
+    p.add_argument("--headless", action="store_true", help=_DAEMON_FLAG_HELP["headless"])
+    p.add_argument("--fps", type=int, default=30, help=_DAEMON_FLAG_HELP["fps"])
+    p.add_argument("--port", type=int, default=DEFAULT_PORT, help=_DAEMON_FLAG_HELP["port"])
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="godot-cli-control")
+    parser = argparse.ArgumentParser(
+        prog="godot-cli-control",
+        description="Godot CLI Control —— 通过命令行远程驱动 Godot 项目",
+        epilog=_TOP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--port",
         type=int,
         default=None,
         help=f"GameBridge 端口（默认从 .cli_control/port 读取，否则 {DEFAULT_PORT}）",
     )
-    subs = parser.add_subparsers(dest="cmd", required=True)
+    subs = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     # daemon 组
-    daemon_p = subs.add_parser("daemon", help="管理 Godot daemon 进程")
-    daemon_subs = daemon_p.add_subparsers(dest="action", required=True)
+    daemon_p = subs.add_parser(
+        "daemon",
+        help="管理 Godot daemon 进程",
+        description="管理 Godot daemon 进程的启停。",
+    )
+    daemon_subs = daemon_p.add_subparsers(dest="action", required=True, metavar="<action>")
 
-    start_p = daemon_subs.add_parser("start", help="启动 daemon")
-    start_p.add_argument("--record", action="store_true")
-    start_p.add_argument("--movie-path", default=None)
-    start_p.add_argument("--headless", action="store_true")
-    start_p.add_argument("--fps", type=int, default=30)
-    start_p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    start_p = daemon_subs.add_parser(
+        "start",
+        help="启动 daemon",
+        description="启动 Godot daemon 并写入 .cli_control/{godot.pid,port}。",
+    )
+    _add_daemon_flags(start_p)
 
-    daemon_subs.add_parser("stop", help="停止 daemon")
+    daemon_subs.add_parser(
+        "stop",
+        help="停止 daemon",
+        description="停止 .cli_control/godot.pid 记录的 daemon。",
+    )
 
     # run：自动启停 + 跑用户脚本
-    run_p = subs.add_parser("run", help="启动 daemon → 跑脚本 → 停 daemon")
+    run_p = subs.add_parser(
+        "run",
+        help="启动 daemon → 跑脚本 → 停 daemon",
+        description=(
+            "若 daemon 未运行则先启动，加载用户脚本调用其 run(bridge) 函数，"
+            "脚本结束后停掉刚启动的 daemon（已在跑的 daemon 保持原状）。"
+        ),
+        epilog="脚本示例:\n  def run(bridge):\n      bridge.click(\"/root/Main/StartButton\")",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     run_p.add_argument("script", help="用户脚本路径，需定义 run(bridge)")
-    run_p.add_argument("--record", action="store_true")
-    run_p.add_argument("--movie-path", default=None)
-    run_p.add_argument("--headless", action="store_true")
-    run_p.add_argument("--fps", type=int, default=30)
-    run_p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    _add_daemon_flags(run_p)
 
     # init：一键接入
-    init_p = subs.add_parser("init", help="在 Godot 项目根一键接入插件")
+    init_p = subs.add_parser(
+        "init",
+        help="在 Godot 项目根一键接入插件",
+        description=(
+            "复制 addons/godot_cli_control 到目标项目、patch project.godot 启用插件、"
+            "校验 GODOT_BIN。"
+        ),
+    )
     init_p.add_argument(
         "--path",
         default=None,
@@ -288,9 +457,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # RPC 单发命令
-    for name in RPC_COMMANDS:
-        sp = subs.add_parser(name, help="RPC 单发")
-        sp.add_argument("rest", nargs="*")
+    for spec in RPC_SPECS:
+        sp = subs.add_parser(
+            spec.name,
+            help=spec.description,
+            description=spec.description,
+            epilog=f"示例:\n  godot-cli-control {spec.example}",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        for pos in spec.positionals:
+            kwargs: dict[str, Any] = {"help": pos.help}
+            if pos.nargs is not None:
+                kwargs["nargs"] = pos.nargs
+            sp.add_argument(pos.name, **kwargs)
     return parser
 
 
@@ -308,16 +487,28 @@ def main() -> None:
         sys.exit(cmd_init(ns))
 
     # RPC：解析端口（顶层 --port → port file → 默认）
-    if ns.cmd in RPC_COMMANDS:
+    if ns.cmd in RPC_BY_NAME:
+        spec = RPC_BY_NAME[ns.cmd]
         port = ns.port
         if port is None:
             from .daemon import Daemon
 
             port = Daemon(Path.cwd()).current_port() or DEFAULT_PORT
 
+        # 按 spec.positionals 从 ns 收集参数为 list[str]，handler 签名不变
+        rpc_args: list[str] = []
+        for pos in spec.positionals:
+            val = getattr(ns, pos.name, None)
+            if val is None:
+                continue
+            if isinstance(val, list):
+                rpc_args.extend(str(v) for v in val)
+            else:
+                rpc_args.append(str(val))
+
         async def run() -> None:
             async with GameClient(port=port) as client:
-                await RPC_COMMANDS[ns.cmd](client, list(ns.rest))
+                await spec.handler(client, rpc_args)
 
         asyncio.run(run())
         return
