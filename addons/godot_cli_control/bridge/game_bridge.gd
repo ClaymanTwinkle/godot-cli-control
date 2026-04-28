@@ -48,7 +48,6 @@ func _ready() -> void:
 		"input_action_tap": _input_sim_api.handle_action_tap,
 		"input_get_pressed": _input_sim_api.handle_get_pressed,
 		"input_hold": _input_sim_api.handle_hold,
-		"input_move": _input_sim_api.handle_move,
 		"input_release_all": _input_sim_api.handle_release_all,
 		"input_combo_cancel": _input_sim_api.handle_combo_cancel,
 	}

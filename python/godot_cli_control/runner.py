@@ -7,7 +7,7 @@
     def run(bridge):
         bridge.click("/root/MainMenu/.../NewGameButton")
         bridge.wait(2)
-        bridge.hold("move_right", 1.5)
+        bridge.hold("run", 1.5)
 """
 
 from __future__ import annotations

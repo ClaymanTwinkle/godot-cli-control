@@ -77,8 +77,7 @@ All methods callable via `python -m godot_cli_control <method>` or `from godot_c
 | `action_release(action)` | `await client.action_release("jump")` |
 | `action_tap(action, duration)` | `await client.action_tap("attack", 0.1)` |
 | `input_get_pressed` (raw RPC) | `await client.request("input_get_pressed")` |
-| `hold(action, duration)` | `await client.hold("move_right", 1.5)` |
-| `move(x, y, duration)` | `await client.move(0.7, 0.0, 2.0)` |
+| `hold(action, duration)` | `await client.hold("run", 1.5)` |
 | `combo(steps)` | `await client.combo([{"action": "jump", "duration": 0.1}])` |
 | `combo_cancel()` | `await client.combo_cancel()` |
 | `release_all()` | `await client.release_all()` |

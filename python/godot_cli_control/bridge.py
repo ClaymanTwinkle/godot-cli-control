@@ -5,8 +5,8 @@
     def run(bridge):
         bridge.click("/root/MainMenu/.../NewGameButton")
         bridge.wait(2)
-        bridge.hold("move_right", 1.5)
-        bridge.press("attack_melee")
+        bridge.hold("run", 1.5)
+        bridge.press("attack")
 """
 
 from __future__ import annotations
@@ -78,10 +78,6 @@ class GameBridge:
     def tap(self, action: str, duration: float = 0.1) -> None:
         """快速点按。"""
         self._run(self._client.action_tap(action, duration))
-
-    def move(self, x: float, y: float, duration: float) -> None:
-        """方向移动。"""
-        self._run(self._client.move(x, y, duration))
 
     def action_press(self, action: str) -> None:
         """按下动作（不释放，需手动 release）。"""

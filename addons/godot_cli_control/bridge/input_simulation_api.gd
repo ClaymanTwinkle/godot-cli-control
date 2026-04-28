@@ -91,29 +91,6 @@ func handle_hold(params: Dictionary) -> Dictionary:
 	return {"success": true}
 
 
-func handle_move(params: Dictionary) -> Dictionary:
-	if _combo_active:
-		return {"code": 1004, "error": "combo in progress"}
-	var direction: Dictionary = params.get("direction", {}) as Dictionary
-	var duration: float = params.get("duration", 0.0) as float
-	var dx: float = direction.get("x", 0.0) as float
-	var dy: float = direction.get("y", 0.0) as float
-	# 符号判断映射到方向动作
-	if dx > 0:
-		_do_press("move_right")
-		_held_actions["move_right"] = duration
-	elif dx < 0:
-		_do_press("move_left")
-		_held_actions["move_left"] = duration
-	if dy > 0:
-		_do_press("move_down")
-		_held_actions["move_down"] = duration
-	elif dy < 0:
-		_do_press("move_up")
-		_held_actions["move_up"] = duration
-	return {"success": true}
-
-
 func handle_release_all(_params: Dictionary) -> Dictionary:
 	release_all()
 	return {"success": true}
@@ -177,11 +154,6 @@ func _begin_combo_step() -> void:
 	var step: Dictionary = _combo_steps[_combo_index] as Dictionary
 	if step.has("wait"):
 		_combo_timer = step["wait"] as float
-	elif step.has("move"):
-		var dir: Dictionary = step["move"] as Dictionary
-		var duration: float = step.get("duration", 0.1) as float
-		handle_move({"direction": dir, "duration": duration})
-		_combo_timer = duration
 	elif step.has("action"):
 		var action: String = step["action"] as String
 		var duration: float = step.get("duration", 0.1) as float

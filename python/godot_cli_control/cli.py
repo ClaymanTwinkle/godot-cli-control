@@ -85,14 +85,6 @@ async def cmd_hold(client: GameClient, args: list[str]) -> None:
     print(f"holding: {result}")
 
 
-async def cmd_move(client: GameClient, args: list[str]) -> None:
-    if len(args) < 3:
-        print("Usage: move <x> <y> <duration>", file=sys.stderr)
-        sys.exit(1)
-    result = await client.move(float(args[0]), float(args[1]), float(args[2]))
-    print(f"moving: {result}")
-
-
 async def cmd_combo(client: GameClient, args: list[str]) -> None:
     if not args:
         print("Usage: combo <json_file>", file=sys.stderr)
@@ -119,7 +111,6 @@ COMMANDS: dict[
     "release": cmd_release,
     "tap": cmd_tap,
     "hold": cmd_hold,
-    "move": cmd_move,
     "combo": cmd_combo,
     "release-all": cmd_release_all,
 }

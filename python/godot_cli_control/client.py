@@ -223,11 +223,6 @@ class GameClient:
             "input_hold", {"action": action, "duration": duration}
         )
 
-    async def move(self, x: float, y: float, duration: float) -> dict:
-        return await self.request(
-            "input_move", {"direction": {"x": x, "y": y}, "duration": duration}
-        )
-
     async def combo(self, steps: list[dict]) -> dict:
         total = sum(
             s.get("duration", 0) or s.get("wait", 0) for s in steps

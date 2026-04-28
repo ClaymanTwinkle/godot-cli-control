@@ -14,7 +14,6 @@ export no_proxy="${no_proxy:+${no_proxy},}localhost,127.0.0.1"
 #   ./run_cli_control.sh tree [depth]
 #   ./run_cli_control.sh press <action>
 #   ./run_cli_control.sh hold <action> <duration>
-#   ./run_cli_control.sh move <x> <y> <duration>
 #   ./run_cli_control.sh combo <json_file>
 #   ./run_cli_control.sh release-all
 #   ./run_cli_control.sh run [--record] [--movie-path PATH] [--fps N] [--port N] <python_script> [args...]
@@ -283,7 +282,6 @@ if [[ $# -lt 1 ]]; then
   ./run_cli_control.sh release <action>
   ./run_cli_control.sh tap <action> [duration]
   ./run_cli_control.sh hold <action> <duration>
-  ./run_cli_control.sh move <x> <y> <duration>
   ./run_cli_control.sh combo <json_file>
   ./run_cli_control.sh release-all
   ./run_cli_control.sh run [options] <python_script> [args...]
@@ -297,7 +295,7 @@ shift
 case "$SUBCMD" in
     start)      cmd_start "$@" ;;
     stop)       cmd_stop ;;
-    click|screenshot|tree|press|release|tap|hold|move|combo|release-all)
+    click|screenshot|tree|press|release|tap|hold|combo|release-all)
                 cmd_proxy "$SUBCMD" "$@" ;;
     run)        cmd_run "$@" ;;
     *)          echo "未知命令: $SUBCMD"; exit 1 ;;
