@@ -2,6 +2,7 @@
 extends EditorPlugin
 
 const GameBridgeScript := preload("res://addons/godot_cli_control/bridge/game_bridge.gd")
+const LowLevelApiScript := preload("res://addons/godot_cli_control/bridge/low_level_api.gd")
 
 const AUTOLOAD_NAME := "GameBridgeNode"
 const AUTOLOAD_PATH := "res://addons/godot_cli_control/bridge/game_bridge.gd"
@@ -30,6 +31,18 @@ func _ensure_project_settings() -> void:
 		GameBridgeScript.DEFAULT_OUTBOUND_BUFFER_MB,
 		TYPE_INT,
 		"WebSocket outbound buffer in MB (raise if pushing multi-frame screenshots/video). Min 1.",
+	)
+	_register_setting(
+		LowLevelApiScript.SETTING_PROPERTY_BLACKLIST_EXTRA,
+		PackedStringArray(),
+		TYPE_PACKED_STRING_ARRAY,
+		"Extra property names blocked by set_property (merged with built-in safety blacklist).",
+	)
+	_register_setting(
+		LowLevelApiScript.SETTING_METHOD_BLACKLIST_EXTRA,
+		PackedStringArray(),
+		TYPE_PACKED_STRING_ARRAY,
+		"Extra method names blocked by call_method (merged with built-in safety blacklist).",
 	)
 
 

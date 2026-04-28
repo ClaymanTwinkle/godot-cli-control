@@ -6,7 +6,12 @@ const _BUILD_TREE_HARD_LIMIT: int = 50
 # wait_game_time_async 防呆上限：防止误传 1e9 之类的数值挂死 session
 const _MAX_WAIT_SECONDS: float = 3600.0
 
-# 安全黑名单
+# ProjectSettings 路径：第三方项目通过这两条额外补 ban 自家属性 / 方法。
+# 合并到内置黑名单（去重，不能减只能加 —— 不开放 unban 是为了防止误删安全网）。
+const SETTING_PROPERTY_BLACKLIST_EXTRA: String = "godot_cli_control/property_blacklist_extra"
+const SETTING_METHOD_BLACKLIST_EXTRA: String = "godot_cli_control/method_blacklist_extra"
+
+# 内置安全黑名单（不可禁用）
 const _METHOD_BLACKLIST: PackedStringArray = [
 	"queue_free", "free", "set_script", "add_child", "remove_child", "replace_by",
 	# 反射类：可绕过 _PROPERTY_BLACKLIST 设置 script / texture 等被禁属性
@@ -23,6 +28,30 @@ const _PROPERTY_BLACKLIST: PackedStringArray = [
 	"texture", "material", "shader", "mesh", "stream", "shape",
 	"resource", "resource_path", "resource_name",
 ]
+
+# 运行期合并 = 内置 ∪ ProjectSettings extras。_ready 里初始化一次。
+var _property_blacklist: PackedStringArray = _PROPERTY_BLACKLIST.duplicate()
+var _method_blacklist: PackedStringArray = _METHOD_BLACKLIST.duplicate()
+
+
+func _ready() -> void:
+	_property_blacklist = _merge_extra(_property_blacklist, SETTING_PROPERTY_BLACKLIST_EXTRA)
+	_method_blacklist = _merge_extra(_method_blacklist, SETTING_METHOD_BLACKLIST_EXTRA)
+
+
+func _merge_extra(base: PackedStringArray, setting_key: String) -> PackedStringArray:
+	var raw: Variant = ProjectSettings.get_setting(setting_key, PackedStringArray())
+	# ProjectSettings 写盘后类型可能是 Array 而非 PackedStringArray，宽松处理。
+	if not (raw is PackedStringArray or raw is Array):
+		return base
+	var merged: PackedStringArray = base.duplicate()
+	for item in raw:
+		var name_str: String = str(item)
+		if name_str.is_empty():
+			continue
+		if not (name_str in merged):
+			merged.append(name_str)
+	return merged
 
 
 func handle_click(params: Dictionary) -> Dictionary:
@@ -70,7 +99,7 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	var property: String = params.get("property", "") as String
 	if property.is_empty():
 		return _err(-32602, "Missing 'property' parameter")
-	if property in _PROPERTY_BLACKLIST:
+	if property in _property_blacklist:
 		return _err(-32602, "Blocked property: %s" % property)
 	var value: Variant = params.get("value", null)
 	node.set(property, value)
@@ -82,7 +111,7 @@ func handle_call_method(params: Dictionary) -> Dictionary:
 	if node == null:
 		return _node_not_found(params.get("path", "") as String)
 	var method: String = params.get("method", "") as String
-	if method in _METHOD_BLACKLIST:
+	if method in _method_blacklist:
 		return _err(-32602, "Blocked method: %s" % method)
 	if not node.has_method(method):
 		return _err(1003, "Method not found: %s" % method)
