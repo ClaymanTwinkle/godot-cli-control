@@ -82,9 +82,6 @@ if (( DRY_RUN )); then
   exit 0
 fi
 
-read -r -p "Proceed? [y/N] " ans
-[[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "aborted"; exit 0; }
-
 # --- act ----------------------------------------------------------------------
 
 git tag "$TAG"
