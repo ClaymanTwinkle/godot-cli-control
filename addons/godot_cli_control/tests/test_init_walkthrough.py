@@ -21,6 +21,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Windows Python 默认 stdout 走 cp1252，print 中文路径 / 提示会触发
+# UnicodeEncodeError。Linux / macOS 默认 utf-8，reconfigure 是 no-op。
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure") and (stream.encoding or "").lower() != "utf-8":
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 PROJECT_GODOT = """\
@@ -116,7 +122,13 @@ def main() -> int:
         run([py, "-m", "pip", "install", "--quiet", REPO_ROOT / "python"])
 
         gcc = venv_bin(venv, "godot-cli-control")
-        env = {**os.environ, "GODOT_BIN": str(godot)}
+        env = {
+            **os.environ,
+            "GODOT_BIN": str(godot),
+            # 子进程（godot-cli-control / godot）打印中文路径 / 提示，
+            # Windows 默认 cp1252 stdout 会触发 UnicodeEncodeError。
+            "PYTHONIOENCODING": "utf-8",
+        }
 
         # 3) init —— 一键接入
         run([gcc, "init"], cwd=project, env=env)
