@@ -153,8 +153,14 @@ func wait_for_node_async(params: Dictionary) -> Dictionary:
 
 
 func take_screenshot_async() -> Dictionary:
+	# headless dummy renderer 下 frame_post_draw 不会主动发射；先用 timer 推进
+	# 一个 process tick，让 RenderingServer 跑一次再 await，避免 wrapper 单独
+	# 调 screenshot 时永久挂死。GUI 模式额外 50ms 延迟可忽略。
+	await get_tree().create_timer(0.05).timeout
 	await RenderingServer.frame_post_draw
 	var image: Image = get_viewport().get_texture().get_image()
+	if image == null:
+		return {"error": "Screenshot unavailable (viewport texture is null)", "code": 1003}
 	var png_buffer: PackedByteArray = image.save_png_to_buffer()
 	var base64_str: String = Marshalls.raw_to_base64(png_buffer)
 	return {"image": base64_str}
