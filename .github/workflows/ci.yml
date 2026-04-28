@@ -9,12 +9,20 @@ on:
 
 jobs:
   python-unit:
-    name: pytest (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: pytest (Python ${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13']
+        include:
+          # 跨平台 daemon / pathing 验证：Windows + macOS 跑一份 3.12 即可，
+          # 不再扩成全 python × 全 os 的 12 格 matrix。
+          - os: windows-latest
+            python-version: '3.12'
+          - os: macos-latest
+            python-version: '3.12'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,11 +46,12 @@ jobs:
         run: pytest tests/ -v
 
   walkthrough:
-    name: fresh-clone walkthrough (Godot ${{ matrix.godot-version }})
-    runs-on: ubuntu-latest
+    name: fresh-clone walkthrough (${{ matrix.os }} / Godot ${{ matrix.godot-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         godot-version: ['4.6.2-stable']
     steps:
       - uses: actions/checkout@v4
@@ -53,15 +62,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Cache Godot binary
-        id: godot-cache
+      # ---- Linux Godot ----------------------------------------------------
+      - name: Cache Godot (Linux)
+        id: godot-cache-linux
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/cache@v4
         with:
           path: ~/godot-bin
           key: godot-${{ matrix.godot-version }}-linux-x86_64
 
-      - name: Download Godot
-        if: steps.godot-cache.outputs.cache-hit != 'true'
+      - name: Download Godot (Linux)
+        if: matrix.os == 'ubuntu-latest' && steps.godot-cache-linux.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/godot-bin
           VER="${{ matrix.godot-version }}"
@@ -72,15 +83,59 @@ jobs:
           mv ~/godot-bin/Godot_v${VER}_linux.x86_64 ~/godot-bin/godot
           chmod +x ~/godot-bin/godot
 
-      - name: Verify Godot
+      - name: Verify Godot (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: ~/godot-bin/godot --version
 
-      - name: Run walkthrough (bash shim path)
+      # ---- Windows Godot --------------------------------------------------
+      - name: Cache Godot (Windows)
+        id: godot-cache-windows
+        if: matrix.os == 'windows-latest'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\godot-bin
+          key: godot-${{ matrix.godot-version }}-windows-x86_64
+
+      - name: Download Godot (Windows)
+        if: matrix.os == 'windows-latest' && steps.godot-cache-windows.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $VER = "${{ matrix.godot-version }}"
+          $URL = "https://github.com/godotengine/godot/releases/download/${VER}/Godot_v${VER}_win64.exe.zip"
+          Write-Host "Downloading $URL"
+          $tmpZip = Join-Path $env:RUNNER_TEMP 'godot.zip'
+          Invoke-WebRequest -Uri $URL -OutFile $tmpZip
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'godot-bin'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive -Path $tmpZip -DestinationPath $dest -Force
+          # zip 里是 Godot_vX.Y.Z_win64.exe；统一改名 godot.exe，便于后续步骤引用
+          $exe = Get-ChildItem -Path $dest -Filter 'Godot_*.exe' | Select-Object -First 1
+          if (-not $exe) { throw "找不到解压后的 Godot exe" }
+          Move-Item -Force -Path $exe.FullName -Destination (Join-Path $dest 'godot.exe')
+
+      - name: Verify Godot (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\godot-bin\godot.exe" --version
+
+      # ---- bash shim walkthrough（仅 Linux —— PowerShell 等价 walkthrough 待跟进） ----
+      - name: Run walkthrough (bash shim path, Linux only)
+        if: matrix.os == 'ubuntu-latest'
         env:
           GODOT_BIN: /home/runner/godot-bin/godot
         run: ./addons/godot_cli_control/tests/test_walkthrough.sh
 
-      - name: Run walkthrough (godot-cli-control init path)
+      # ---- init walkthrough（跨平台 Python 版） --------------------------------
+      - name: Run walkthrough (godot-cli-control init path, Linux)
+        if: matrix.os == 'ubuntu-latest'
         env:
           GODOT_BIN: /home/runner/godot-bin/godot
-        run: ./addons/godot_cli_control/tests/test_init_walkthrough.sh
+        run: python addons/godot_cli_control/tests/test_init_walkthrough.py
+
+      - name: Run walkthrough (godot-cli-control init path, Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          GODOT_BIN: ${{ github.workspace }}\godot-bin\godot.exe
+        run: python addons/godot_cli_control/tests/test_init_walkthrough.py
