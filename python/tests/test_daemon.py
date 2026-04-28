@@ -102,6 +102,17 @@ def test_stop_cleans_dead_pid_file(tmp_path: Path) -> None:
     assert not daemon.pid_file.exists()
 
 
+def test_stop_cleans_port_file_when_pid_dead(tmp_path: Path) -> None:
+    """死 PID 路径也清 port_file —— 避免 stale port 把 RPC 引向错误端点。"""
+    daemon = Daemon(tmp_path)
+    daemon.control_dir.mkdir()
+    daemon.pid_file.write_text("999999999")
+    daemon.port_file.write_text("12345")
+    assert daemon.stop() == 0
+    assert not daemon.pid_file.exists()
+    assert not daemon.port_file.exists()
+
+
 def test_wait_port_ready_returns_false_for_unbound_port() -> None:
     # 一个几乎肯定没监听的端口；max_seconds=1 让测试快返回
     assert _wait_port_ready(port=1, max_seconds=1) is False

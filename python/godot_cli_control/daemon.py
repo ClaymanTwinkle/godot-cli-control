@@ -126,7 +126,7 @@ class Daemon:
         # 启动后 1s 仍存活才认为 launch 成功（捕获 --cli-control 拒识/参数错误）
         time.sleep(1)
         if proc.poll() is not None:
-            self.pid_file.unlink(missing_ok=True)
+            self._cleanup_state_files()
             raise DaemonError(
                 f"Godot exited immediately after launch (returncode={proc.returncode})"
             )
@@ -134,7 +134,7 @@ class Daemon:
         print(f"等待 GameBridge 就绪 (port {port})...", file=sys.stderr)
         if not _wait_port_ready(port, wait_seconds):
             self._terminate(proc.pid)
-            self.pid_file.unlink(missing_ok=True)
+            self._cleanup_state_files()
             raise DaemonError(
                 f"GameBridge not ready on port {port} within {wait_seconds}s"
             )
@@ -152,7 +152,7 @@ class Daemon:
             return 0
         if not _process_alive(pid):
             print(f"Godot (PID {pid}) 已不在运行，清理 PID 文件", file=sys.stderr)
-            self.pid_file.unlink(missing_ok=True)
+            self._cleanup_state_files()
             return 0
         if not _process_is_godot(pid):
             raise DaemonError(
@@ -162,7 +162,7 @@ class Daemon:
 
         print(f"关闭 Godot (PID {pid})...", file=sys.stderr)
         self._terminate(pid)
-        self.pid_file.unlink(missing_ok=True)
+        self._cleanup_state_files()
         print("Godot 已停止", file=sys.stderr)
 
         # 录制转码（即使失败也认为 stop 成功；返回非 0 让 CI 感知）
@@ -174,6 +174,15 @@ class Daemon:
         return 0
 
     # ── 内部 ──
+
+    def _cleanup_state_files(self) -> None:
+        """清理 daemon 启停产生的 pid/port 临时文件。
+
+        port_file 跟随 pid_file 一起清，避免后续 ``current_port()`` 读到 stale
+        值把 RPC 请求发到已不存在的端口。``movie_path`` 在 stop 流程中独立处理。
+        """
+        self.pid_file.unlink(missing_ok=True)
+        self.port_file.unlink(missing_ok=True)
 
     def _read_godot_bin_pref(self) -> str | None:
         """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。"""

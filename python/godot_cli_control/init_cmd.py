@@ -126,8 +126,17 @@ def _copy_plugin(src: Path, dst: Path) -> None:
 
 
 def _patch_project_godot(path: Path) -> tuple[bool, list[str]]:
-    """注入 ``[autoload]`` 与 ``[editor_plugins]`` 段；返回 (改动过, 变更列表)。"""
-    text = path.read_text()
+    """注入 ``[autoload]`` 与 ``[editor_plugins]`` 段；返回 (改动过, 变更列表)。
+
+    用 ``read_bytes``/``write_bytes`` 透传 line endings：``Path.read_text`` 默认
+    universal newlines 把 CRLF 折成 LF，再 write_text 又按平台转回，导致 Windows
+    上原 CRLF 文件被改写成 LF，git diff 把全文标成改动。直接走 bytes 通道避免
+    这层 platform 干扰；patch 只在我们追加的新行用 ``\\n``，对原有部分零影响。
+    """
+    raw = path.read_bytes()
+    # decode 时把 \r\n 折成 \n 便于 regex 匹配；记下原文是否 CRLF 以便回写
+    is_crlf = b"\r\n" in raw
+    text = raw.decode("utf-8").replace("\r\n", "\n")
     changes: list[str] = []
 
     text, ch = _ensure_kv_in_section(
@@ -143,7 +152,8 @@ def _patch_project_godot(path: Path) -> tuple[bool, list[str]]:
         changes.append("editor_plugins/enabled")
 
     if changes:
-        path.write_text(text)
+        out = text.replace("\n", "\r\n") if is_crlf else text
+        path.write_bytes(out.encode("utf-8"))
     return True, changes
 
 
@@ -191,10 +201,12 @@ def _ensure_in_packed_array(
         return text.rstrip() + suffix + "\n", True
     start, end = bounds
     body = text[start:end]
+    # Godot 偶尔把长 PackedStringArray 折成多行（手工编辑 / 较长插件列表），
+    # 用 [^)]* 跨行匹配；不能用 .*? 因为默认不跨 \n。
     line_pat = re.compile(
         r"^"
         + re.escape(key)
-        + r"\s*=\s*PackedStringArray\((?P<inner>.*?)\)\s*$",
+        + r"\s*=\s*PackedStringArray\((?P<inner>[^)]*)\)",
         re.MULTILINE,
     )
     lm = line_pat.search(body)

@@ -83,6 +83,44 @@ def test_packed_array_idempotent_when_value_present() -> None:
     assert out == text
 
 
+def test_packed_array_handles_multiline_godot_format() -> None:
+    """Godot 长插件列表 / 手工编辑可能折行；regex 必须跨行匹配。
+
+    防 regression：单行 ``.*?`` 不带 DOTALL 会 miss 多行格式 → 落到 fallback
+    分支追加新 ``enabled=`` 行，把原列表 last-wins 覆盖丢失。
+    """
+    text = (
+        "[editor_plugins]\n"
+        "enabled=PackedStringArray(\n"
+        '    "res://addons/foo/plugin.cfg",\n'
+        '    "res://addons/bar/plugin.cfg",\n'
+        ")\n"
+    )
+    out, changed = _ensure_in_packed_array(
+        text, "editor_plugins", "enabled", "res://addons/baz/plugin.cfg"
+    )
+    assert changed is True
+    # 三个值都在，且只有一个 enabled= 行
+    assert out.count("enabled=") == 1, f"重复了 enabled 行：\n{out}"
+    assert "res://addons/foo/plugin.cfg" in out
+    assert "res://addons/bar/plugin.cfg" in out
+    assert "res://addons/baz/plugin.cfg" in out
+
+
+def test_packed_array_idempotent_on_multiline_when_value_present() -> None:
+    text = (
+        "[editor_plugins]\n"
+        "enabled=PackedStringArray(\n"
+        '    "res://addons/x/plugin.cfg"\n'
+        ")\n"
+    )
+    out, changed = _ensure_in_packed_array(
+        text, "editor_plugins", "enabled", "res://addons/x/plugin.cfg"
+    )
+    assert changed is False
+    assert out == text
+
+
 def test_packed_array_creates_key_when_section_has_other_keys() -> None:
     text = "[editor_plugins]\nsomething=else\n"
     out, changed = _ensure_in_packed_array(
@@ -174,6 +212,39 @@ def test_run_init_writes_godot_bin_when_detected(
     assert rc == 0
     saved = (project / ".cli_control" / "godot_bin").read_text().strip()
     assert saved == str(fake_bin)
+
+
+def test_run_init_preserves_crlf_line_endings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows 上的 CRLF 项目文件在 patch 后必须仍是 CRLF —— 防止 git diff
+    把整个文件标成改动。"""
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+
+    project = tmp_path
+    crlf_content = (
+        "config_version=5\r\n"
+        "\r\n"
+        "[application]\r\n"
+        'config/name="crlf-project"\r\n'
+        'config/features=PackedStringArray("4.4")\r\n'
+    )
+    (project / "project.godot").write_bytes(crlf_content.encode("utf-8"))
+
+    assert run_init(project) == 0
+    after = (project / "project.godot").read_bytes()
+    # 原 CRLF 行仍是 CRLF；新加的行 _patch_project_godot 也会写成 CRLF
+    assert b"\r\nconfig_version=5\r\n" in (b"\r\n" + after) or after.startswith(
+        b"config_version=5\r\n"
+    )
+    assert b"\r\n[autoload]\r\n" in after
+    assert b"\r\nGameBridgeNode=" in after
+    # 不应混入裸 LF
+    bare_lf_count = after.count(b"\n") - after.count(b"\r\n")
+    assert bare_lf_count == 0, f"出现裸 LF：{bare_lf_count} 处"
 
 
 def test_locate_plugin_source_finds_repo_addons() -> None:

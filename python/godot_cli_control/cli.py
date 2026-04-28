@@ -17,6 +17,7 @@ import asyncio
 import base64
 import json
 import sys
+import traceback
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
@@ -173,16 +174,21 @@ def cmd_run(ns: argparse.Namespace) -> int:
         auto_started = True
 
     port = daemon.current_port() or ns.port
-    exit_code = _exec_user_script(script_path, port)
-
-    if auto_started:
-        try:
-            stop_rc = daemon.stop()
-        except DaemonError as e:
-            print(f"警告：停止 daemon 失败：{e}", file=sys.stderr)
-            stop_rc = 1
-        if exit_code == 0 and stop_rc != 0:
-            exit_code = stop_rc
+    # try/finally 保护：_exec_user_script 内部抛非 catch 异常（GameBridge
+    # 连接失败、importlib 边界错误等）时仍要停 daemon，避免 Godot 进程泄漏
+    # 让下次 daemon start 报「already running」。
+    exit_code = 1
+    try:
+        exit_code = _exec_user_script(script_path, port)
+    finally:
+        if auto_started:
+            try:
+                stop_rc = daemon.stop()
+            except DaemonError as e:
+                print(f"警告：停止 daemon 失败：{e}", file=sys.stderr)
+                stop_rc = 1
+            if exit_code == 0 and stop_rc != 0:
+                exit_code = stop_rc
     return exit_code
 
 
@@ -197,10 +203,12 @@ def _exec_user_script(script_path: Path, port: int) -> int:
         print(f"错误：无法加载脚本: {script_path}", file=sys.stderr)
         return 1
     module = importlib.util.module_from_spec(spec)
+    # 保留完整 traceback —— 用户脚本出错时调试信息比「错误：xxx」一行有用得多。
     try:
         spec.loader.exec_module(module)
-    except Exception as e:  # noqa: BLE001 - 用户脚本任何异常都要抓
-        print(f"错误：加载脚本失败: {e}", file=sys.stderr)
+    except Exception:  # noqa: BLE001 - 用户脚本任何异常都要抓
+        print(f"错误：加载脚本 {script_path} 失败：", file=sys.stderr)
+        traceback.print_exc()
         return 1
     if not hasattr(module, "run"):
         print(
@@ -213,8 +221,9 @@ def _exec_user_script(script_path: Path, port: int) -> int:
     bridge = GameBridge(port=port)
     try:
         module.run(bridge)
-    except Exception as e:  # noqa: BLE001
-        print(f"错误：脚本运行失败: {e}", file=sys.stderr)
+    except Exception:  # noqa: BLE001
+        print(f"错误：脚本 {script_path} 运行失败：", file=sys.stderr)
+        traceback.print_exc()
         return 1
     finally:
         bridge.close()
