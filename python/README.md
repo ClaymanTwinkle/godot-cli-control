@@ -5,10 +5,9 @@ WebSocket bridge for headless / scripted control of Godot 4 scenes — Python cl
 ## Install
 
 ```bash
-# once published:
 pipx install godot-cli-control
 
-# in the meantime:
+# or, for unreleased main:
 pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"
 ```
 

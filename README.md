@@ -26,7 +26,7 @@ Each subdirectory has its own README:
 
 ```bash
 # 1. Install the Python CLI (it bundles the Godot plugin source)
-pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"
+pipx install godot-cli-control
 
 # 2. From your Godot project root: copy plugin, patch project.godot, detect Godot binary
 cd path/to/your_godot_project
@@ -44,7 +44,7 @@ godot-cli-control daemon stop
 - patches `project.godot` (`[autoload]` + `[editor_plugins]`) so you don't have to click through the Godot Editor,
 - detects the Godot binary and writes `.cli_control/godot_bin` for the daemon.
 
-Once published to PyPI, step 1 becomes `pipx install godot-cli-control`.
+Want unreleased main? `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"`.
 
 ## Manual install (advanced)
 

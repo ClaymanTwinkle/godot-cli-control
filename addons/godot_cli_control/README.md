@@ -5,7 +5,7 @@ Click nodes, read/write properties, simulate input, take screenshots, record mov
 
 ## Quick Start (one command)
 
-If you have the Python CLI installed (`pipx install godot-cli-control` once it's on PyPI; meanwhile `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"`), the entire setup collapses to:
+If you have the Python CLI installed (`pipx install godot-cli-control`), the entire setup collapses to:
 
 ```bash
 cd your_godot_project
@@ -32,9 +32,9 @@ cp -r /path/to/godot-cli-control/addons/godot_cli_control my_project/addons/
 ### 2. Get the Python package
 
 ```bash
-pip install -e /path/to/godot-cli-control/python
-# or, once published:
-# pip install godot-cli-control
+pip install godot-cli-control
+# or for an unreleased main:
+# pip install -e /path/to/godot-cli-control/python
 ```
 
 Requires Python ≥ 3.10.
