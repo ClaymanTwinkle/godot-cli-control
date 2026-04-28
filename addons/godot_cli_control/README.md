@@ -21,13 +21,15 @@ godot-cli-control daemon stop
 
 ### 1. Get the plugin
 
-Copy `addons/godot_cli_control/` to your project's `addons/` directory:
+**Option A — Godot AssetLib** (once approved): in the Godot Editor, AssetLib tab → search "Godot CLI Control" → Download → Install.
+
+**Option B — copy from a clone:**
 
 ```bash
 cp -r /path/to/godot-cli-control/addons/godot_cli_control my_project/addons/
 ```
 
-(Future: AssetLib install once published.)
+**Option C — direct zip download**: grab `godot-cli-control-vX.Y.Z.zip` from the [GitHub releases](https://github.com/ClaymanTwinkle/godot-cli-control/releases) and unzip into the project root (zip layout is `addons/godot_cli_control/...`).
 
 ### 2. Get the Python package
 

@@ -53,14 +53,10 @@ If you don't want to use `init`, copy the plugin manually and enable it from the
 ## Roadmap
 
 Tracked in [issues](https://github.com/ClaymanTwinkle/godot-cli-control/issues).
-First-pass items:
+Remaining open items:
 
-- PyPI + AssetLib publish (CI artifacts already produced)
-- Windows-native CLI verification (CI matrix)
-- GUT unit tests for `LowLevelApi` / `InputSimulationApi`
-- `ProjectSettings`-driven blacklist extension
-- `register_method()` extension API
-- `pytest-godot-cli-control` fixtures
+- AssetLib first submission ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18))
+- GUT unit tests for `LowLevelApi` / `InputSimulationApi` ([#11](https://github.com/ClaymanTwinkle/godot-cli-control/issues/11))
 
 ## License
 
