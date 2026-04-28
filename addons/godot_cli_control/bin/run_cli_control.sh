@@ -64,6 +64,23 @@ _require_running() {
     fi
 }
 
+# 等 TCP 端口可连接（GameBridge listen），最多 max 秒
+_wait_port_ready() {
+    local port="$1" max="${2:-30}"
+    for i in $(seq 1 "$max"); do
+        if python3 -c "import socket,sys
+s=socket.socket(); s.settimeout(0.5)
+try:
+    s.connect(('127.0.0.1', $port)); s.close()
+except Exception:
+    sys.exit(1)" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 # ── start ──
 
 cmd_start() {
@@ -125,6 +142,17 @@ cmd_start() {
         exit 1
     fi
 
+    # 等 GameBridge 端口监听（最多 30s）
+    echo "等待 GameBridge 就绪 (port $PORT)..."
+    if ! _wait_port_ready "$PORT" 30; then
+        echo "错误：GameBridge 30s 未就绪，清理"
+        kill -TERM "$GODOT_PID" 2>/dev/null || true
+        sleep 1
+        kill -9 "$GODOT_PID" 2>/dev/null || true
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+
     echo "Godot 已启动 (PID $GODOT_PID)"
 }
 
@@ -132,6 +160,7 @@ cmd_start() {
 
 cmd_stop() {
     local pid
+    local conv_failed=0
     pid="$(_read_pid)"
 
     if [[ -z "$pid" ]]; then
@@ -190,9 +219,12 @@ cmd_stop() {
                 echo "转码完成：$mp4_path ($(du -h "$mp4_path" | cut -f1))"
             else
                 echo "转码失败，保留原始文件：$movie_path（日志：$CLI_CONTROL_DIR/ffmpeg.log）"
+                conv_failed=1
             fi
         fi
     fi
+
+    return $conv_failed
 }
 
 # ── proxy（转发到 Python CLI）──
@@ -240,22 +272,13 @@ cmd_run() {
         auto_started=true
     fi
 
-    # 等待 GameBridge 就绪
+    # cmd_start 已等过端口就绪，这里直接读 port 进 runner
     local port
-    port=$(cat "$CLI_CONTROL_DIR/port" 2>/dev/null || echo 9877)
-    echo "等待 GameBridge 就绪 (port $port)..."
-    for i in $(seq 1 30); do
-        if python3 -m godot_cli_control tree --port "$port" >/dev/null 2>&1; then
-            echo "GameBridge 已就绪"
-            break
-        fi
-        if [[ $i -eq 30 ]]; then
-            echo "错误：GameBridge 启动超时"
-            if [[ "$auto_started" == true ]]; then cmd_stop; fi
-            return 1
-        fi
-        sleep 1
-    done
+    if [[ ! -f "$CLI_CONTROL_DIR/port" ]]; then
+        echo "错误：找不到 $CLI_CONTROL_DIR/port（daemon 状态文件丢失）"
+        exit 1
+    fi
+    port=$(cat "$CLI_CONTROL_DIR/port")
 
     echo "运行 $PY_SCRIPT..."
     local exit_code=0

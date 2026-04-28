@@ -6,7 +6,7 @@
         bridge.click("/root/MyScene/StartButton")
         bridge.wait(2)
         bridge.hold("run", 1.5)
-        bridge.press("attack")
+        bridge.tap("attack")
 """
 
 from __future__ import annotations
@@ -15,17 +15,17 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from .client import GameClient
+from .client import DEFAULT_PORT, GameClient
 
 
 class GameBridge:
     """同步接口，内部通过事件循环调用异步 GameClient。"""
 
-    def __init__(self, port: int = 9877) -> None:
+    def __init__(self, port: int = DEFAULT_PORT) -> None:
         self._loop = asyncio.new_event_loop()
         self._client = GameClient(port=port)
         self._loop.run_until_complete(
-            self._client.connect(retries=15, backoff=1.0)
+            self._client.connect(retries=15, backoff=1.0, total_timeout=60.0)
         )
 
     def close(self) -> None:
@@ -66,10 +66,6 @@ class GameBridge:
         return self._run(self._client.click(path))
 
     # ── 输入模拟 ──
-
-    def press(self, action: str) -> None:
-        """按下并释放一个动作。"""
-        self._run(self._client.action_tap(action, 0.1))
 
     def hold(self, action: str, duration: float) -> None:
         """按住一个动作指定时长。"""

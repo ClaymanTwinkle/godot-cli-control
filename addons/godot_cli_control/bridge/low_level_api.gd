@@ -48,7 +48,7 @@ func handle_click(params: Dictionary) -> Dictionary:
 		click_event.pressed = true
 		area.input_event.emit(get_viewport(), click_event, 0)
 		return {"success": true}
-	return {"error": "Node is not clickable: %s" % node.get_class(), "code": -32602}
+	return _err(-32602, "Node is not clickable: %s" % node.get_class())
 
 
 func handle_get_property(params: Dictionary) -> Dictionary:
@@ -57,9 +57,9 @@ func handle_get_property(params: Dictionary) -> Dictionary:
 		return _node_not_found(params.get("path", "") as String)
 	var property: String = params.get("property", "") as String
 	if property.is_empty():
-		return {"error": "Missing 'property' parameter", "code": -32602}
+		return _err(-32602, "Missing 'property' parameter")
 	if not _has_property(node, property):
-		return {"error": "Property not found: %s" % property, "code": 1002}
+		return _err(1002, "Property not found: %s" % property)
 	return {"value": node.get(property)}
 
 
@@ -69,9 +69,9 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 		return _node_not_found(params.get("path", "") as String)
 	var property: String = params.get("property", "") as String
 	if property.is_empty():
-		return {"error": "Missing 'property' parameter", "code": -32602}
+		return _err(-32602, "Missing 'property' parameter")
 	if property in _PROPERTY_BLACKLIST:
-		return {"error": "Blocked property: %s" % property, "code": -32602}
+		return _err(-32602, "Blocked property: %s" % property)
 	var value: Variant = params.get("value", null)
 	node.set(property, value)
 	return {"success": true}
@@ -83,9 +83,9 @@ func handle_call_method(params: Dictionary) -> Dictionary:
 		return _node_not_found(params.get("path", "") as String)
 	var method: String = params.get("method", "") as String
 	if method in _METHOD_BLACKLIST:
-		return {"error": "Blocked method: %s" % method, "code": -32602}
+		return _err(-32602, "Blocked method: %s" % method)
 	if not node.has_method(method):
-		return {"error": "Method not found: %s" % method, "code": 1003}
+		return _err(1003, "Method not found: %s" % method)
 	var args: Array = params.get("args", []) as Array
 	# 注意：GDScript 没有 try-catch，callv 参数不匹配会产生引擎错误而非可捕获异常
 	var result: Variant = node.callv(method, args)
@@ -97,7 +97,7 @@ func handle_get_text(params: Dictionary) -> Dictionary:
 	if node == null:
 		return _node_not_found(params.get("path", "") as String)
 	if not "text" in node:
-		return {"error": "Node does not have a 'text' property", "code": 1002}
+		return _err(1002, "Node does not have a 'text' property")
 	return {"text": str(node.get("text"))}
 
 
@@ -159,14 +159,18 @@ func wait_for_node_async(params: Dictionary) -> Dictionary:
 
 
 func take_screenshot_async() -> Dictionary:
-	# headless dummy renderer 下 frame_post_draw 不会主动发射；先用 timer 推进
-	# 一个 process tick，让 RenderingServer 跑一次再 await，避免 wrapper 单独
-	# 调 screenshot 时永久挂死。GUI 模式额外 50ms 延迟可忽略。
-	await get_tree().create_timer(0.05).timeout
-	await RenderingServer.frame_post_draw
+	# dummy renderer (--headless) 下 RenderingServer.frame_post_draw 永不发射，
+	# await 会永久挂死。RenderingServer.get_rendering_device() 在 dummy driver
+	# 下返回 null，用它检测后改走 process_frame 推进路径。
+	if RenderingServer.get_rendering_device() == null:
+		# dummy 路径：连续推 2 帧，让 viewport 跑一次完整 update
+		await get_tree().process_frame
+		await get_tree().process_frame
+	else:
+		await RenderingServer.frame_post_draw
 	var image: Image = get_viewport().get_texture().get_image()
 	if image == null:
-		return {"error": "Screenshot unavailable (viewport texture is null)", "code": 1003}
+		return _err(1003, "Screenshot unavailable (viewport texture is null)")
 	var png_buffer: PackedByteArray = image.save_png_to_buffer()
 	var base64_str: String = Marshalls.raw_to_base64(png_buffer)
 	return {"image": base64_str}
@@ -175,9 +179,9 @@ func take_screenshot_async() -> Dictionary:
 func wait_game_time_async(params: Dictionary) -> Dictionary:
 	var seconds: float = params.get("seconds", 0.0) as float
 	if seconds < 0.0:
-		return {"error": "seconds must be >= 0", "code": -32602}
+		return _err(-32602, "seconds must be >= 0")
 	if seconds > _MAX_WAIT_SECONDS:
-		return {"error": "seconds must be <= %s" % _MAX_WAIT_SECONDS, "code": -32602}
+		return _err(-32602, "seconds must be <= %s" % _MAX_WAIT_SECONDS)
 	if seconds == 0.0:
 		return {"success": true}
 	await get_tree().create_timer(seconds).timeout
@@ -190,7 +194,11 @@ func _get_node_or_error(params: Dictionary) -> Node:
 
 
 func _node_not_found(path: String) -> Dictionary:
-	return {"error": "Node not found: %s" % path, "code": 1001}
+	return _err(1001, "Node not found: %s" % path)
+
+
+func _err(code: int, message: String) -> Dictionary:
+	return {"error": {"code": code, "message": message}}
 
 
 func _has_property(node: Node, property: String) -> bool:

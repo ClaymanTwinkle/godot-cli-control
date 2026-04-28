@@ -150,6 +150,51 @@ async def test_request_timeout_cleans_pending() -> None:
                     pass
 
 
+# ---- P2-6 Test A: connect 把 open_timeout 透传给 websockets.connect ----
+
+@pytest.mark.asyncio
+async def test_connect_passes_open_timeout() -> None:
+    """单次 websockets handshake 必须有 open_timeout，避免慢握手拖死累计 retry。"""
+    fake_ws = AsyncMock()
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ) as mock_connect:
+        client = GameClient(port=9999)
+        try:
+            await client.connect(retries=1, open_timeout=2.5)
+        finally:
+            if client._listen_task:
+                client._listen_task.cancel()
+        assert mock_connect.called
+        _, kwargs = mock_connect.call_args
+        assert kwargs.get("open_timeout") == 2.5, \
+            "GameClient.connect() must forward open_timeout to websockets.connect"
+
+
+# ---- P2-6 Test B: total_timeout 给整个 retry 循环加硬墙 ----
+
+@pytest.mark.asyncio
+async def test_connect_total_timeout_aborts() -> None:
+    """所有 retry 都失败时 total_timeout 必须把循环切断，统一抛 ConnectionError。"""
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(side_effect=ConnectionRefusedError("nope")),
+    ):
+        client = GameClient(port=9999)
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        with pytest.raises(ConnectionError, match="within"):
+            await client.connect(
+                retries=1000,
+                backoff=0.05,
+                max_wait=0.05,
+                total_timeout=0.1,
+            )
+        elapsed = loop.time() - t0
+        assert elapsed < 0.5, f"total_timeout 没生效，耗时 {elapsed:.3f}s"
+
+
 # ---- Test 6（bonus）: websockets.connect 有 proxy kwarg（防版本退化） ----
 
 def test_websockets_connect_supports_proxy_kwarg() -> None:

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from .bridge import GameBridge
+from .client import DEFAULT_PORT
 
 
 def main() -> None:
@@ -30,11 +31,21 @@ def main() -> None:
         sys.exit(1)
 
     # 解析 --port 参数
-    port = 9877
+    port = DEFAULT_PORT
     args = sys.argv[2:]
     if "--port" in args:
         idx = args.index("--port")
-        port = int(args[idx + 1])
+        if idx + 1 >= len(args):
+            print("错误：--port 需要一个值", file=sys.stderr)
+            sys.exit(1)
+        try:
+            port = int(args[idx + 1])
+        except ValueError:
+            print(
+                f"错误：--port 值必须是整数，收到 {args[idx + 1]!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         args = args[:idx] + args[idx + 2:]
 
     # 动态加载用户脚本

@@ -12,11 +12,13 @@ from websockets.asyncio.client import ClientConnection
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PORT: int = 9877
+
 
 class GameClient:
     """WebSocket client that connects to Godot's GameBridge service."""
 
-    def __init__(self, port: int = 9877) -> None:
+    def __init__(self, port: int = DEFAULT_PORT) -> None:
         self._port = port
         self._ws: ClientConnection | None = None
         self._pending: dict[str, asyncio.Future[dict]] = {}
@@ -30,7 +32,12 @@ class GameClient:
         await self.disconnect()
 
     async def connect(
-        self, retries: int = 10, backoff: float = 1.0, max_wait: float = 3.0
+        self,
+        retries: int = 10,
+        backoff: float = 1.0,
+        max_wait: float = 3.0,
+        open_timeout: float = 5.0,
+        total_timeout: float | None = None,
     ) -> None:
         """Connect to GameBridge with exponential backoff retry.
 
@@ -41,12 +48,38 @@ class GameClient:
         shell 里的 ``all_proxy=socks5://127.0.0.1:7897`` 就是典型触发点；
         显式传 ``proxy=None`` 比依赖 ``no_proxy`` 顺序更稳（no_proxy 对
         localhost 的匹配规则各库不一致）。
+
+        ``open_timeout`` 限制单次 websockets handshake 时长，防止慢握手
+        把累计 retry 时间拖到失控。``total_timeout`` 给整个 retry 循环
+        加一道硬墙：默认 ``None`` 行为不变；非 ``None`` 时用
+        ``asyncio.wait_for`` 包裹，超时统一抛 ``ConnectionError``。
         """
+        if total_timeout is None:
+            await self._connect_loop(retries, backoff, max_wait, open_timeout)
+            return
+        try:
+            await asyncio.wait_for(
+                self._connect_loop(retries, backoff, max_wait, open_timeout),
+                timeout=total_timeout,
+            )
+        except asyncio.TimeoutError as e:
+            raise ConnectionError(
+                f"Failed to connect within {total_timeout}s"
+            ) from e
+
+    async def _connect_loop(
+        self,
+        retries: int,
+        backoff: float,
+        max_wait: float,
+        open_timeout: float,
+    ) -> None:
         for attempt in range(retries):
             try:
                 self._ws = await websockets.connect(
                     f"ws://localhost:{self._port}",
                     proxy=None,
+                    open_timeout=open_timeout,
                 )
                 self._listen_task = asyncio.create_task(self._listen())
                 logger.info("Connected to GameBridge on port %d", self._port)

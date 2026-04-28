@@ -11,8 +11,11 @@ var _active_stream: StreamPeerTCP = null
 var _port: int = DEFAULT_PORT
 var _low_level_api: LowLevelApi = null
 var _input_sim_api: InputSimulationApi = null
-var _low_level_methods: Dictionary = {}
-var _input_methods: Dictionary = {}
+# 方法注册表：{method_name: {"callable": Callable, "kind": "sync"|"async"|"async_with_id"}}
+# - sync: handler(params) -> Dictionary，dispatcher 立即 send response
+# - async: handler(params) -> await Dictionary，dispatcher await 后 send response
+# - async_with_id: handler(params, request_id) -> void，handler 自行通过 callback 回响
+var _methods: Dictionary = {}
 
 
 func _ready() -> void:
@@ -30,27 +33,8 @@ func _ready() -> void:
 	_input_sim_api.name = "InputSimulationApi"
 	add_child(_input_sim_api)
 	_input_sim_api.setup(_on_async_response)
-	# 构建方法路由表
-	_low_level_methods = {
-		"click": _low_level_api.handle_click,
-		"get_property": _low_level_api.handle_get_property,
-		"set_property": _low_level_api.handle_set_property,
-		"call_method": _low_level_api.handle_call_method,
-		"get_text": _low_level_api.handle_get_text,
-		"node_exists": _low_level_api.handle_node_exists,
-		"is_visible": _low_level_api.handle_is_visible,
-		"get_children": _low_level_api.handle_get_children,
-		"get_scene_tree": _low_level_api.handle_get_scene_tree,
-	}
-	_input_methods = {
-		"input_action_press": _input_sim_api.handle_action_press,
-		"input_action_release": _input_sim_api.handle_action_release,
-		"input_action_tap": _input_sim_api.handle_action_tap,
-		"input_get_pressed": _input_sim_api.handle_get_pressed,
-		"input_hold": _input_sim_api.handle_hold,
-		"input_release_all": _input_sim_api.handle_release_all,
-		"input_combo_cancel": _input_sim_api.handle_combo_cancel,
-	}
+	# 构建统一方法注册表
+	_register_methods()
 	# 启动 TCP 服务器
 	_port = _parse_port_from_args()
 	# 安全：显式绑 127.0.0.1，避免 Godot TCPServer 默认 "*" 暴露到 LAN
@@ -107,6 +91,38 @@ func _poll_active_peer() -> void:
 		_handle_message(message)
 
 
+func _register_methods() -> void:
+	# 低层 API（同步）
+	_methods["click"] = {"callable": _low_level_api.handle_click, "kind": "sync"}
+	_methods["get_property"] = {"callable": _low_level_api.handle_get_property, "kind": "sync"}
+	_methods["set_property"] = {"callable": _low_level_api.handle_set_property, "kind": "sync"}
+	_methods["call_method"] = {"callable": _low_level_api.handle_call_method, "kind": "sync"}
+	_methods["get_text"] = {"callable": _low_level_api.handle_get_text, "kind": "sync"}
+	_methods["node_exists"] = {"callable": _low_level_api.handle_node_exists, "kind": "sync"}
+	_methods["is_visible"] = {"callable": _low_level_api.handle_is_visible, "kind": "sync"}
+	_methods["get_children"] = {"callable": _low_level_api.handle_get_children, "kind": "sync"}
+	_methods["get_scene_tree"] = {"callable": _low_level_api.handle_get_scene_tree, "kind": "sync"}
+	# 低层 API（异步）
+	_methods["wait_for_node"] = {"callable": _low_level_api.wait_for_node_async, "kind": "async"}
+	_methods["wait_game_time"] = {"callable": _low_level_api.wait_game_time_async, "kind": "async"}
+	_methods["screenshot"] = {"callable": _wrap_screenshot, "kind": "async"}
+	# 输入模拟（同步）
+	_methods["input_action_press"] = {"callable": _input_sim_api.handle_action_press, "kind": "sync"}
+	_methods["input_action_release"] = {"callable": _input_sim_api.handle_action_release, "kind": "sync"}
+	_methods["input_action_tap"] = {"callable": _input_sim_api.handle_action_tap, "kind": "sync"}
+	_methods["input_get_pressed"] = {"callable": _input_sim_api.handle_get_pressed, "kind": "sync"}
+	_methods["input_hold"] = {"callable": _input_sim_api.handle_hold, "kind": "sync"}
+	_methods["input_release_all"] = {"callable": _input_sim_api.handle_release_all, "kind": "sync"}
+	_methods["input_combo_cancel"] = {"callable": _input_sim_api.handle_combo_cancel, "kind": "sync"}
+	# 输入模拟（async_with_id：handler 自行通过 _on_async_response 回响）
+	_methods["input_combo"] = {"callable": _input_sim_api.handle_combo, "kind": "async_with_id"}
+
+
+# screenshot wrapper：take_screenshot_async 不接 params，统一签名为 (params) -> Dictionary
+func _wrap_screenshot(_params: Dictionary) -> Dictionary:
+	return await _low_level_api.take_screenshot_async()
+
+
 func _handle_message(raw: String) -> void:
 	var parsed: Variant = JSON.parse_string(raw)
 	if parsed == null or not parsed is Dictionary:
@@ -119,69 +135,37 @@ func _handle_message(raw: String) -> void:
 	if method.is_empty():
 		_send_error(id, -32600, "Missing method")
 		return
-	# wait_for_node（异步，不阻塞）
-	if method == "wait_for_node":
-		_handle_wait_for_node_async(id, params)
+	if not _methods.has(method):
+		_send_error(id, -32601, "Unknown method: %s" % method)
 		return
-	# wait_game_time（异步，按 game delta 等待）
-	if method == "wait_game_time":
-		_handle_wait_game_time_async(id, params)
-		return
-	# 低层 API（同步）
-	if _low_level_methods.has(method):
-		var handler: Callable = _low_level_methods[method] as Callable
-		var result: Dictionary = handler.call(params)
-		if result.has("error"):
-			var code: int = result.get("code", -1) as int
-			_send_error(id, code, result["error"] as String)
-		else:
-			_send_response(id, result)
-		return
-	# screenshot（异步，需要等渲染）
-	if method == "screenshot":
-		_handle_screenshot_async(id)
-		return
-	# 输入模拟（同步，除了 combo）
-	if method == "input_combo":
-		_input_sim_api.handle_combo(params, id)
-		return
-	if _input_methods.has(method):
-		var handler: Callable = _input_methods[method] as Callable
-		var result: Dictionary = handler.call(params)
-		if result.has("code"):
-			_send_error(id, result["code"] as int, result.get("error", "") as String)
-		elif result.has("error"):
-			_send_error(id, -1, result["error"] as String)
-		else:
-			_send_response(id, result)
-		return
-	# 未知方法
-	_send_error(id, -32601, "Unknown method: %s" % method)
+	var entry: Dictionary = _methods[method] as Dictionary
+	var handler: Callable = entry["callable"] as Callable
+	var kind: String = entry["kind"] as String
+	match kind:
+		"sync":
+			var result: Dictionary = handler.call(params)
+			_dispatch_result(id, result)
+		"async":
+			_run_async(id, handler, params)
+		"async_with_id":
+			handler.call(params, id)
 
 
-func _handle_wait_for_node_async(id: String, params: Dictionary) -> void:
-	var result: Dictionary = await _low_level_api.wait_for_node_async(params)
-	_send_response(id, result)
+func _run_async(id: String, handler: Callable, params: Dictionary) -> void:
+	var result: Dictionary = await handler.call(params)
+	_dispatch_result(id, result)
 
 
-func _handle_screenshot_async(id: String) -> void:
-	var result: Dictionary = await _low_level_api.take_screenshot_async()
-	_send_response(id, result)
-
-
-func _handle_wait_game_time_async(id: String, params: Dictionary) -> void:
-	var result: Dictionary = await _low_level_api.wait_game_time_async(params)
+func _dispatch_result(id: String, result: Dictionary) -> void:
 	if result.has("error"):
-		_send_error(id, result.get("code", -1) as int, result["error"] as String)
+		var err: Dictionary = result["error"] as Dictionary
+		_send_error(id, err["code"] as int, err["message"] as String)
 	else:
 		_send_response(id, result)
 
 
 func _on_async_response(id: String, result: Dictionary) -> void:
-	if result.has("error"):
-		_send_error(id, result.get("code", -1) as int, result["error"] as String)
-	else:
-		_send_response(id, result)
+	_dispatch_result(id, result)
 
 
 func _send_response(id: String, result: Dictionary) -> void:
@@ -222,6 +206,17 @@ func _parse_port_from_args() -> int:
 	for arg: String in OS.get_cmdline_args():
 		if arg.begins_with("--game-bridge-port="):
 			var parts: PackedStringArray = arg.split("=", false, 1)
-			if parts.size() == 2 and parts[1].is_valid_int():
-				return parts[1].to_int()
+			if parts.size() != 2 or not parts[1].is_valid_int():
+				push_warning(
+					"GameBridge: Invalid port value %s, falling back to %d" % [arg, DEFAULT_PORT]
+				)
+				return DEFAULT_PORT
+			var port: int = parts[1].to_int()
+			if port < 1 or port > 65535:
+				push_warning(
+					"GameBridge: Port %d out of range [1, 65535], falling back to %d"
+					% [port, DEFAULT_PORT]
+				)
+				return DEFAULT_PORT
+			return port
 	return DEFAULT_PORT

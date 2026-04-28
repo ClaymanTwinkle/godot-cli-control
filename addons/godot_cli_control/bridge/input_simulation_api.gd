@@ -46,7 +46,7 @@ func is_combo_active() -> bool:
 
 func handle_action_press(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return {"code": 1004, "error": "combo in progress"}
+		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
 	_do_press(action)
 	_pressed_actions[action] = true
@@ -55,7 +55,7 @@ func handle_action_press(params: Dictionary) -> Dictionary:
 
 func handle_action_release(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return {"code": 1004, "error": "combo in progress"}
+		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
 	_do_release(action)
 	_pressed_actions.erase(action)
@@ -67,7 +67,7 @@ func handle_action_release(params: Dictionary) -> Dictionary:
 ## 定时器到期后自动释放
 func handle_action_tap(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return {"code": 1004, "error": "combo in progress"}
+		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
 	var duration: float = params.get("duration", 0.1) as float
 	_do_press(action)
@@ -83,7 +83,7 @@ func handle_get_pressed(params: Dictionary) -> Dictionary:
 
 func handle_hold(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return {"code": 1004, "error": "combo in progress"}
+		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
 	var duration: float = params.get("duration", 0.0) as float
 	_do_press(action)
@@ -114,7 +114,7 @@ func release_all() -> void:
 func handle_combo(params: Dictionary, request_id: String) -> void:
 	if _combo_active:
 		if _send_response_callback.is_valid():
-			_send_response_callback.call(request_id, {"code": 1004, "error": "combo in progress"})
+			_send_response_callback.call(request_id, _err(1004, "combo in progress"))
 		return
 	var steps: Array = params.get("steps", []) as Array
 	_combo_request_id = request_id
@@ -218,3 +218,7 @@ func _do_press(action: String) -> void:
 func _do_release(action: String) -> void:
 	if InputMap.has_action(action):
 		Input.action_release(action)
+
+
+func _err(code: int, message: String) -> Dictionary:
+	return {"error": {"code": code, "message": message}}

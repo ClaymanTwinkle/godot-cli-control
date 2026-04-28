@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import json
@@ -22,9 +23,7 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
-from .client import GameClient
-
-DEFAULT_PORT: int = 9877
+from .client import DEFAULT_PORT, GameClient
 
 
 async def cmd_click(client: GameClient, args: list[str]) -> None:
@@ -116,31 +115,28 @@ COMMANDS: dict[
 }
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="godot_cli_control")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"GameBridge 端口（默认 {DEFAULT_PORT}）",
+    )
+    subs = parser.add_subparsers(dest="cmd", required=True)
+    for name in COMMANDS:
+        sp = subs.add_parser(name)
+        sp.add_argument("rest", nargs="*")
+    return parser
+
+
 def main() -> None:
-    args: list[str] = sys.argv[1:]
-    port: int = DEFAULT_PORT
-
-    if "--port" in args:
-        idx = args.index("--port")
-        if idx + 1 >= len(args):
-            print("Error: --port requires a value", file=sys.stderr)
-            sys.exit(1)
-        port = int(args[idx + 1])
-        args = args[:idx] + args[idx + 2 :]
-
-    if not args or args[0] not in COMMANDS:
-        cmds = ", ".join(COMMANDS.keys())
-        print(
-            f"Usage: python3 -m godot_cli_control [--port N] <{cmds}> [args...]",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    cmd = args[0]
+    parser = _build_parser()
+    ns = parser.parse_args()
 
     async def run() -> None:
-        async with GameClient(port=port) as client:
-            await COMMANDS[cmd](client, args[1:])
+        async with GameClient(port=ns.port) as client:
+            await COMMANDS[ns.cmd](client, list(ns.rest))
 
     asyncio.run(run())
 

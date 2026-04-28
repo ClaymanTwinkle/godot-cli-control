@@ -106,36 +106,10 @@ source .venv/bin/activate
 pip install --quiet --upgrade pip
 pip install --quiet "$REPO_ROOT/python"
 
-# 4) start daemon（headless）
+# 4) start daemon（headless）—— wrapper 内部已等 GameBridge 端口就绪
 echo "==> start daemon"
 export GODOT_BIN="$GODOT"
 "$WRAPPER" start --headless --port 9899
-
-# 等待 GameBridge 端口监听（最多 60s）
-# 用轻量 TCP 探测（python3 socket connect），避免 client.connect() 内部 10× retry
-# 把单次循环拉到几十秒、整体超时到几分钟。
-echo "==> 等待 GameBridge 就绪"
-_port_ready() {
-    python3 -c "import socket,sys
-s=socket.socket(); s.settimeout(0.5)
-try:
-    s.connect(('127.0.0.1', 9899)); s.close()
-except Exception:
-    sys.exit(1)
-" >/dev/null 2>&1
-}
-for i in $(seq 1 60); do
-    if _port_ready; then
-        echo "==> GameBridge 就绪 (${i}s)"
-        break
-    fi
-    if [[ $i -eq 60 ]]; then
-        echo "FAIL: GameBridge 60s 未就绪" >&2
-        "$WRAPPER" stop || true
-        exit 1
-    fi
-    sleep 1
-done
 
 # 5) tree 验证 RPC 能通
 echo "==> tree 1"
