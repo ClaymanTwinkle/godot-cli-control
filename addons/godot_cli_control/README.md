@@ -58,7 +58,7 @@ godot-cli-control screenshot /tmp/test.png
 godot-cli-control daemon stop
 ```
 
-A bash compatibility shim is also kept at `addons/godot_cli_control/bin/run_cli_control.sh` for users with existing scripts; it forwards every subcommand to `python -m godot_cli_control`.
+Compatibility shims are also kept at `addons/godot_cli_control/bin/run_cli_control.sh` (bash) and `addons/godot_cli_control/bin/run_cli_control.ps1` (PowerShell, for native Windows / pwsh users) — both forward every subcommand to `python -m godot_cli_control`.
 
 ## RPC Reference
 

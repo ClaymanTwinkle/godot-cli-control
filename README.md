@@ -48,7 +48,7 @@ Once published to PyPI, step 1 becomes `pipx install godot-cli-control`.
 
 ## Manual install (advanced)
 
-If you don't want to use `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md) for the long-form walkthrough and the legacy bash wrapper (`addons/godot_cli_control/bin/run_cli_control.sh`, kept as a compatibility shim).
+If you don't want to use `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md) for the long-form walkthrough and the legacy wrappers (`addons/godot_cli_control/bin/run_cli_control.sh` for bash, `run_cli_control.ps1` for PowerShell, both kept as compatibility shims).
 
 ## Roadmap
 
