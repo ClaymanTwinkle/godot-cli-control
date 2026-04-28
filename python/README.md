@@ -60,6 +60,33 @@ def run(bridge):
 godot-cli-control run script.py --headless     # auto-starts and stops the daemon
 ```
 
+## pytest fixtures
+
+```bash
+pip install "godot-cli-control[pytest]"
+```
+
+The package ships a pytest plugin (auto-loaded via `pytest11` entry-point):
+
+```python
+# tests/test_jump.py — no fixture boilerplate needed
+def test_jump(godot_daemon, bridge):
+    bridge.click("/root/Game/Start")
+    bridge.tap("jump")
+    assert bridge.get_property("/root/Player", "on_floor") is False
+```
+
+- `godot_daemon` (session-scoped) starts headless Godot once and stops it after all tests; if a daemon is already running it's reused (and not stopped at teardown — keeps your IDE workflow alive).
+- `bridge` (function-scoped) gives a fresh `GameBridge`; on teardown it calls `release_all()` so a `hold` left behind by one case can't bleed into the next, then closes the connection.
+
+CLI options:
+
+```
+--godot-cli-port=N           # GameBridge port (default 9877)
+--godot-cli-no-headless      # open a real Godot window
+--godot-cli-project-root=DIR # default: pytest rootdir
+```
+
 ## CLI
 
 ```bash

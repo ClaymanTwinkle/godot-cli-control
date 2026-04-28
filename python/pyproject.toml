@@ -10,8 +10,14 @@ dependencies = [
     "websockets>=14,<16",
 ]
 
+[project.optional-dependencies]
+pytest = ["pytest>=7"]
+
 [project.scripts]
 godot-cli-control = "godot_cli_control.cli:main"
+
+[project.entry-points.pytest11]
+godot-cli-control = "godot_cli_control.pytest_plugin"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
