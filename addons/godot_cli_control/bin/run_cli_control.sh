@@ -20,13 +20,24 @@ export no_proxy="${no_proxy:+${no_proxy},}localhost,127.0.0.1"
 # 这样无论用户从哪里调，相对路径 .cli_control/ 始终落在项目根。
 cd "$(dirname "$0")/../../.."
 
+# venv 通常只暴露 `python`（不一定 link 到 `python3`）。优先 `python`，
+# 让脚本沿用调用者激活的解释器；fallback `python3` 兼容系统级安装。
+if command -v python >/dev/null 2>&1; then
+    PY=python
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+else
+    echo "错误：找不到 python / python3 解释器" >&2
+    exit 1
+fi
+
 # 把旧的非 daemon 子命令映射到新 CLI 形态
 case "${1:-}" in
-    start)         shift; exec python3 -m godot_cli_control daemon start "$@" ;;
-    stop)          shift; exec python3 -m godot_cli_control daemon stop ;;
-    run)           shift; exec python3 -m godot_cli_control run "$@" ;;
+    start)         shift; exec "$PY" -m godot_cli_control daemon start "$@" ;;
+    stop)          shift; exec "$PY" -m godot_cli_control daemon stop ;;
+    run)           shift; exec "$PY" -m godot_cli_control run "$@" ;;
     click|screenshot|tree|press|release|tap|hold|combo|release-all)
-                   exec python3 -m godot_cli_control "$@" ;;
-    "")            exec python3 -m godot_cli_control --help ;;
-    *)             exec python3 -m godot_cli_control "$@" ;;
+                   exec "$PY" -m godot_cli_control "$@" ;;
+    "")            exec "$PY" -m godot_cli_control --help ;;
+    *)             exec "$PY" -m godot_cli_control "$@" ;;
 esac

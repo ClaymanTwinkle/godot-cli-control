@@ -71,6 +71,13 @@ class Daemon:
         wait_seconds: int = 30,
     ) -> int:
         """启动 Godot daemon，等端口就绪后返回 PID。"""
+        # 项目根校验：拒绝在非 Godot 项目目录跑，避免 Godot 用 --path .
+        # 静默创建假项目 + 30s port 探活 timeout 这种神秘失败。
+        if not (self.project_root / "project.godot").is_file():
+            raise DaemonError(
+                f"{self.project_root} 不是 Godot 项目根（缺 project.godot）。"
+                f" 请 cd 到 Godot 项目根后再跑，或先 `godot-cli-control init`。"
+            )
         if self.is_running():
             raise DaemonError(
                 f"Godot already running (PID {self.read_pid()}); stop first"
@@ -80,7 +87,7 @@ class Daemon:
 
         bin_path = (
             godot_bin
-            or self._read_godot_bin_pref()
+            or self.read_godot_bin_pref()
             or find_godot_binary()
         )
         if not bin_path:
@@ -184,7 +191,7 @@ class Daemon:
         self.pid_file.unlink(missing_ok=True)
         self.port_file.unlink(missing_ok=True)
 
-    def _read_godot_bin_pref(self) -> str | None:
+    def read_godot_bin_pref(self) -> str | None:
         """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。"""
         pref = self.control_dir / "godot_bin"
         if not pref.exists():
@@ -310,12 +317,16 @@ def _wait_port_ready(port: int, max_seconds: int) -> bool:
 
 
 def _ensure_imported(project_root: Path, godot_bin: str) -> None:
-    """首次运行需要 ``--editor --quit`` 生成 ``.godot/`` 缓存。"""
+    """首次运行需要 ``--editor --quit`` 生成 ``.godot/`` 缓存。
+
+    stderr 透传到当前进程而非吞掉：项目损坏 / Godot 版本不兼容时用户能看到
+    Godot 自己的报错，比之后 GameBridge 30s 端口探活 timeout 容易诊断。
+    """
     cache = project_root / ".godot" / "global_script_class_cache.cfg"
     if cache.exists():
         return
     print("首次导入项目资源（--editor --quit）...", file=sys.stderr)
-    subprocess.run(
+    proc = subprocess.run(
         [
             godot_bin,
             "--headless",
@@ -325,9 +336,14 @@ def _ensure_imported(project_root: Path, godot_bin: str) -> None:
             str(project_root),
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
         check=False,
     )
+    if proc.returncode != 0:
+        print(
+            f"警告：Godot 资源导入返回 {proc.returncode}，"
+            f"daemon 启动可能因此失败（看上方 Godot 错误输出）",
+            file=sys.stderr,
+        )
 
 
 def _transcode_movie(movie_path: Path, control_dir: Path) -> bool:

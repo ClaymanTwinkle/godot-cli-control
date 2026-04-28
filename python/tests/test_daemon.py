@@ -44,7 +44,20 @@ def test_current_port_none_when_garbage(tmp_path: Path) -> None:
     assert daemon.current_port() is None
 
 
+def _touch_godot_project(root: Path) -> None:
+    """让 daemon.start 的项目根校验通过 —— 测试不需要真 Godot 工程内容。"""
+    (root / "project.godot").write_text("config_version=5\n")
+
+
+def test_start_rejects_when_not_godot_project_dir(tmp_path: Path) -> None:
+    """没有 project.godot 时直接报错，不尝试 spawn Godot 浪费 30s timeout。"""
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="不是 Godot 项目根"):
+        daemon.start()
+
+
 def test_start_rejects_record_without_movie_path(tmp_path: Path) -> None:
+    _touch_godot_project(tmp_path)
     daemon = Daemon(tmp_path)
     with pytest.raises(DaemonError, match="movie-path"):
         daemon.start(record=True, movie_path=None)
@@ -57,6 +70,7 @@ def test_start_rejects_when_godot_bin_missing(
     monkeypatch.setattr(
         "godot_cli_control.daemon.find_godot_binary", lambda: None
     )
+    _touch_godot_project(tmp_path)
     daemon = Daemon(tmp_path)
     with pytest.raises(DaemonError, match="not found"):
         daemon.start()
@@ -74,19 +88,19 @@ def test_read_godot_bin_pref_file(tmp_path: Path) -> None:
     daemon.control_dir.mkdir()
     (daemon.control_dir / "godot_bin").write_text(str(fake_bin) + "\n")
 
-    assert daemon._read_godot_bin_pref() == str(fake_bin)
+    assert daemon.read_godot_bin_pref() == str(fake_bin)
 
 
 def test_read_godot_bin_pref_ignores_missing_file(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
-    assert daemon._read_godot_bin_pref() is None
+    assert daemon.read_godot_bin_pref() is None
 
 
 def test_read_godot_bin_pref_ignores_dead_path(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
     daemon.control_dir.mkdir()
     (daemon.control_dir / "godot_bin").write_text("/not/real/godot\n")
-    assert daemon._read_godot_bin_pref() is None
+    assert daemon.read_godot_bin_pref() is None
 
 
 def test_stop_handles_missing_pid_file(tmp_path: Path) -> None:
