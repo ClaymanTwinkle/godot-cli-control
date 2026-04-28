@@ -4,11 +4,14 @@ extends Node
 
 const DEFAULT_PORT: int = 9877
 const SETTING_AUTO_ENABLE: String = "godot_cli_control/auto_enable_in_debug"
+const SETTING_OUTBOUND_BUFFER_MB: String = "godot_cli_control/outbound_buffer_mb"
+const DEFAULT_OUTBOUND_BUFFER_MB: int = 10
 
 var _tcp_server: TCPServer = TCPServer.new()
 var _active_peer: WebSocketPeer = null
 var _active_stream: StreamPeerTCP = null
 var _port: int = DEFAULT_PORT
+var _outbound_buffer_size: int = DEFAULT_OUTBOUND_BUFFER_MB * 1024 * 1024
 var _low_level_api: LowLevelApi = null
 var _input_sim_api: InputSimulationApi = null
 # 方法注册表：{method_name: {"callable": Callable, "kind": "sync"|"async"|"async_with_id"}}
@@ -35,6 +38,9 @@ func _ready() -> void:
 	_input_sim_api.setup(_on_async_response)
 	# 构建统一方法注册表
 	_register_methods()
+	# 缓存 outbound buffer 大小（ProjectSettings 可覆盖默认 10MB，至少 1MB）
+	var mb: int = int(ProjectSettings.get_setting(SETTING_OUTBOUND_BUFFER_MB, DEFAULT_OUTBOUND_BUFFER_MB))
+	_outbound_buffer_size = max(1, mb) * 1024 * 1024
 	# 启动 TCP 服务器
 	_port = _parse_port_from_args()
 	# 安全：显式绑 127.0.0.1，避免 Godot TCPServer 默认 "*" 暴露到 LAN
@@ -62,7 +68,7 @@ func _accept_new_connections() -> void:
 		return
 	_active_stream = _tcp_server.take_connection()
 	_active_peer = WebSocketPeer.new()
-	_active_peer.outbound_buffer_size = 10 * 1024 * 1024  # 10MB
+	_active_peer.outbound_buffer_size = _outbound_buffer_size
 	var err: Error = _active_peer.accept_stream(_active_stream)
 	if err != OK:
 		push_error("GameBridge: WebSocket handshake failed: %s" % error_string(err))
