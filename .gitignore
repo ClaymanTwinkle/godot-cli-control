@@ -9,6 +9,9 @@ dist/
 venv/
 .pytest_cache/
 
+# hatch-vcs generated
+python/godot_cli_control/_version.py
+
 # Godot
 .godot/
 *.import

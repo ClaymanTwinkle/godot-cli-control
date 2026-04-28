@@ -14,10 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # hatch-vcs reads version from git tags
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Sync plugin.cfg version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version=.*/version=\"$VER\"/" addons/godot_cli_control/plugin.cfg
+          grep '^version=' addons/godot_cli_control/plugin.cfg
 
       - name: Build Python sdist + wheel
         working-directory: python
