@@ -148,3 +148,10 @@ jobs:
         shell: pwsh
         # GODOT_BIN 由前面 Resolve Godot exe path step 写到 $GITHUB_ENV
         run: python addons/godot_cli_control/tests/test_init_walkthrough.py
+
+      # ---- GUT unit tests (Linux only —— GUT cmdln 在 headless 下输出最稳定) ----
+      - name: Run GUT unit tests (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GODOT_BIN: /home/runner/godot-bin/godot
+        run: ./addons/godot_cli_control/tests/run_gut.sh

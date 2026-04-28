@@ -62,6 +62,16 @@ godot-cli-control daemon stop
 
 Compatibility shims are also kept at `addons/godot_cli_control/bin/run_cli_control.sh` (bash) and `addons/godot_cli_control/bin/run_cli_control.ps1` (PowerShell, for native Windows / pwsh users) — both forward every subcommand to `python -m godot_cli_control`.
 
+## Running the GUT unit tests
+
+```bash
+GODOT_BIN=/path/to/godot ./addons/godot_cli_control/tests/run_gut.sh
+```
+
+The runner builds a throwaway Godot project, `git clone`s a pinned [GUT](https://github.com/bitwes/Gut) release into `addons/gut/`, copies this plugin in, and runs the test files under `addons/godot_cli_control/tests/gut/`. Coverage today is `LowLevelApi` handler boundaries (blacklist, missing-property, node-not-found) and `InputSimulationApi` state machine (combo / press / release / tap / release_all).
+
+GUT itself is **not** vendored into the repo or shipped with the wheel/AssetLib zip — it's a dev-only dependency.
+
 ## RPC Reference
 
 All methods callable via `godot-cli-control <method>` or `from godot_cli_control import GameClient`.
