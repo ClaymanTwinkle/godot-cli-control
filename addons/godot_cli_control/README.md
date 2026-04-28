@@ -10,7 +10,7 @@ Click nodes, read/write properties, simulate input, take screenshots, record mov
 Copy `addons/godot_cli_control/` to your project's `addons/` directory:
 
 ```bash
-cp -r /path/to/godot-2d-skeleton/addons/godot_cli_control my_project/addons/
+cp -r /path/to/godot-cli-control/addons/godot_cli_control my_project/addons/
 ```
 
 (Future: AssetLib install once published.)
@@ -18,7 +18,7 @@ cp -r /path/to/godot-2d-skeleton/addons/godot_cli_control my_project/addons/
 ### 2. Get the Python package
 
 ```bash
-pip install -e /path/to/godot-2d-skeleton/python
+pip install -e /path/to/godot-cli-control/python
 # or, once published:
 # pip install godot-cli-control
 ```
@@ -116,5 +116,5 @@ If none triggered, the plugin prints `[Godot CLI Control] inactive — ...` to c
 ## Links
 
 - Python package: see `python/` directory in this repo
-- Source: this repo (https://github.com/kesar/godot-2d-skeleton; future independent repo TBD)
-- Issues: file at https://github.com/kesar/godot-2d-skeleton/issues with `cli_control` label
+- Source: https://github.com/ClaymanTwinkle/godot-cli-control
+- Issues: https://github.com/ClaymanTwinkle/godot-cli-control/issues

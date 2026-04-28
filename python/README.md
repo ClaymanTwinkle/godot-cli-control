@@ -8,7 +8,7 @@ WebSocket bridge for headless / scripted control of Godot 4 scenes — Python cl
 pip install godot-cli-control
 ```
 
-Requires Python ≥ 3.10. Companion Godot plugin must be installed and enabled in your Godot project (see [the plugin README](https://github.com/kesar/godot-2d-skeleton/blob/main/addons/godot_cli_control/README.md) for setup).
+Requires Python ≥ 3.10. Companion Godot plugin must be installed and enabled in your Godot project (see [the plugin README](https://github.com/ClaymanTwinkle/godot-cli-control/blob/main/addons/godot_cli_control/README.md) for setup).
 
 ## Usage
 
@@ -45,4 +45,4 @@ python -m godot_cli_control screenshot /tmp/frame.png
 
 ## Documentation
 
-See the [Godot plugin README](https://github.com/kesar/godot-2d-skeleton/blob/main/addons/godot_cli_control/README.md) for the full RPC reference, activation modes, security model, and known limitations.
+See the [Godot plugin README](https://github.com/ClaymanTwinkle/godot-cli-control/blob/main/addons/godot_cli_control/README.md) for the full RPC reference, activation modes, security model, and known limitations.

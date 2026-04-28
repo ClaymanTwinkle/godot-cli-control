@@ -3,7 +3,7 @@
 用法：脚本只需定义 run(bridge) 函数即可。
 
     def run(bridge):
-        bridge.click("/root/MainMenu/.../NewGameButton")
+        bridge.click("/root/MyScene/StartButton")
         bridge.wait(2)
         bridge.hold("run", 1.5)
         bridge.press("attack")
