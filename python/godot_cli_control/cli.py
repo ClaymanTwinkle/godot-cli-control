@@ -29,9 +29,6 @@ from .client import DEFAULT_PORT, GameClient
 
 
 async def cmd_click(client: GameClient, args: list[str]) -> None:
-    if not args:
-        print("Usage: click <node_path>", file=sys.stderr)
-        sys.exit(1)
     result = await client.click(args[0])
     print(f"clicked: {result}")
 
@@ -54,42 +51,27 @@ async def cmd_tree(client: GameClient, args: list[str]) -> None:
 
 
 async def cmd_press(client: GameClient, args: list[str]) -> None:
-    if not args:
-        print("Usage: press <action>", file=sys.stderr)
-        sys.exit(1)
     result = await client.action_press(args[0])
     print(f"pressed: {result}")
 
 
 async def cmd_release(client: GameClient, args: list[str]) -> None:
-    if not args:
-        print("Usage: release <action>", file=sys.stderr)
-        sys.exit(1)
     result = await client.action_release(args[0])
     print(f"released: {result}")
 
 
 async def cmd_tap(client: GameClient, args: list[str]) -> None:
-    if not args:
-        print("Usage: tap <action> [duration]", file=sys.stderr)
-        sys.exit(1)
     duration = float(args[1]) if len(args) > 1 else 0.1
     result = await client.action_tap(args[0], duration)
     print(f"tapped: {result}")
 
 
 async def cmd_hold(client: GameClient, args: list[str]) -> None:
-    if len(args) < 2:
-        print("Usage: hold <action> <duration>", file=sys.stderr)
-        sys.exit(1)
     result = await client.hold(args[0], float(args[1]))
     print(f"holding: {result}")
 
 
 async def cmd_combo(client: GameClient, args: list[str]) -> None:
-    if not args:
-        print("Usage: combo <json_file>", file=sys.stderr)
-        sys.exit(1)
     steps = json.loads(Path(args[0]).read_text())
     if isinstance(steps, dict):
         steps = steps.get("steps", [])
@@ -210,11 +192,6 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
 
 
 RPC_BY_NAME: dict[str, RpcSpec] = {s.name: s for s in RPC_SPECS}
-
-# 保持原有名称：仅留作对外语义检查（main 走 RPC_BY_NAME）
-RPC_COMMANDS: dict[
-    str, Callable[[GameClient, list[str]], Coroutine[Any, Any, None]]
-] = {s.name: s.handler for s in RPC_SPECS}
 
 
 # ── Daemon / run 子命令 ──
@@ -369,21 +346,29 @@ _TOP_EPILOG = """\
 """
 
 
-_DAEMON_FLAG_HELP = {
-    "record": "启动后录制 demo（写到 .cli_control/movie_path）",
-    "movie_path": "demo 输出路径，默认 .cli_control 下自动命名",
-    "headless": "无窗口模式，CI/无显示器环境用",
-    "fps": "录制帧率，默认 30",
-    "port": f"GameBridge 监听端口（默认 {DEFAULT_PORT}）",
-}
-
-
 def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--record", action="store_true", help=_DAEMON_FLAG_HELP["record"])
-    p.add_argument("--movie-path", default=None, help=_DAEMON_FLAG_HELP["movie_path"])
-    p.add_argument("--headless", action="store_true", help=_DAEMON_FLAG_HELP["headless"])
-    p.add_argument("--fps", type=int, default=30, help=_DAEMON_FLAG_HELP["fps"])
-    p.add_argument("--port", type=int, default=DEFAULT_PORT, help=_DAEMON_FLAG_HELP["port"])
+    p.add_argument(
+        "--record",
+        action="store_true",
+        help="启动后录制 demo（写到 .cli_control/movie_path）",
+    )
+    p.add_argument(
+        "--movie-path",
+        default=None,
+        help="demo 输出路径，默认 .cli_control 下自动命名",
+    )
+    p.add_argument(
+        "--headless",
+        action="store_true",
+        help="无窗口模式，CI/无显示器环境用",
+    )
+    p.add_argument("--fps", type=int, default=30, help="录制帧率，默认 30")
+    p.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"GameBridge 监听端口（默认 {DEFAULT_PORT}）",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -495,16 +480,17 @@ def main() -> None:
 
             port = Daemon(Path.cwd()).current_port() or DEFAULT_PORT
 
-        # 按 spec.positionals 从 ns 收集参数为 list[str]，handler 签名不变
+        # 按 spec.positionals 从 ns 收集参数为 list[str]，handler 签名不变。
+        # 各 nargs 在 ns 上的形态：None → str；"?" → str | None；"*"/"+" → list[str]。
         rpc_args: list[str] = []
         for pos in spec.positionals:
-            val = getattr(ns, pos.name, None)
+            val = getattr(ns, pos.name)
             if val is None:
                 continue
             if isinstance(val, list):
-                rpc_args.extend(str(v) for v in val)
+                rpc_args.extend(val)
             else:
-                rpc_args.append(str(val))
+                rpc_args.append(val)
 
         async def run() -> None:
             async with GameClient(port=port) as client:
