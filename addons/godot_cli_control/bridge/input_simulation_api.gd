@@ -132,7 +132,15 @@ func start_combo(steps: Array) -> void:
 
 func cancel_combo() -> Dictionary:
 	var completed: int = _combo_completed_steps
+	# 抓 _combo_request_id 副本：_end_combo 会清空它，否则
+	# 后续 callback 拿不到原 combo() 调用的 id，client 端 await 挂死到超时。
+	var req_id: String = _combo_request_id
 	_end_combo()
+	if _send_response_callback.is_valid() and not req_id.is_empty():
+		_send_response_callback.call(
+			req_id,
+			{"success": true, "completed_steps": completed, "cancelled": true},
+		)
 	return {"success": true, "completed_steps": completed}
 
 
@@ -171,6 +179,7 @@ func _end_combo() -> void:
 	_combo_steps = []
 	_combo_index = 0
 	_combo_timer = 0.0
+	_combo_request_id = ""
 
 
 # ── 定时器推进（供 _process 和测试使用）──

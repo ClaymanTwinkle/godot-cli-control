@@ -9,6 +9,12 @@ const _MAX_WAIT_SECONDS: float = 3600.0
 # 安全黑名单
 const _METHOD_BLACKLIST: PackedStringArray = [
 	"queue_free", "free", "set_script", "add_child", "remove_child", "replace_by",
+	# 反射类：可绕过 _PROPERTY_BLACKLIST 设置 script / texture 等被禁属性
+	"set", "set_indexed", "set_deferred", "set_meta",
+	# 任意 callable / 异步派发：等价于 RCE 入口
+	"call", "callv", "call_deferred", "call_group", "call_group_flags",
+	# 信号面：注入回调或断开关键信号
+	"connect", "disconnect", "emit_signal", "add_user_signal",
 ]
 const _PROPERTY_BLACKLIST: PackedStringArray = [
 	"script", "process_mode",
