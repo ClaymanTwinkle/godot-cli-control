@@ -22,48 +22,45 @@ Each subdirectory has its own README:
 - [`addons/godot_cli_control/README.md`](addons/godot_cli_control/README.md) — plugin install / RPC reference
 - [`python/README.md`](python/README.md) — Python `GameClient` API + CLI usage
 
-## Install (until published)
-
-**Plugin** (Godot side):
+## One-shot install (recommended)
 
 ```bash
-git clone https://github.com/ClaymanTwinkle/godot-cli-control.git
-cp -r godot-cli-control/addons/godot_cli_control your_project/addons/
-# then enable in Godot Editor → Project Settings → Plugins
+# 1. Install the Python CLI (it bundles the Godot plugin source)
+pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"
+
+# 2. From your Godot project root: copy plugin, patch project.godot, detect Godot binary
+cd path/to/your_godot_project
+godot-cli-control init
+
+# 3. Start the daemon and try it
+godot-cli-control daemon start
+godot-cli-control tree 3
+godot-cli-control screenshot /tmp/x.png
+godot-cli-control daemon stop
 ```
 
-**Python client**:
+`init` does the manual steps for you:
+- copies `addons/godot_cli_control/` into your project,
+- patches `project.godot` (`[autoload]` + `[editor_plugins]`) so you don't have to click through the Godot Editor,
+- detects the Godot binary and writes `.cli_control/godot_bin` for the daemon.
 
-```bash
-pip install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"
-```
+Once published to PyPI, step 1 becomes `pipx install godot-cli-control`.
 
-Requires Python ≥ 3.10.
+## Manual install (advanced)
 
-## Quick smoke test
-
-```bash
-# in your project root, after enabling the plugin:
-./run_cli_control.sh start
-./run_cli_control.sh tree 1
-./run_cli_control.sh screenshot /tmp/x.png
-./run_cli_control.sh stop
-```
-
-See [`addons/godot_cli_control/README.md`](addons/godot_cli_control/README.md) for the
-full 5-minute walkthrough.
+If you don't want to use `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md) for the long-form walkthrough and the legacy bash wrapper (`addons/godot_cli_control/bin/run_cli_control.sh`, kept as a compatibility shim).
 
 ## Roadmap
 
 Tracked in [issues](https://github.com/ClaymanTwinkle/godot-cli-control/issues).
 First-pass items:
 
-- GitHub Actions CI (Python matrix + Godot binary)
-- Windows PowerShell wrapper
+- PyPI + AssetLib publish (CI artifacts already produced)
+- Windows-native CLI verification (CI matrix)
 - GUT unit tests for `LowLevelApi` / `InputSimulationApi`
 - `ProjectSettings`-driven blacklist extension
 - `register_method()` extension API
-- PyPI + AssetLib publish
+- `pytest-godot-cli-control` fixtures
 
 ## License
 

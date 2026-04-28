@@ -75,7 +75,12 @@ jobs:
       - name: Verify Godot
         run: ~/godot-bin/godot --version
 
-      - name: Run walkthrough
+      - name: Run walkthrough (bash shim path)
         env:
           GODOT_BIN: /home/runner/godot-bin/godot
         run: ./addons/godot_cli_control/tests/test_walkthrough.sh
+
+      - name: Run walkthrough (godot-cli-control init path)
+        env:
+          GODOT_BIN: /home/runner/godot-bin/godot
+        run: ./addons/godot_cli_control/tests/test_init_walkthrough.sh

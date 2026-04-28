@@ -26,3 +26,13 @@ version-file = "godot_cli_control/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["godot_cli_control"]
+
+# 把仓库顶层的 GDScript 插件物料嵌进 wheel，让 `godot-cli-control init`
+# 能从安装包里把 plugin 复制到目标 Godot 项目。位置 _plugin/ 与
+# init_cmd.locate_plugin_source() 的查找逻辑约定。
+[tool.hatch.build.targets.wheel.force-include]
+"../addons/godot_cli_control" = "godot_cli_control/_plugin"
+
+# sdist 也带上插件（pip install . from sdist 时 init 仍可工作）
+[tool.hatch.build.targets.sdist.force-include]
+"../addons/godot_cli_control" = "godot_cli_control/_plugin"

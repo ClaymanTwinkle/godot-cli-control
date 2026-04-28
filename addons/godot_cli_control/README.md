@@ -3,7 +3,21 @@
 WebSocket bridge for headless / scripted control of Godot 4 scenes.
 Click nodes, read/write properties, simulate input, take screenshots, record movies — all from a Python or shell client.
 
-## Quick Start (5 minutes)
+## Quick Start (one command)
+
+If you have the Python CLI installed (`pipx install godot-cli-control` once it's on PyPI; meanwhile `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"`), the entire setup collapses to:
+
+```bash
+cd your_godot_project
+godot-cli-control init        # copy plugin, patch project.godot, detect Godot
+godot-cli-control daemon start
+godot-cli-control tree 3
+godot-cli-control daemon stop
+```
+
+`init` automates everything described in the manual setup below — copying the addon, editing `project.godot`, and detecting your Godot binary.
+
+## Manual Setup (if you prefer)
 
 ### 1. Get the plugin
 
@@ -31,33 +45,24 @@ Open your project in Godot 4 → Project → Project Settings → Plugins → "G
 
 The plugin auto-registers an autoload `GameBridgeNode`. No manual `project.godot` edits needed.
 
-> **Note**: Headless `--editor --quit` may not persist plugin enable to `project.godot`. If you need to enable the plugin in CI / scripted environment, manually add `[editor_plugins] enabled=PackedStringArray("res://addons/godot_cli_control/plugin.cfg")` and `[autoload] GameBridgeNode="*res://addons/godot_cli_control/bridge/game_bridge.gd"` to your `project.godot`.
+> **Note**: Headless `--editor --quit` may not persist plugin enable to `project.godot`. If you need to enable the plugin in CI / scripted environment, either run `godot-cli-control init` (recommended) or manually add `[editor_plugins] enabled=PackedStringArray("res://addons/godot_cli_control/plugin.cfg")` and `[autoload] GameBridgeNode="*res://addons/godot_cli_control/bridge/game_bridge.gd"` to your `project.godot`.
 
 ### 4. Run
 
+After step 1–3, the easiest way is the Python CLI installed by `pip`:
+
 ```bash
-# Copy the wrapper stub to your project root (6 lines):
-cat > run_cli_control.sh <<'EOF'
-#!/usr/bin/env bash
-exec "$(dirname "$0")/addons/godot_cli_control/bin/run_cli_control.sh" "$@"
-EOF
-chmod +x run_cli_control.sh
-
-# Start the daemon
-# (note: does NOT auto-import your project's assets; if your project has
-# preprocessing (PSD splitting, asset gen, etc.), run those FIRST yourself)
-./run_cli_control.sh start
-
-# Try it
-./run_cli_control.sh tree 3
-./run_cli_control.sh click /root/MyScene/Button
-./run_cli_control.sh screenshot /tmp/test.png
-./run_cli_control.sh stop
+godot-cli-control daemon start
+godot-cli-control tree 3
+godot-cli-control screenshot /tmp/test.png
+godot-cli-control daemon stop
 ```
+
+A bash compatibility shim is also kept at `addons/godot_cli_control/bin/run_cli_control.sh` for users with existing scripts; it forwards every subcommand to `python -m godot_cli_control`.
 
 ## RPC Reference
 
-All methods callable via `python -m godot_cli_control <method>` or `from godot_cli_control import GameClient`.
+All methods callable via `godot-cli-control <method>` or `from godot_cli_control import GameClient`.
 
 | Method | Example |
 |---|---|
@@ -90,7 +95,7 @@ The plugin defaults to **OFF** even when enabled — you must trigger one of thr
 
 | Path | Activate by | Use case |
 |---|---|---|
-| **CLI flag** | Pass `--cli-control` to Godot binary | Wrapper script / pytest / CI |
+| **CLI flag** | Pass `--cli-control` to Godot binary | Wrapper script / pytest / CI (this is what `daemon start` uses) |
 | **Env var** | `export GODOT_CLI_CONTROL=1` before launching Godot | Editor F5 with launch args |
 | **Project Setting** | Enable `godot_cli_control/auto_enable_in_debug` in Project Settings | Editor-only debugging; **release builds always disabled regardless** |
 
@@ -107,11 +112,10 @@ If none triggered, the plugin prints `[Godot CLI Control] inactive — ...` to c
 ## Known Limitations
 
 1. **Headless + Movie Maker is broken** (Godot upstream): `--write-movie` produces empty MP4 in headless mode (no framebuffer). Use GUI mode for recording.
-2. **`GODOT_BIN` defaults to macOS path** `/Applications/Godot.app/Contents/MacOS/Godot`. Linux/Windows users must `export GODOT_BIN=/path/to/godot`.
+2. **Godot binary detection** falls back to `GODOT_BIN` env var. `init` writes `.cli_control/godot_bin` after autodetect; daemon reads that file before scanning. Detection covers macOS `/Applications/Godot*.app`, `PATH` (`godot`/`godot4`), and Windows `Program Files\Godot*`.
 3. **Python ≥ 3.10** required (websockets>=14 dependency).
-4. **Windows**: requires WSL or a custom PowerShell wrapper (not provided).
-5. **Single-client mode**: only one WebSocket client at a time; second connection rejected.
-6. **Headless plugin auto-register**: in headless mode, `--editor --quit` may not trigger `plugin._enter_tree` to write the autoload. If integrating into a CI pipeline, manually populate `[autoload]` and `[editor_plugins]` sections in `project.godot`.
+4. **Single-client mode**: only one WebSocket client at a time; second connection rejected.
+5. **Headless plugin auto-register**: in headless mode, `--editor --quit` may not trigger `plugin._enter_tree` to write the autoload. `init` handles this automatically by patching `project.godot` directly.
 
 ## Links
 
