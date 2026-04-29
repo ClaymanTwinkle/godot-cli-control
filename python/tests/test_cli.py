@@ -707,6 +707,196 @@ def test_daemon_stop_emits_json_envelope(
     assert payload == {"ok": True, "result": {"stopped": True, "rc": 2}}
 
 
+def test_cmd_set_passes_json_parsed_value_to_client(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``set /Foo pos '[10, 20]'`` 必须把 [10, 20] 数组 forward 给
+    client.set_property，**不是字符串 "[10, 20]"**。这是 _parse_json_arg
+    的契约，回归保护。"""
+    from godot_cli_control.cli import (
+        OUTPUT_JSON,
+        RPC_BY_NAME,
+        _run_rpc,
+    )
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["set"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Foo",
+        prop="position",
+        value="[10, 20]",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.set_property = AsyncMock(return_value={"success": True})
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "godot_cli_control.cli.GameClient", return_value=mock_client
+    ):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 0
+    mock_client.set_property.assert_awaited_once_with(
+        "/root/Foo", "position", [10, 20]
+    )
+
+
+def test_cmd_set_falls_back_to_string_on_non_json(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """非 JSON 字符串（如 ``hello``）应原样作为字符串透传，不强行报错。"""
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["set"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Label", prop="text", value="hello"
+    )
+
+    mock_client = AsyncMock()
+    mock_client.set_property = AsyncMock(return_value={"success": True})
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "godot_cli_control.cli.GameClient", return_value=mock_client
+    ):
+        asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    mock_client.set_property.assert_awaited_once_with(
+        "/root/Label", "text", "hello"
+    )
+
+
+def test_cmd_call_parses_each_arg_independently(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``call /Game go 1 "easy" [1,2]`` 应把每个 arg 独立按 JSON-or-string 解析。"""
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["call"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Game",
+        method="go",
+        args=["1", '"easy"', "[1, 2]", "raw_string"],
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call_method = AsyncMock(return_value=None)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "godot_cli_control.cli.GameClient", return_value=mock_client
+    ):
+        asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    mock_client.call_method.assert_awaited_once_with(
+        "/root/Game", "go", [1, "easy", [1, 2], "raw_string"]
+    )
+
+
+def test_run_rpc_emits_envelope_on_unexpected_internal_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """客户端内部 bug（AttributeError / KeyError 等）也必须落进信封，
+    绝不让 traceback 漏到 stdout 破坏 ``--json`` 契约。"""
+    import json as _json
+
+    from godot_cli_control.cli import (
+        CLIENT_CODE_INTERNAL,
+        OUTPUT_JSON,
+        RPC_BY_NAME,
+        _run_rpc,
+    )
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["click"]
+    ns = __import__("argparse").Namespace(node_path="/root/Main")
+
+    mock_client = AsyncMock()
+    # 模拟客户端内部 bug：handler 路径上抛非业务异常
+    mock_client.click = AsyncMock(side_effect=AttributeError("nope"))
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "godot_cli_control.cli.GameClient", return_value=mock_client
+    ):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 2  # EXIT_INFRA_ERROR
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)  # 必须是合法 JSON，traceback 不能污染
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == CLIENT_CODE_INTERNAL
+    assert "AttributeError" in payload["error"]["message"]
+
+
+def test_run_rpc_separates_local_io_error_from_connection(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """``screenshot`` 写盘失败必须报 -1004 (IO)，不能误标 -1001 (connection)，
+    否则 agent 会去重启 daemon 浪费一轮。"""
+    import json as _json
+
+    from godot_cli_control.cli import (
+        CLIENT_CODE_IO,
+        OUTPUT_JSON,
+        RPC_BY_NAME,
+        _run_rpc,
+    )
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["screenshot"]
+    # 指向只读目录的子路径：mkdir / write_bytes 必失败
+    bad_path = tmp_path / "ro_dir" / "out.png"
+    (tmp_path / "ro_dir").mkdir()
+    (tmp_path / "ro_dir").chmod(0o400)  # 只读
+    ns = __import__("argparse").Namespace(output_path=str(bad_path))
+
+    mock_client = AsyncMock()
+    mock_client.screenshot = AsyncMock(return_value=b"fake png bytes")
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    try:
+        with patch(
+            "godot_cli_control.cli.GameClient", return_value=mock_client
+        ):
+            rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+    finally:
+        (tmp_path / "ro_dir").chmod(0o700)  # 让 tmp_path 清理能跑
+
+    assert rc == 2
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == CLIENT_CODE_IO, (
+        f"本地 IO 错误必须用 -1004，不能挤进 -1001 (connection)；"
+        f"实际：{payload['error']}"
+    )
+
+
+def test_combo_dash_rejects_tty_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``combo -`` 在 TTY 上不能 read() 阻塞；preflight 应报 ValueError。"""
+    import io
+
+    from godot_cli_control.cli import _read_combo_steps, build_parser
+
+    fake_stdin = io.StringIO("")
+    fake_stdin.isatty = lambda: True  # type: ignore[method-assign]
+    monkeypatch.setattr(sys, "stdin", fake_stdin)
+
+    ns = build_parser().parse_args(["combo", "-"])
+    with pytest.raises(ValueError, match="TTY"):
+        _read_combo_steps(ns)
+
+
 def test_run_rpc_text_mode_uses_text_formatter(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

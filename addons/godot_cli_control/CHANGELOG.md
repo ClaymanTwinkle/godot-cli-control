@@ -30,10 +30,19 @@
 - `daemon start` 在 `--json` 模式下产出 `{"ok":true,"result":{"started":true,"port":N,"pid":N}}`；`daemon stop` 输出 `{"ok":true,"result":{"stopped":true,"rc":N}}`，`rc` 透出方便 agent 判定 ffmpeg 转码是否成功。Text 模式行为不变。
 
 #### Docs
-- SKILL.md 增加 *Error code reference*：服务端 `1001-1004` / JSON-RPC `-32xxx` / 客户端 `-1xxx` 三段含义的总表。
-- SKILL.md 增加 `set` / `call` 的安全 blacklist 提示（`queue_free` / `set_script` 等会被 `-32602` 拒绝）。
+- SKILL.md 增加 *Error code reference*：服务端 `1001-1004` / JSON-RPC `-32xxx` / 客户端 `-1xxx` 三段含义的总表（含新增的 `-1004` IO error 与 `-1099` internal error）。
+- SKILL.md 增加 `set` / `call` 的安全 blacklist 提示（`queue_free` / `set_script` 等会被 `-32602` 拒绝），以及 JSON 解析 footgun 例（`set ... text null` 会存 Variant null，要存字符串得 `'"null"'`）。
 - README.md *Highlights* 重写"Two client APIs"行为"Shell is canonical"，反映新的 CLI 一等地位。
 - `GameBridge` (sync) 补齐 `get_text` / `is_visible` / `combo_cancel` 三个方法，与 async `GameClient` 表面对齐。
+
+#### Hardening (post-review)
+- `_run_rpc` 加兜底 `except Exception` 把任何未预见的客户端异常（`AttributeError` / `KeyError` / 协议解析意外等）也落进 `-1099` 信封，绝不让 traceback 漏到 stdout 破坏 `--json` 契约。完整 traceback 仍写 stderr 帮 debug。
+- `OSError` 拆分：网络层（`socket.gaierror` / errno ECONNREFUSED 等）继续走 `-1001`；本地文件 IO（`screenshot` 写盘失败常见的 `PermissionError` / `FileNotFoundError`）走新增的 `-1004` (IO)，避免 agent 误以为 daemon 挂了去重启。
+- `combo -` 检测 stdin 是 TTY 时直接拒绝（之前会 `read()` 无限阻塞）。
+- `screenshot` 路径自动 `expanduser()`：`screenshot ~/foo.png` 不再创建字面 `~` 目录。
+
+#### Out of scope (intentional)
+- `run <script.py>` 子命令保留旧的人类可读 stderr 输出。它是交互式脚本宿主，不是 RPC，新的 JSON 信封契约只覆盖 RPC 子命令 + daemon 三命令。
 
 ## [0.1.6] - Unreleased
 

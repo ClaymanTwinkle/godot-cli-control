@@ -91,7 +91,9 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 |---|---|
 | `-1001` | Connection failure (daemon not running, port wrong, proxy hijacking localhost). Run `daemon status`. |
 | `-1002` | Timeout waiting for a response. Daemon may be hung mid-frame; check Godot stderr. |
-| `-1003` | Usage error (e.g. `combo` got no steps, malformed `--steps-json`). Fix the invocation. |
+| `-1003` | Usage error (e.g. `combo` got no steps, malformed `--steps-json`, `combo -` from a TTY). Fix the invocation. |
+| `-1004` | Local file IO error (e.g. `screenshot` can't write the destination — bad path, no write permission). **Not** a daemon problem. |
+| `-1099` | Internal client error (unforeseen exception). Bug in this CLI; please file an issue. Stderr has the full traceback. |
 
 Server vs client ranges never overlap, so a single `code` field is unambiguous.
 
@@ -146,6 +148,15 @@ godot-cli-control set /root/Score   text     '"42"'        # explicit string "42
 godot-cli-control set /root/Score   text     hello         # implicit string "hello"
 godot-cli-control set /root/Player  hp       30            # number 30
 godot-cli-control call /root/Game start_game 1 '"easy"'    # int 1, string "easy"
+```
+
+**Footgun**: bare `null` / `true` / `false` / numeric strings parse as JSON literals first, **not** as strings. If you actually mean the string `"null"`, wrap it explicitly:
+
+```bash
+godot-cli-control set /root/Label text null       # ⚠️ stores Variant null!
+godot-cli-control set /root/Label text '"null"'   # ✓ stores the string "null"
+godot-cli-control set /root/Flag  on   true       # ⚠️ stores boolean true
+godot-cli-control set /root/Flag  on   '"true"'   # ✓ stores the string "true"
 ```
 
 ### `combo` JSON schema

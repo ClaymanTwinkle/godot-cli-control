@@ -50,6 +50,8 @@ EXIT_USAGE = 64  # 命令组合无效（如 combo 既无文件又无 --steps-jso
 CLIENT_CODE_CONNECTION = -1001
 CLIENT_CODE_TIMEOUT = -1002
 CLIENT_CODE_USAGE = -1003
+CLIENT_CODE_IO = -1004  # 本地文件 IO 错误（screenshot 写盘等），与连接错误分开
+CLIENT_CODE_INTERNAL = -1099  # 兜底：客户端内部异常（理论上不该到这里，但兜住契约）
 
 
 # ── RpcSpec：声明一个 RPC 子命令 ──
@@ -62,11 +64,6 @@ class Positional:
     name: str  # ns 上的属性名
     nargs: str | None  # None=必填一个；"?"=可选；"*"=0..N
     help: str
-
-
-def _default_text_formatter(result: Any) -> str:
-    """fallback：把任意结果丢成紧凑 JSON 一行。"""
-    return json.dumps(result, ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -84,8 +81,9 @@ class RpcSpec:
     positionals: tuple[Positional, ...] = ()
     example: str = ""
     extra_epilog: str = ""
-    # 文本模式下渲染结果的回调；None → 紧凑 JSON。
-    text_formatter: Callable[[Any], str] = _default_text_formatter
+    # 文本模式下渲染结果的回调。注：每个 RpcSpec 现在都显式覆盖；保留默认是为了
+    # 防止未来新加 spec 忘了写 text_formatter 时崩溃。
+    text_formatter: Callable[[Any], str] = lambda r: json.dumps(r, ensure_ascii=False)
     # 把 result 转成 exit code；返回 0 视为 success，非 0 即使 ok=true 也用作退出码。
     # 例：exists / visible / wait-node 用这个把布尔结果直通到 exit code。
     exit_code_from: Callable[[Any], int] | None = None
@@ -131,6 +129,14 @@ def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
             )
         raw = steps_json
     elif json_file == "-":
+        if sys.stdin.isatty():
+            # 没人 pipe 数据进来，read() 会无限阻塞——AI agent 不会触发，
+            # 但人类用户敲错时表现为"卡住"。早抛 ValueError，让 preflight 报
+            # EXIT_USAGE，比挂死好。
+            raise ValueError(
+                "combo -: stdin 是 TTY，没有可读内容；"
+                "改用 `--steps-json '...'` 或 `combo file.json`"
+            )
         raw = sys.stdin.read()
     elif json_file:
         raw = Path(json_file).read_text(encoding="utf-8")
@@ -157,9 +163,13 @@ async def cmd_click(client: GameClient, ns: argparse.Namespace) -> dict:
 
 async def cmd_screenshot(client: GameClient, ns: argparse.Namespace) -> dict:
     """截屏并写文件。``output_path`` 现在必填 —— base64 灌 stdout 的旧路径
-    会撑爆 LLM 上下文，已删。"""
+    会撑爆 LLM 上下文，已删。
+
+    展开 ``~`` 让 ``screenshot ~/foo.png`` 工作；不展开时 ``Path("~")`` 会
+    创建字面 ``~`` 目录，是常见 footgun。
+    """
     data = await client.screenshot()
-    output = Path(ns.output_path)
+    output = Path(ns.output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(data)
     return {"path": str(output), "bytes": len(data)}
@@ -646,6 +656,9 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         return EXIT_INFRA_ERROR
     if _output_format(ns) == OUTPUT_JSON:
         # 跟 daemon status 的信封形状对齐，方便 agent 一套 jq 处理三个命令。
+        # 注：``daemon.start()`` 已阻塞到端口可用，所以 is_running 此刻为 true
+        # 是稳态。理论上若 daemon 在 start 返回后被外部 kill，read_pid 与
+        # is_running 之间存在亚毫秒级 race；窗口够小可以忽略。
         port = daemon.current_port() or ns.port
         pid = daemon.read_pid() if daemon.is_running() else None
         result: dict[str, Any] = {"started": True, "port": port}
@@ -1145,41 +1158,79 @@ def format_full_help() -> str:
 # ── 主入口 ──
 
 
+def _is_network_oserror(e: OSError) -> bool:
+    """区分网络层 OSError（连接拒、地址不可达）和本地文件 IO 错误。
+
+    ``socket.gaierror`` 是 OSError 子类。``ConnectionError`` 也是 OSError 子类，
+    但有自己的捕获分支，到这里时已经被 typing 排除。剩下的 raw OSError 多数
+    是文件 IO（``PermissionError`` / ``FileNotFoundError``）—— 不该被误标成
+    "连接失败"，否则 agent 会去重启 daemon 浪费一轮。
+    """
+    import socket
+    if isinstance(e, socket.gaierror):
+        return True
+    # errno 范围粗划：ENETUNREACH(101) / EHOSTUNREACH(113) / ECONNREFUSED(111)
+    # 等明确是网络。FileNotFoundError(2) / PermissionError(13) 是本地。
+    network_errnos = {101, 113, 111, 110, 104, 32}  # net unreach / host unreach / refused / timed out / reset / pipe
+    return e.errno in network_errnos
+
+
+def _emit_envelope_error(fmt: str, code: int, message: str) -> None:
+    """统一两种格式的错误输出口。"""
+    if fmt == OUTPUT_JSON:
+        _emit_error_payload(code, message)
+    else:
+        print(f"错误：[{code}] {message}", file=sys.stderr)
+
+
 async def _run_rpc(
     spec: RpcSpec, ns: argparse.Namespace, port: int, fmt: str
 ) -> int:
     """启 client → 调 handler → 发信封 → 算 exit code。
 
-    所有非系统级异常在这里收口，让 ``main()`` 拿到一个干净的 exit code。
+    所有 ``Exception`` 子类在这里收口成 JSON 信封，绝不让 traceback 漏到
+    stdout —— ``--json`` 默认开后这是契约的一部分。``KeyboardInterrupt`` /
+    ``SystemExit`` (BaseException 但非 Exception) 仍正常传播，CTRL-C 退出
+    保持惯常体验。
     """
     try:
         async with GameClient(port=port) as client:
             result = await spec.handler(client, ns)
     except RpcError as e:
-        if fmt == OUTPUT_JSON:
-            _emit_error_payload(e.code, e.message)
-        else:
-            print(f"错误：[{e.code}] {e.message}", file=sys.stderr)
+        _emit_envelope_error(fmt, e.code, e.message)
         return EXIT_RPC_ERROR
-    except (ConnectionError, asyncio.TimeoutError, OSError) as e:
-        # 网络层 / IO 层失败：daemon 没起、proxy 干扰、socket 半关等
+    except ConnectionError as e:
+        msg = str(e) or e.__class__.__name__
+        _emit_envelope_error(fmt, CLIENT_CODE_CONNECTION, msg)
+        return EXIT_INFRA_ERROR
+    except asyncio.TimeoutError as e:
+        msg = str(e) or "timed out"
+        _emit_envelope_error(fmt, CLIENT_CODE_TIMEOUT, msg)
+        return EXIT_INFRA_ERROR
+    except OSError as e:
+        # 拆开：socket 层 OSError 还算 connection；文件 IO 类（PermissionError /
+        # FileNotFoundError，screenshot 写盘失败时常见）走独立的 IO 码，
+        # 不让 agent 误以为 daemon 挂了。
         code = (
-            CLIENT_CODE_TIMEOUT
-            if isinstance(e, asyncio.TimeoutError)
-            else CLIENT_CODE_CONNECTION
+            CLIENT_CODE_CONNECTION
+            if _is_network_oserror(e)
+            else CLIENT_CODE_IO
         )
         msg = str(e) or e.__class__.__name__
-        if fmt == OUTPUT_JSON:
-            _emit_error_payload(code, msg)
-        else:
-            print(f"错误：[{code}] {msg}", file=sys.stderr)
+        _emit_envelope_error(fmt, code, msg)
         return EXIT_INFRA_ERROR
     except (ValueError, json.JSONDecodeError) as e:
         # 用法错误：combo 没文件没 inline、set value 解析失败……
-        if fmt == OUTPUT_JSON:
-            _emit_error_payload(CLIENT_CODE_USAGE, str(e))
-        else:
-            print(f"错误：{e}", file=sys.stderr)
+        _emit_envelope_error(fmt, CLIENT_CODE_USAGE, str(e))
+        return EXIT_INFRA_ERROR
+    except Exception as e:  # noqa: BLE001
+        # 兜底：客户端内部 bug（AttributeError、KeyError、协议解析意外等）
+        # 也要落进信封，否则 ``--json`` 契约对 AI agent 不再可信。把异常类
+        # 名带上方便 issue 复现，但不把 traceback 塞进 message —— stdout JSON
+        # 不是吐 traceback 的地方。完整 traceback 仍留给 stderr 帮人 debug。
+        traceback.print_exc(file=sys.stderr)
+        msg = f"{type(e).__name__}: {e}"
+        _emit_envelope_error(fmt, CLIENT_CODE_INTERNAL, msg)
         return EXIT_INFRA_ERROR
 
     _emit_rpc_result(spec, fmt, result)
