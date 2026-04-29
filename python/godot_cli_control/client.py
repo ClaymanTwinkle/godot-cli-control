@@ -49,6 +49,12 @@ class GameClient:
         显式传 ``proxy=None`` 比依赖 ``no_proxy`` 顺序更稳（no_proxy 对
         localhost 的匹配规则各库不一致）。
 
+        URL 用 ``127.0.0.1`` 而非 ``localhost``：daemon 端 GameBridge.gd 是
+        显式 ``listen(_port, "127.0.0.1")``（仅 v4），双栈 Linux 上 glibc
+        解析 ``localhost`` 可能先返回 ``::1``，让 websockets 试 IPv6 命中
+        没监听的 socket，回退到 IPv4 之间出现握手延迟甚至失败。直接走 v4
+        字面量与监听地址、与 ``daemon._wait_port_ready`` 的探活地址三处对齐。
+
         ``open_timeout`` 限制单次 websockets handshake 时长，防止慢握手
         把累计 retry 时间拖到失控。``total_timeout`` 给整个 retry 循环
         加一道硬墙：默认 ``None`` 行为不变；非 ``None`` 时用
@@ -77,7 +83,7 @@ class GameClient:
         for attempt in range(retries):
             try:
                 self._ws = await websockets.connect(
-                    f"ws://localhost:{self._port}",
+                    f"ws://127.0.0.1:{self._port}",
                     proxy=None,
                     open_timeout=open_timeout,
                 )

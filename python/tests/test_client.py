@@ -40,6 +40,30 @@ async def test_connect_passes_proxy_none_explicitly() -> None:
             "GameClient.connect() must pass proxy=None to websockets.connect"
 
 
+@pytest.mark.asyncio
+async def test_connect_uses_ipv4_literal_not_localhost() -> None:
+    """URL 必须是 ``ws://127.0.0.1:...``，不能用 hostname。
+
+    daemon 端 GameBridge.gd 显式 listen 在 127.0.0.1，IPv6 优先的解析器把
+    ``localhost`` 解为 ``::1`` 时会连到无人监听的 socket。client / server /
+    探活三处必须都走 v4 字面量。
+    """
+    fake_ws = AsyncMock()
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ) as mock_connect:
+        client = GameClient(port=9876)
+        try:
+            await client.connect(retries=1)
+        finally:
+            if client._listen_task:
+                client._listen_task.cancel()
+        url = mock_connect.call_args.args[0]
+        assert url == "ws://127.0.0.1:9876", \
+            f"expected v4 literal URL, got {url!r}"
+
+
 # ---- Test 2: connect retry 行为 ----
 
 @pytest.mark.asyncio
