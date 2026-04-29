@@ -30,8 +30,19 @@ AUTOLOAD_VALUE = '"*res://addons/godot_cli_control/bridge/game_bridge.gd"'
 PLUGIN_CFG_PATH = "res://addons/godot_cli_control/plugin.cfg"
 
 
-def run_init(project_root: Path, force: bool = False) -> int:
-    """实施接入流程。返回进程 exit code。"""
+def run_init(
+    project_root: Path,
+    force: bool = False,
+    install_skills_: bool = True,
+    skills_only: bool = False,
+) -> int:
+    """实施接入流程。返回进程 exit code。
+
+    ``skills_only=True``：跳过 1-4 步（插件复制 / project.godot patch /
+    godot_bin 检测），只写 SKILL.md —— 用于 CLI 升级后单独刷新 skill。
+    ``install_skills_=False``：跳过第 5 步，给已自定义 skill 的用户留逃生口。
+    两者由 cli.py 侧的 mutually_exclusive_group 保证不会同时为真。
+    """
     if not (project_root / "project.godot").is_file():
         print(
             f"错误：{project_root} 下没有 project.godot —— 不像 Godot 项目根。\n"
@@ -40,53 +51,69 @@ def run_init(project_root: Path, force: bool = False) -> int:
         )
         return 1
 
-    plugin_src = locate_plugin_source()
-    if plugin_src is None:
-        print(
-            "错误：找不到插件源（addons/godot_cli_control/）。\n"
-            "如果是从源码 editable install，请确保仓库布局完整；\n"
-            "如果是从 wheel 安装，包资源可能损坏，请重装。",
-            file=sys.stderr,
-        )
-        return 1
+    if not skills_only:
+        # 原 1-4 步整体保持不动，仅缩进到此 if 块下
+        plugin_src = locate_plugin_source()
+        if plugin_src is None:
+            print(
+                "错误：找不到插件源（addons/godot_cli_control/）。\n"
+                "如果是从源码 editable install，请确保仓库布局完整；\n"
+                "如果是从 wheel 安装，包资源可能损坏，请重装。",
+                file=sys.stderr,
+            )
+            return 1
 
-    addons_dir = project_root / ADDONS_DIRNAME
-    plugin_dst = addons_dir / PLUGIN_DIR_NAME
-    if plugin_dst.exists():
-        if force:
-            shutil.rmtree(plugin_dst)
-            _copy_plugin(plugin_src, plugin_dst)
-            print(f"覆盖：{plugin_dst}")
+        addons_dir = project_root / ADDONS_DIRNAME
+        plugin_dst = addons_dir / PLUGIN_DIR_NAME
+        if plugin_dst.exists():
+            if force:
+                shutil.rmtree(plugin_dst)
+                _copy_plugin(plugin_src, plugin_dst)
+                print(f"覆盖：{plugin_dst}")
+            else:
+                print(f"已存在：{plugin_dst}（用 --force 覆盖）")
         else:
-            print(f"已存在：{plugin_dst}（用 --force 覆盖）")
-    else:
-        addons_dir.mkdir(parents=True, exist_ok=True)
-        _copy_plugin(plugin_src, plugin_dst)
-        print(f"复制：{plugin_src} → {plugin_dst}")
+            addons_dir.mkdir(parents=True, exist_ok=True)
+            _copy_plugin(plugin_src, plugin_dst)
+            print(f"复制：{plugin_src} → {plugin_dst}")
 
-    patched, changes = _patch_project_godot(project_root / "project.godot")
-    if changes:
-        print(f"修改 project.godot：{', '.join(changes)}")
-    elif patched:
-        print("project.godot 已配置好（未改动）")
+        patched, changes = _patch_project_godot(project_root / "project.godot")
+        if changes:
+            print(f"修改 project.godot：{', '.join(changes)}")
+        elif patched:
+            print("project.godot 已配置好（未改动）")
 
-    godot_bin = find_godot_binary()
-    if godot_bin:
-        control_dir = project_root / ".cli_control"
-        control_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(control_dir, 0o700)
-        except OSError:
-            pass
-        (control_dir / "godot_bin").write_text(godot_bin + "\n")
-        print(f"检测到 Godot：{godot_bin}（已写入 .cli_control/godot_bin）")
-    else:
-        print(
-            "警告：未自动检测到 Godot 二进制。\n"
-            "请 `export GODOT_BIN=/path/to/godot` 或写到 "
-            ".cli_control/godot_bin。",
-            file=sys.stderr,
+        godot_bin = find_godot_binary()
+        if godot_bin:
+            control_dir = project_root / ".cli_control"
+            control_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(control_dir, 0o700)
+            except OSError:
+                pass
+            (control_dir / "godot_bin").write_text(godot_bin + "\n")
+            print(f"检测到 Godot：{godot_bin}（已写入 .cli_control/godot_bin）")
+        else:
+            print(
+                "警告：未自动检测到 Godot 二进制。\n"
+                "请 `export GODOT_BIN=/path/to/godot` 或写到 "
+                ".cli_control/godot_bin。",
+                file=sys.stderr,
+            )
+
+    if install_skills_:
+        from . import _version, cli, skills_install
+
+        cli_help = cli.build_parser().format_help()
+        version = getattr(_version, "__version__", "unknown")
+        written = skills_install.install_skills(
+            project_root,
+            version=version,
+            cli_help=cli_help,
+            force=True,  # init 默认即覆盖（spec §4 决定）
         )
+        for p in written:
+            print(f"写入 skill：{p.relative_to(project_root)}")
 
     print()
     print("已就绪。下一步：")

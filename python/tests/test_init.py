@@ -253,3 +253,57 @@ def test_locate_plugin_source_finds_repo_addons() -> None:
     assert src is not None
     assert (src / "plugin.cfg").is_file()
     assert (src / "bridge" / "game_bridge.gd").is_file()
+
+
+# ── init 与 skills 的集成 ──
+
+
+def _make_min_godot_project(tmp_path: Path) -> Path:
+    """造一个最小 project.godot —— 满足 run_init 的入口校验。"""
+    (tmp_path / "project.godot").write_text(
+        "config_version=5\n\n[application]\nconfig/name=\"x\"\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_init_writes_both_skills_by_default(tmp_path: Path) -> None:
+    """默认 install_skills_=True 时两条 SKILL.md 都生成。"""
+    from godot_cli_control.init_cmd import run_init
+    from godot_cli_control.skills_install import CLAUDE_REL, CODEX_REL
+
+    proj = _make_min_godot_project(tmp_path)
+    rc = run_init(proj)
+
+    assert rc == 0
+    assert (proj / CLAUDE_REL).is_file()
+    assert (proj / CODEX_REL).is_file()
+
+
+def test_init_no_skills_skips_skill_files(tmp_path: Path) -> None:
+    from godot_cli_control.init_cmd import run_init
+    from godot_cli_control.skills_install import CLAUDE_REL, CODEX_REL
+
+    proj = _make_min_godot_project(tmp_path)
+    rc = run_init(proj, install_skills_=False)
+
+    assert rc == 0
+    assert not (proj / CLAUDE_REL).exists()
+    assert not (proj / CODEX_REL).exists()
+
+
+def test_init_skills_only_skips_plugin_and_patch(tmp_path: Path) -> None:
+    """skills_only=True：addons/ 不被建立、project.godot 不被改动、SKILL.md 写入。"""
+    from godot_cli_control.init_cmd import run_init
+    from godot_cli_control.skills_install import CLAUDE_REL, CODEX_REL
+
+    proj = _make_min_godot_project(tmp_path)
+    original = (proj / "project.godot").read_bytes()
+
+    rc = run_init(proj, skills_only=True)
+
+    assert rc == 0
+    assert not (proj / "addons" / "godot_cli_control").exists()
+    assert (proj / "project.godot").read_bytes() == original
+    assert (proj / CLAUDE_REL).is_file()
+    assert (proj / CODEX_REL).is_file()
