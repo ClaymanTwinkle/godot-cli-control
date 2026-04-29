@@ -36,7 +36,7 @@ cp -r /path/to/godot-cli-control/addons/godot_cli_control my_project/addons/
 ```bash
 pip install godot-cli-control
 # or for an unreleased main:
-# pip install -e /path/to/godot-cli-control/python
+# pip install -e /path/to/godot-cli-control
 ```
 
 Requires Python ≥ 3.10.

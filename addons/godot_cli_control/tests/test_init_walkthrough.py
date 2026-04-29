@@ -119,7 +119,7 @@ def main() -> int:
         run([sys.executable, "-m", "venv", venv])
         py = venv_bin(venv, "python")
         run([py, "-m", "pip", "install", "--quiet", "--upgrade", "pip"])
-        run([py, "-m", "pip", "install", "--quiet", REPO_ROOT / "python"])
+        run([py, "-m", "pip", "install", "--quiet", REPO_ROOT])
 
         gcc = venv_bin(venv, "godot-cli-control")
         env = {

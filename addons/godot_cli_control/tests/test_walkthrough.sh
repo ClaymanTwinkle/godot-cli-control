@@ -104,7 +104,7 @@ python3 -m venv .venv
 # shellcheck disable=SC1091
 source .venv/bin/activate
 pip install --quiet --upgrade pip
-pip install --quiet "$REPO_ROOT/python"
+pip install --quiet "$REPO_ROOT"
 
 # 4) start daemon（headless）—— wrapper 内部已等 GameBridge 端口就绪
 echo "==> start daemon"
