@@ -312,8 +312,12 @@ def cmd_init(ns: argparse.Namespace) -> int:
     from .init_cmd import run_init
 
     return run_init(
-        project_root=Path(ns.path).resolve() if ns.path else Path.cwd(),
+        # 保留 .resolve()：run_init 内部用 relative_to(project_root) 打印 skill
+        # 路径，相对路径会让 relative_to 在 cwd 不寻常时抛 ValueError。
+        project_root=(Path(ns.path).resolve() if ns.path else Path.cwd()),
         force=ns.force,
+        install_skills_=not ns.no_skills,
+        skills_only=ns.skills_only,
     )
 
 
@@ -439,6 +443,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="覆盖已存在的 addons/godot_cli_control",
+    )
+    skills_group = init_p.add_mutually_exclusive_group()
+    skills_group.add_argument(
+        "--no-skills",
+        action="store_true",
+        help="跳过 .claude/.codex skill 写入",
+    )
+    skills_group.add_argument(
+        "--skills-only",
+        action="store_true",
+        help="只写 skill 文件，跳过插件复制 / project.godot patch / godot_bin 检测",
     )
 
     # RPC 单发命令
