@@ -93,6 +93,35 @@ def test_exec_user_script_returns_1_on_missing_run(
     assert rc == 1
 
 
+def test_exec_user_script_cleans_up_sys_path_and_sys_modules(
+    tmp_path: Path, stub_bridge: None
+) -> None:
+    """连跑两次后，sys.path 头部不应累积 tmp_path、sys.modules['user_script'] 应被删。
+
+    pytest 在同一进程跑多个用例，本函数若不 finally 还原会污染后续测试。
+    """
+    import sys as _sys
+
+    from godot_cli_control.cli import _exec_user_script
+
+    snapshot_path = list(_sys.path)
+    snapshot_modules = "user_script" in _sys.modules
+
+    script = tmp_path / "user_script.py"
+    _write(script, "def run(bridge):\n    pass\n")
+
+    assert _exec_user_script(script, port=9999) == 0
+    assert _exec_user_script(script, port=9999) == 0
+
+    # sys.path 至少不应在头部多出脚本目录
+    assert _sys.path == snapshot_path, (
+        "sys.path 被污染："
+        f"前={snapshot_path[:3]}... 后={_sys.path[:3]}..."
+    )
+    # sys.modules 不应留有 user_script 引用（除非测试启动前就有，那就保持原样）
+    assert ("user_script" in _sys.modules) is snapshot_modules
+
+
 # ── init 子命令的 skill 互斥参数 ──
 
 

@@ -283,35 +283,45 @@ def _exec_user_script(script_path: Path, port: int) -> int:
     module = importlib.util.module_from_spec(spec)
     # 让脚本同目录的辅助模块（``from helpers import foo``）可被解析；
     # 同时把 module 注册到 ``sys.modules`` 让 dataclass / pickle 通过模块名
-    # 反向查找 class 时不报 ``KeyError: 'user_script'``。CLI 一次性进程，
-    # 不必 finally 还原 —— 进程结束即清理。
-    sys.path.insert(0, str(script_path.parent.resolve()))
+    # 反向查找 class 时不报 ``KeyError: 'user_script'``。pytest 在同一进程里
+    # 反复调本函数，必须 finally 弹回去 —— 否则 sys.path 头部累积 N 个 tmp_path
+    # 影响后续测试，sys.modules 也会留 stale 引用。
+    inserted_path = str(script_path.parent.resolve())
+    sys.path.insert(0, inserted_path)
     sys.modules["user_script"] = module
-    # 保留完整 traceback —— 用户脚本出错时调试信息比「错误：xxx」一行有用得多。
+    bridge: GameBridge | None = None
     try:
-        spec.loader.exec_module(module)
-    except Exception:  # noqa: BLE001 - 用户脚本任何异常都要抓
-        print(f"错误：加载脚本 {script_path} 失败：", file=sys.stderr)
-        traceback.print_exc()
-        return 1
-    if not hasattr(module, "run"):
-        print(
-            f"错误：脚本 {script_path} 中缺少 run(bridge) 函数",
-            file=sys.stderr,
-        )
-        return 1
+        # 保留完整 traceback —— 用户脚本出错时调试信息比「错误：xxx」一行有用得多。
+        try:
+            spec.loader.exec_module(module)
+        except Exception:  # noqa: BLE001 - 用户脚本任何异常都要抓
+            print(f"错误：加载脚本 {script_path} 失败：", file=sys.stderr)
+            traceback.print_exc()
+            return 1
+        if not hasattr(module, "run"):
+            print(
+                f"错误：脚本 {script_path} 中缺少 run(bridge) 函数",
+                file=sys.stderr,
+            )
+            return 1
 
-    print(f"运行 {script_path}...", file=sys.stderr)
-    bridge = GameBridge(port=port)
-    try:
-        module.run(bridge)
-    except Exception:  # noqa: BLE001
-        print(f"错误：脚本 {script_path} 运行失败：", file=sys.stderr)
-        traceback.print_exc()
-        return 1
+        print(f"运行 {script_path}...", file=sys.stderr)
+        bridge = GameBridge(port=port)
+        try:
+            module.run(bridge)
+        except Exception:  # noqa: BLE001
+            print(f"错误：脚本 {script_path} 运行失败：", file=sys.stderr)
+            traceback.print_exc()
+            return 1
+        return 0
     finally:
-        bridge.close()
-    return 0
+        if bridge is not None:
+            bridge.close()
+        # 严格按"自己塞自己弹"的原则：sys.path[0] 仍是我们插的那条才弹，
+        # 否则不动 —— 防止脚本里 user code 改了 sys.path[0] 后被错弹。
+        if sys.path and sys.path[0] == inserted_path:
+            sys.path.pop(0)
+        sys.modules.pop("user_script", None)
 
 
 def cmd_init(ns: argparse.Namespace) -> int:
