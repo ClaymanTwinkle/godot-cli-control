@@ -281,6 +281,12 @@ def _exec_user_script(script_path: Path, port: int) -> int:
         print(f"错误：无法加载脚本: {script_path}", file=sys.stderr)
         return 1
     module = importlib.util.module_from_spec(spec)
+    # 让脚本同目录的辅助模块（``from helpers import foo``）可被解析；
+    # 同时把 module 注册到 ``sys.modules`` 让 dataclass / pickle 通过模块名
+    # 反向查找 class 时不报 ``KeyError: 'user_script'``。CLI 一次性进程，
+    # 不必 finally 还原 —— 进程结束即清理。
+    sys.path.insert(0, str(script_path.parent.resolve()))
+    sys.modules["user_script"] = module
     # 保留完整 traceback —— 用户脚本出错时调试信息比「错误：xxx」一行有用得多。
     try:
         spec.loader.exec_module(module)
