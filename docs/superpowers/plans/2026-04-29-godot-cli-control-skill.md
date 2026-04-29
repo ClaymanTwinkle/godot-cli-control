@@ -499,7 +499,9 @@ def cmd_init(ns: argparse.Namespace) -> int:
     from .init_cmd import run_init
 
     return run_init(
-        project_root=Path(ns.path or "."),
+        # 保留 .resolve()：run_init 内部用 relative_to(project_root) 打印 skill
+        # 路径，相对路径会让 relative_to 在 cwd 不寻常时抛 ValueError。
+        project_root=(Path(ns.path).resolve() if ns.path else Path.cwd()),
         force=ns.force,
         install_skills_=not ns.no_skills,
         skills_only=ns.skills_only,
