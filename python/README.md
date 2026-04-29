@@ -148,6 +148,18 @@ fi
 
 The port is read from `.cli_control/port` if you don't pass `--port`, so RPC calls just work after `daemon start`.
 
+## Testing
+
+```bash
+# Python unit tests + coverage (fails if below 80%)
+pip install -e ".[test]"
+coverage run -m pytest python/tests/
+coverage report
+
+# GUT tests for the Godot plugin (needs GODOT_BIN env var)
+GODOT_BIN=/path/to/godot ./addons/godot_cli_control/tests/run_gut.sh
+```
+
 ## Documentation
 
 See the [Godot plugin README](https://github.com/ClaymanTwinkle/godot-cli-control/blob/main/addons/godot_cli_control/README.md) for the full RPC reference, activation modes, security model, and known limitations.

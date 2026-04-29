@@ -37,11 +37,35 @@ jobs:
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
-          pip install pytest pytest-asyncio
+          pip install -e ".[test]"
 
-      - name: Run unit tests
-        run: pytest python/tests/ -v
+      # 用 `coverage run` 而非 `pytest --cov`：pytest 启动时
+      # pytest11 entry-point 会自动加载 godot_cli_control.pytest_plugin，
+      # 这会先于 pytest-cov import bridge/daemon/client，让 import-time 语句
+      # 全部 miss。`coverage run` 在 Python 启动时就开 trace，无时序坑。
+      - name: Run unit tests with coverage
+        run: |
+          coverage run -m pytest python/tests/ -v
+          coverage report
+
+      # 仅在 ubuntu+3.12 这一格执行覆盖率门禁 + 上传 xml。
+      # 别的 OS / Python 版本路径分支不同（Windows daemon_is_godot 走 tasklist
+      # 而非 ps），直接卡 80% 会因平台差异误红。
+      - name: Coverage fail-under (ubuntu+3.12 only)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: coverage report --fail-under=80
+
+      - name: Export coverage XML
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: coverage xml
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
 
   walkthrough:
     name: fresh-clone walkthrough (${{ matrix.os }} / Godot ${{ matrix.godot-version }})

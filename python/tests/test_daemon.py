@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -294,3 +295,455 @@ def test_wait_port_ready_returns_true_when_listening() -> None:
         assert _wait_port_ready(port=port, max_seconds=2) is True
     finally:
         sock.close()
+
+
+# ---------------------------------------------------------------------------
+# 以下补强：错误路径 / 跨平台 / 录制转码 —— 覆盖 daemon.py 错误分支
+# ---------------------------------------------------------------------------
+
+
+# ── 工具：构造一个能跑 start() happy path 的桩环境 ──
+
+
+def _setup_start_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, port_ready: bool = True
+) -> tuple[Daemon, Path]:
+    """返回 (daemon, fake_bin)。已 patch find_godot_binary、_ensure_imported、Popen、sleep、_wait_port_ready。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    class _FakeProc:
+        pid = 999_999_900
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", lambda *a, **k: _FakeProc()
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready",
+        lambda *a, **k: port_ready,
+    )
+    return Daemon(tmp_path), fake_bin
+
+
+# ── stale PID 恢复 ──
+
+
+def test_start_recovers_from_stale_pid_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上次崩溃残留的 PID（已死）不应阻塞 start —— is_running 必须返回 False。
+
+    场景：用户上一次 daemon 被 kill -9，PID 文件留着；本次再 start，daemon 应
+    照常启动，不抛 "already running"。
+    """
+    daemon, _ = _setup_start_env(tmp_path, monkeypatch)
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
+    daemon.pid_file.write_text("999999999")  # 死 PID
+
+    pid = daemon.start(port=29991)
+    assert pid == 999_999_900
+    # 新 PID 已写入，覆盖了死 PID
+    assert daemon.read_pid() == 999_999_900
+
+
+# ── _terminate SIGTERM → SIGKILL 升级 ──
+
+
+def test_terminate_escalates_to_sigkill_when_sigterm_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM 后进程不退出 → 必须升级到 SIGKILL，不能死等。"""
+    import signal as _signal
+
+    sent_signals: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        sent_signals.append((pid, sig))
+
+    # 进程「永远活着」—— 模拟无视 SIGTERM 的卡死 Godot
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_alive", lambda pid: True
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.os.kill", _fake_kill)
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    # 让 deadline 一次循环就过 —— time.time 走两次（deadline 计算 + 第一次循环）
+    times = iter([0.0, 100.0, 200.0, 300.0])
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.time.time", lambda: next(times)
+    )
+
+    daemon = Daemon(tmp_path)
+    daemon._terminate(pid=12345, timeout=10.0)
+
+    # 至少一次 SIGTERM + 一次 SIGKILL（POSIX）/ SIGTERM-fallback（Windows）
+    assert sent_signals[0] == (12345, _signal.SIGTERM)
+    final_sig = sent_signals[-1][1]
+    expected = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    assert final_sig == expected, (
+        f"卡死路径必须发 {expected!r}，实际 {final_sig!r}；信号序列={sent_signals}"
+    )
+
+
+def test_terminate_returns_early_when_process_already_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM 抛 ProcessLookupError → _terminate 直接返回，不再 SIGKILL。"""
+    sent: list[int] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        sent.append(sig)
+        raise ProcessLookupError
+
+    monkeypatch.setattr("godot_cli_control.daemon.os.kill", _fake_kill)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_alive", lambda pid: False
+    )
+
+    Daemon(tmp_path)._terminate(pid=123, timeout=1.0)
+    assert len(sent) == 1, "进程已不存在时不应再尝试第二次 kill"
+
+
+# ── _process_is_godot 多平台矩阵 ──
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only ps 路径")
+def test_process_is_godot_posix_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    from godot_cli_control.daemon import _process_is_godot
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.check_output",
+        lambda *a, **k: "Godot_v4.4-stable\n",
+    )
+    assert _process_is_godot(123) is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only ps 路径")
+def test_process_is_godot_posix_no_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    from godot_cli_control.daemon import _process_is_godot
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.check_output",
+        lambda *a, **k: "bash\n",
+    )
+    assert _process_is_godot(123) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only ps 路径")
+def test_process_is_godot_returns_true_when_ps_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ps 不存在时放行（与原 bash 版宽松行为对齐）—— 不能因为查不到就拒杀。"""
+    from godot_cli_control.daemon import _process_is_godot
+
+    def _raise(*a: Any, **k: Any) -> str:
+        raise FileNotFoundError("no ps")
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.check_output", _raise
+    )
+    assert _process_is_godot(123) is True
+
+
+def test_stop_refuses_when_pid_not_godot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PID 复用情景：现役进程名不像 Godot → 拒绝 SIGTERM 以免误杀别人的进程。"""
+    daemon = Daemon(tmp_path)
+    daemon.control_dir.mkdir()
+    daemon.pid_file.write_text(str(os.getpid()))  # 当前 python 进程，肯定 alive
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_alive", lambda pid: True
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_is_godot", lambda pid: False
+    )
+    with pytest.raises(DaemonError, match="不像 Godot"):
+        daemon.stop()
+    # PID 文件保留，让用户手动处理
+    assert daemon.pid_file.exists()
+
+
+# ── _transcode_movie 三态 ──
+
+
+def test_transcode_skips_when_movie_missing(tmp_path: Path) -> None:
+    """录制文件不存在 → 视为成功（没东西可转）。"""
+    from godot_cli_control.daemon import _transcode_movie
+
+    assert _transcode_movie(tmp_path / "nope.avi", tmp_path) is True
+
+
+def test_transcode_keeps_original_when_ffmpeg_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg 不在 PATH → 保留原文件，返回 True（用户手动处理）。"""
+    from godot_cli_control.daemon import _transcode_movie
+
+    movie = tmp_path / "out.avi"
+    movie.write_bytes(b"fake video data")
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.shutil.which", lambda name: None
+    )
+    assert _transcode_movie(movie, tmp_path) is True
+    assert movie.exists(), "ffmpeg 缺失时不能删原文件"
+
+
+def test_transcode_success_deletes_original_returns_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg returncode 0 → 原 .avi 删除，.mp4 存在，返回 True。"""
+    from godot_cli_control.daemon import _transcode_movie
+
+    movie = tmp_path / "out.avi"
+    movie.write_bytes(b"fake")
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.shutil.which", lambda name: "/fake/ffmpeg"
+    )
+
+    class _Proc:
+        returncode = 0
+
+    def _fake_run(args: list[str], **kwargs: Any) -> _Proc:
+        # ffmpeg 「成功」 —— 我们手动写出 mp4 模拟产物
+        out_path = Path(args[args.index("-y") + 1])
+        out_path.write_bytes(b"fake mp4")
+        return _Proc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.run", _fake_run
+    )
+    assert _transcode_movie(movie, tmp_path) is True
+    assert not movie.exists(), "成功转码后应删原文件"
+    assert (tmp_path / "out.mp4").exists()
+
+
+def test_transcode_failure_keeps_original_returns_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg returncode 非 0 → 原文件保留，log 写入，返回 False。"""
+    from godot_cli_control.daemon import _transcode_movie
+
+    movie = tmp_path / "out.avi"
+    movie.write_bytes(b"corrupted")
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.shutil.which", lambda name: "/fake/ffmpeg"
+    )
+
+    class _Proc:
+        returncode = 1
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.run", lambda *a, **k: _Proc()
+    )
+    assert _transcode_movie(movie, tmp_path) is False
+    assert movie.exists(), "失败时必须保留原文件供调试"
+    assert (tmp_path / "ffmpeg.log").exists(), "必须留 log 让用户看 ffmpeg 报错"
+
+
+# ── start 录制路径（happy） ──
+
+
+def test_start_record_writes_movie_path_file_and_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """record=True + movie_path → Popen args 含 --write-movie / --fixed-fps；
+    movie_path_file 被写入；env GODOT_MOVIE_MAKER=1 注入。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    captured_args: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999_999_800
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured_args["args"] = args
+        captured_args["env"] = kwargs.get("env", {})
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _record_popen
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
+    )
+
+    daemon = Daemon(tmp_path)
+    movie = tmp_path / "rec.avi"
+    daemon.start(record=True, movie_path=str(movie), fps=60, port=29994)
+
+    assert "--write-movie" in captured_args["args"]
+    idx = captured_args["args"].index("--write-movie")
+    assert captured_args["args"][idx + 1] == str(movie)
+    assert "--fixed-fps" in captured_args["args"]
+    fps_idx = captured_args["args"].index("--fixed-fps")
+    assert captured_args["args"][fps_idx + 1] == "60"
+    assert captured_args["env"].get("GODOT_MOVIE_MAKER") == "1"
+    assert daemon.movie_path_file.read_text().strip() == str(movie)
+
+
+# ── start 立即崩溃捕获 ──
+
+
+def test_start_detects_immediate_godot_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Godot launch 后 1s 内已退出（poll 返回非 None）→ DaemonError + 状态文件清理。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    class _DeadProc:
+        pid = 999_999_700
+        returncode = 137  # 模拟被 OOM kill
+
+        def poll(self) -> int:
+            return 137
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", lambda *a, **k: _DeadProc()
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="exited immediately"):
+        daemon.start(port=29993)
+    # 状态文件必须清理 —— 否则下次 start 会误以为有活的 daemon
+    assert not daemon.pid_file.exists()
+    assert not daemon.port_file.exists()
+
+
+# ── _ensure_imported cache 不存在 ──
+
+
+def test_ensure_imported_rebuilds_when_cache_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """.godot/global_script_class_cache.cfg 完全不存在 → 必须重新导入。"""
+    from godot_cli_control.daemon import _ensure_imported
+
+    called: list = []
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.reimport_project",
+        lambda root, bin_: called.append((root, bin_)),
+    )
+    _ensure_imported(tmp_path, "/fake/godot")
+    assert called == [(tmp_path, "/fake/godot")]
+
+
+# ── stop 后录制转码失败 → 返回 2 ──
+
+
+def test_stop_returns_2_when_transcode_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """录制转码失败但进程已停 → stop 返回 2，让 CI 能感知录制问题。"""
+    daemon = Daemon(tmp_path)
+    daemon.control_dir.mkdir()
+    daemon.pid_file.write_text(str(os.getpid()))
+    daemon.movie_path_file.write_text(str(tmp_path / "rec.avi"))
+    (tmp_path / "rec.avi").write_bytes(b"data")
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_alive", lambda pid: True
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_is_godot", lambda pid: True
+    )
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._transcode_movie", lambda *a, **k: False
+    )
+
+    assert daemon.stop() == 2
+    # movie_path_file 已清理，下次 stop 不重复尝试
+    assert not daemon.movie_path_file.exists()
+
+
+def test_stop_returns_0_when_no_movie_to_transcode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """常规 stop（没开录制）→ 不调 _transcode_movie，返回 0。"""
+    daemon = Daemon(tmp_path)
+    daemon.control_dir.mkdir()
+    daemon.pid_file.write_text(str(os.getpid()))
+
+    transcode_called: list = []
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_alive", lambda pid: True
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_is_godot", lambda pid: True
+    )
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._transcode_movie",
+        lambda *a, **k: transcode_called.append(a) or True,
+    )
+
+    assert daemon.stop() == 0
+    assert transcode_called == [], "无 movie_path_file 时不该调转码"
+
+
+# ── _process_alive 边界 ──
+
+
+def test_process_alive_zero_pid_is_dead() -> None:
+    """PID 0 不是合法进程，必须返回 False（防 os.kill(0, 0) 误广播信号给整组）。"""
+    assert _process_alive(0) is False
+
+
+def test_process_alive_negative_pid_is_dead() -> None:
+    assert _process_alive(-1) is False
+
+
+# ── start 校验 godot_bin 可执行 ──
+
+
+def test_start_rejects_non_executable_godot_bin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """find_godot_binary 返回的路径不可执行 → 立刻报错。"""
+    _touch_godot_project(tmp_path)
+    not_exec = tmp_path / "godot_text"
+    not_exec.write_text("")  # 默认 0o644，无 X 位
+    not_exec.chmod(0o644)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(not_exec)
+    )
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="not executable"):
+        daemon.start()

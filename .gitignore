@@ -8,6 +8,10 @@ dist/
 .venv/
 venv/
 .pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # hatch-vcs generated
 python/godot_cli_control/_version.py

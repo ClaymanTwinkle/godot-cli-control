@@ -83,3 +83,233 @@ def test_fixture_lifecycle(pytester: pytest.Pytester) -> None:
     assert output.count("'close'") + output.count("close,") + output.count("'close'") >= 2
     assert "start:9890" in output
     assert "stop" in output
+
+
+# ---------------------------------------------------------------------------
+# 以下补强：fixture 失败 / 复用 / 异常清理 场景
+# ---------------------------------------------------------------------------
+
+
+def test_daemon_start_failure_surfaces_to_user(pytester: pytest.Pytester) -> None:
+    """daemon.start 抛 DaemonError → fixture 用 pytest.fail 透传错误（不吞）。"""
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+        from godot_cli_control.daemon import DaemonError
+
+        class FailDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return False
+            def start(self, **kw):
+                raise DaemonError("Godot binary not found")
+            def stop(self): return 0
+            def current_port(self): return 9877
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = FailDaemon
+        plugin.GameBridge = FakeBridge
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_uses_bridge(bridge):
+            assert False, "fixture should fail before reaching here"
+        """
+    )
+    result = pytester.runpytest()
+    result.assert_outcomes(errors=1)
+    # 错误消息必须含 daemon 的原始原因，方便用户定位
+    output = result.stdout.str()
+    assert "Godot binary not found" in output
+
+
+def test_fixture_reuses_already_running_daemon(pytester: pytest.Pytester) -> None:
+    """开发者手动起的 daemon 已在跑 → fixture 不重启，teardown 也不杀。
+
+    dev workflow（IDE 里 daemon 常驻）vs CI workflow（fixture 全权管理）能自然衔接。
+    """
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+
+        START_CALLS: list = []
+        STOP_CALLS: list = []
+
+        class AlreadyRunningDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return True  # 关键：已在跑
+            def start(self, **kw): START_CALLS.append(kw)
+            def stop(self): STOP_CALLS.append(1); return 0
+            def current_port(self): return 9877
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = AlreadyRunningDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"START_CALLS={START_CALLS}")
+            terminalreporter.write_line(f"STOP_CALLS={STOP_CALLS}")
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_a(bridge): pass
+        def test_b(bridge): pass
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=2)
+    output = result.stdout.str()
+    assert "START_CALLS=[]" in output, "已运行的 daemon 不应被重启"
+    assert "STOP_CALLS=[]" in output, "fixture 没起的 daemon teardown 不该杀它"
+
+
+def test_bridge_teardown_runs_even_when_test_raises(
+    pytester: pytest.Pytester,
+) -> None:
+    """用户测试体抛异常 → bridge teardown 必须仍调 release_all + close。
+
+    保证清理鲁棒：上一个测试 hold 了输入但代码异常退出，下一个测试不应继承
+    那次 hold 的状态。
+    """
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+
+        TEARDOWN_LOG: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return False
+            def start(self, **kw): pass
+            def stop(self): pass
+            def current_port(self): return 9877
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def release_all(self): TEARDOWN_LOG.append("release_all")
+            def close(self): TEARDOWN_LOG.append("close")
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"TEARDOWN_LOG={TEARDOWN_LOG}")
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_user_raises(bridge):
+            raise RuntimeError("user code went bang")
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(failed=1)
+    output = result.stdout.str()
+    # 即使用户测试 raise，release_all + close 都必须在 teardown 跑
+    assert "release_all" in output
+    assert "close" in output
+    # 顺序必须对：release_all 先于 close
+    teardown_line = [
+        line for line in output.splitlines() if line.startswith("TEARDOWN_LOG=")
+    ][0]
+    assert teardown_line.index("release_all") < teardown_line.index("close")
+
+
+def test_bridge_teardown_robust_against_release_all_exception(
+    pytester: pytest.Pytester,
+) -> None:
+    """release_all 自己抛异常 → close 仍必须执行（finally 兜底）。
+
+    场景：daemon 已挂但还没被 fixture 检测到，release_all 走 RPC 时连接已断。
+    close 要能正确收尾，否则资源泄漏。
+    """
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+
+        CLOSE_CALLED: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return False
+            def start(self, **kw): pass
+            def stop(self): pass
+            def current_port(self): return 9877
+
+        class FlakyBridge:
+            def __init__(self, port): pass
+            def release_all(self):
+                raise ConnectionError("pipe broken")
+            def close(self): CLOSE_CALLED.append(1)
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FlakyBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"CLOSE_CALLED={CLOSE_CALLED}")
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_a(bridge): pass
+        """
+    )
+    result = pytester.runpytest("-s")
+    # release_all 异常被 fixture 吞掉，测试本身仍通过
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert "CLOSE_CALLED=[1]" in output, "release_all 抛错后 close 必须仍跑"
+
+
+def test_project_root_option_is_respected(pytester: pytest.Pytester) -> None:
+    """--godot-cli-project-root 必须传给 Daemon 构造函数。"""
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        from pathlib import Path
+        import godot_cli_control.pytest_plugin as plugin
+
+        SEEN_ROOTS: list = []
+
+        class CapturingDaemon:
+            def __init__(self, project_root, *a, **kw):
+                SEEN_ROOTS.append(Path(project_root).resolve())
+            def is_running(self): return True
+            def start(self, **kw): pass
+            def stop(self): return 0
+            def current_port(self): return 9877
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = CapturingDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"SEEN_ROOTS={SEEN_ROOTS}")
+        """
+    )
+    pytester.makepyfile("def test_x(bridge): pass")
+    custom_root = pytester.path / "my_godot_project"
+    custom_root.mkdir()
+    result = pytester.runpytest(
+        "-s", "--godot-cli-project-root", str(custom_root)
+    )
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert str(custom_root.resolve()) in output

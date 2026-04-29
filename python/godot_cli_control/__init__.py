@@ -4,7 +4,7 @@ from godot_cli_control.client import DEFAULT_PORT, GameClient, RpcError
 
 try:
     from godot_cli_control._version import __version__
-except ImportError:
+except ImportError:  # pragma: no cover
     __version__ = "0.0.0+unknown"
 
 __all__ = ["GameClient", "RpcError", "DEFAULT_PORT", "__version__"]

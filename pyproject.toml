@@ -12,6 +12,9 @@ dependencies = [
 
 [project.optional-dependencies]
 pytest = ["pytest>=7"]
+# 全套测试依赖 —— 仅 CI / 开发者本地测试用，包含 pytest-cov 与 pytest-asyncio。
+# 普通用户用 `[pytest]` 已够；不要把 cov 拖到默认安装路径。
+test = ["pytest>=7", "pytest-asyncio>=0.21", "pytest-cov>=4"]
 
 [project.scripts]
 godot-cli-control = "godot_cli_control.cli:main"
@@ -46,3 +49,29 @@ include = [
     "/addons/godot_cli_control",
     "/LICENSE",
 ]
+
+# ── 覆盖率 ──────────────────────────────────────────────────────────────
+# 用 `coverage run -m pytest` 启动（不是 `pytest --cov`）—— pytest 启动时
+# pytest11 entry-point 会自动加载 godot_cli_control.pytest_plugin，进而 import
+# bridge/daemon/client；如果用 pytest-cov 那是先 pytest 后 cov，import-time 语句
+# 全部 miss。`coverage run` 在 Python 启动时就开 trace，避开这个时序坑。
+[tool.coverage.run]
+source = ["godot_cli_control"]
+branch = true
+omit = [
+    "*/_version.py",            # hatch-vcs 生成的版本字符串，无逻辑
+    "*/__main__.py",             # `python -m godot_cli_control` 入口，靠 walkthrough 覆盖
+    "*/templates/*",             # init 命令复制出去的模板，由 walkthrough 测
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+# 80% 是当前 Python 源码大致能稳定到的水准（cli.py 很大但既有测试良好）。
+# 调高的话先在本地 `coverage report --fail-under=N` 验过再改。
+fail_under = 80
