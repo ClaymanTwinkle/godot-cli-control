@@ -108,6 +108,11 @@ class Daemon:
         except OSError:
             pass
 
+        # 清掉上次崩溃残留的 movie_path —— 否则若用户上次 daemon 被 kill -9
+        # 没走 stop，旧路径会留在文件里，本次 stop 流程触发针对错误文件的
+        # ffmpeg 转码（多半失败但也可能转个旧 .avi 误导用户）。
+        self.movie_path_file.unlink(missing_ok=True)
+
         self.port_file.write_text(str(port))
 
         args: list[str] = [

@@ -127,6 +127,52 @@ def test_stop_cleans_port_file_when_pid_dead(tmp_path: Path) -> None:
     assert not daemon.port_file.exists()
 
 
+def test_start_clears_stale_movie_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上次 daemon 崩溃残留的 movie_path_file 必须在 start 时清掉。
+
+    否则本轮（哪怕没开 --record）走 stop 流程会读到旧路径并尝试 ffmpeg 转码，
+    多半失败但也可能误转个旧 .avi 让用户以为本次录制成功。
+    """
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    daemon = Daemon(tmp_path)
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
+    daemon.movie_path_file.write_text("/old/run/leftover.avi")
+
+    class _FakeProc:
+        pid = 999_999_998
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", lambda *a, **k: _FakeProc()
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: False
+    )
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+
+    with pytest.raises(DaemonError, match="not ready"):
+        daemon.start(port=29999)
+
+    assert not daemon.movie_path_file.exists(), \
+        "stale movie_path 必须在 start 时被清掉"
+
+
 def test_wait_port_ready_returns_false_for_unbound_port() -> None:
     # 一个几乎肯定没监听的端口；max_seconds=1 让测试快返回
     assert _wait_port_ready(port=1, max_seconds=1) is False
