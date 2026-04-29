@@ -316,7 +316,7 @@ def cmd_init(ns: argparse.Namespace) -> int:
         # 路径，相对路径会让 relative_to 在 cwd 不寻常时抛 ValueError。
         project_root=(Path(ns.path).resolve() if ns.path else Path.cwd()),
         force=ns.force,
-        install_skills_=not ns.no_skills,
+        write_skills=not ns.no_skills,
         skills_only=ns.skills_only,
     )
 

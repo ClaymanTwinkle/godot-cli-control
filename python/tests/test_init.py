@@ -268,7 +268,7 @@ def _make_min_godot_project(tmp_path: Path) -> Path:
 
 
 def test_init_writes_both_skills_by_default(tmp_path: Path) -> None:
-    """默认 install_skills_=True 时两条 SKILL.md 都生成。"""
+    """默认 write_skills=True 时两条 SKILL.md 都生成。"""
     from godot_cli_control.init_cmd import run_init
     from godot_cli_control.skills_install import CLAUDE_REL, CODEX_REL
 
@@ -285,7 +285,7 @@ def test_init_no_skills_skips_skill_files(tmp_path: Path) -> None:
     from godot_cli_control.skills_install import CLAUDE_REL, CODEX_REL
 
     proj = _make_min_godot_project(tmp_path)
-    rc = run_init(proj, install_skills_=False)
+    rc = run_init(proj, write_skills=False)
 
     assert rc == 0
     assert not (proj / CLAUDE_REL).exists()
@@ -307,3 +307,15 @@ def test_init_skills_only_skips_plugin_and_patch(tmp_path: Path) -> None:
     assert (proj / "project.godot").read_bytes() == original
     assert (proj / CLAUDE_REL).is_file()
     assert (proj / CODEX_REL).is_file()
+
+
+def test_init_skills_only_still_validates_godot_project(tmp_path: Path) -> None:
+    """skills_only 不能绕过 project.godot 入口校验 —— 否则会在非 Godot 目录乱写。"""
+    from godot_cli_control.init_cmd import run_init
+    from godot_cli_control.skills_install import CLAUDE_REL
+
+    # 不造 project.godot
+    rc = run_init(tmp_path, skills_only=True)
+
+    assert rc == 1
+    assert not (tmp_path / CLAUDE_REL).exists()

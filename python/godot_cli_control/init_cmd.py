@@ -33,14 +33,14 @@ PLUGIN_CFG_PATH = "res://addons/godot_cli_control/plugin.cfg"
 def run_init(
     project_root: Path,
     force: bool = False,
-    install_skills_: bool = True,
+    write_skills: bool = True,
     skills_only: bool = False,
 ) -> int:
     """实施接入流程。返回进程 exit code。
 
     ``skills_only=True``：跳过 1-4 步（插件复制 / project.godot patch /
     godot_bin 检测），只写 SKILL.md —— 用于 CLI 升级后单独刷新 skill。
-    ``install_skills_=False``：跳过第 5 步，给已自定义 skill 的用户留逃生口。
+    ``write_skills=False``：跳过第 5 步，给已自定义 skill 的用户留逃生口。
     两者由 cli.py 侧的 mutually_exclusive_group 保证不会同时为真。
     """
     if not (project_root / "project.godot").is_file():
@@ -101,7 +101,7 @@ def run_init(
                 file=sys.stderr,
             )
 
-    if install_skills_:
+    if write_skills:
         from . import _version, cli, skills_install
 
         cli_help = cli.build_parser().format_help()
