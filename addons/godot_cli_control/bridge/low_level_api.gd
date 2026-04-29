@@ -103,7 +103,12 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	var property: String = params.get("property", "") as String
 	if property.is_empty():
 		return _err(-32602, "Missing 'property' parameter")
-	if property in _property_blacklist:
+	# Godot Object.set() 接受 NodePath 形式的子属性（如 "position:x"）。
+	# 精确字符串黑名单会漏掉 "script:source_code" / "texture:resource_path" 这类
+	# 嵌套写入向量 —— 拿 ":" 前的 top-level 名重新过一次黑名单。
+	# 同时整串也走一次（防御深度，万一未来加非冒号语法的反射子路径）。
+	var top_level: String = property.split(":", true, 1)[0]
+	if property in _property_blacklist or top_level in _property_blacklist:
 		return _err(-32602, "Blocked property: %s" % property)
 	var value: Variant = params.get("value", null)
 	node.set(property, value)

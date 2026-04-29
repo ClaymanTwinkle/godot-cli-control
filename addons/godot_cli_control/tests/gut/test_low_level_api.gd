@@ -81,6 +81,40 @@ func test_set_property_resource_blocked() -> void:
 	assert_eq(int(result.error.code), -32602)
 
 
+# #22：NodePath 子属性（"script:source_code"）不能绕过 top-level 黑名单
+func test_set_property_nested_script_blocked() -> void:
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(_target.get_path()),
+		"property": "script:source_code",
+		"value": "extends Node\nfunc _init():\n  pass",
+	})
+	assert_has(result, "error", "script:xxx 必须被 top-level 黑名单挡住")
+	assert_eq(int(result.error.code), -32602)
+
+
+func test_set_property_nested_resource_blocked() -> void:
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(_target.get_path()),
+		"property": "texture:resource_path",
+		"value": "res://anything.png",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+
+
+func test_set_property_non_blacklisted_nested_still_works() -> void:
+	# 控制组：name:length 这类无害嵌套（不存在的子路径）应正常往下走
+	# 不在黑名单里。Godot 自身可能拒绝赋值，但黑名单不应提前误挡。
+	# 验证不会被 -32602 Blocked 挡，至少能通过校验阶段。
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(_target.get_path()),
+		"property": "name",  # name 本身不在黑名单
+		"value": "RenamedTarget",
+	})
+	# name 是合法可写属性
+	assert_does_not_have(result, "error")
+
+
 # ── handle_call_method blacklist ──────────────────────────────────
 
 func test_call_method_queue_free_blocked() -> void:
