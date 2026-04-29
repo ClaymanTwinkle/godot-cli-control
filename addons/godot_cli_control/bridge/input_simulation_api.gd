@@ -79,6 +79,21 @@ func handle_get_pressed(params: Dictionary) -> Dictionary:
 	return {"actions": get_pressed_actions()}
 
 
+func handle_list_input_actions(params: Dictionary) -> Dictionary:
+	## 列举 InputMap 中已注册的动作。
+	## include_builtin=false（默认）会过滤掉 ``ui_*`` 内置动作 ——
+	## AI agent 通常只关心项目自身定义的动作。
+	var include_builtin: bool = bool(params.get("include_builtin", false))
+	var actions: Array[String] = []
+	for raw in InputMap.get_actions():
+		var name: String = String(raw)
+		if not include_builtin and name.begins_with("ui_"):
+			continue
+		actions.append(name)
+	actions.sort()
+	return {"actions": actions}
+
+
 # ── 持续控制 ──
 
 func handle_hold(params: Dictionary) -> Dictionary:

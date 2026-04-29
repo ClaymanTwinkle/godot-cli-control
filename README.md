@@ -34,10 +34,9 @@ One install, one daemon, one consistent API across your editor, your tests, your
 | | |
 |---|---|
 | **One-shot onboarding** | `godot-cli-control init` copies the addon, patches `project.godot`, autodetects the Godot binary, and writes AI-agent skill files. Idempotent. |
-| **Two client APIs**     | `GameClient` (async/await) for tools and notebooks; `GameBridge` (sync) for scripts and tests. |
+| **Shell is canonical**  | 21+ subcommands cover the full RPC surface; output is single-line JSON envelope by default (`--text` for legacy strings). `GameClient` (async) / `GameBridge` (sync) are still there when you need to keep one connection across many steps. |
 | **pytest fixtures**     | Auto-loaded `godot_daemon` (session) + `bridge` (function) fixtures. Held inputs released between cases. |
-| **21 RPC methods**      | Scene tree introspection, get/set/call on any node, input action simulation, screenshots, wait helpers. |
-| **AI-agent ready**      | `init` ships `.claude/skills/.../SKILL.md` and `.codex/skills/.../SKILL.md` pinned to your installed CLI version. |
+| **AI-agent ready**      | `init` ships `.claude/skills/.../SKILL.md` and `.codex/skills/.../SKILL.md` pinned to your installed CLI version. Includes exit-code semantics, error code reference, and JSON envelope contract. |
 | **Headless or GUI**     | Runs under `--headless` for CI, or with a real window for visual debugging. |
 | **Cross-platform**      | Linux, macOS, and native Windows (no WSL). |
 | **Safe by default**     | Localhost-only bind, OFF unless explicitly activated, release builds always disabled, property/method blacklist. |
@@ -90,15 +89,20 @@ def test_jump(godot_daemon, bridge):
     assert bridge.get_property("/root/Player", "on_floor") is False
 ```
 
-**From a shell or wrapper script — same surface:**
+**From a shell or wrapper script — same surface, JSON by default for AI agents:**
 
 ```bash
 godot-cli-control daemon start --headless
 godot-cli-control click /root/Game/StartButton
 godot-cli-control tap jump
+if godot-cli-control exists /root/Game/Boss; then
+  godot-cli-control get /root/Game/Boss hp | jq .result   # → 100
+fi
 godot-cli-control screenshot frame.png
 godot-cli-control daemon stop
 ```
+
+Pass `--text` (or `--no-json`) to switch back to legacy human-readable output.
 
 ## How it fits together
 
@@ -127,17 +131,18 @@ The plugin is **off by default** even when enabled — see [Activation modes](ad
 
 ## API at a glance
 
-| Category | Methods |
-|---|---|
-| Scene tree | `get_scene_tree`, `get_children`, `node_exists`, `wait_for_node` |
-| Inspection | `get_property`, `get_text`, `is_visible` |
-| Mutation   | `set_property`, `call_method` |
-| Input      | `action_press`, `action_release`, `action_tap`, `hold`, `combo`, `combo_cancel`, `release_all` |
-| UI         | `click` |
-| Render     | `screenshot` |
-| Timing     | `wait_game_time` |
+Every RPC has both a CLI subcommand and a `GameClient` method — pick whichever fits your harness. Default output is a JSON envelope (`--text` for legacy strings).
 
-Full RPC reference (signatures, error codes, blacklist): [plugin README](addons/godot_cli_control/README.md#rpc-reference).
+| Category | CLI | GameClient |
+|---|---|---|
+| Scene tree | `tree`, `children`, `exists`, `wait-node` | `get_scene_tree`, `get_children`, `node_exists`, `wait_for_node` |
+| Inspection | `get`, `text`, `visible` | `get_property`, `get_text`, `is_visible` |
+| Mutation   | `set`, `call`, `click` | `set_property`, `call_method`, `click` |
+| Input      | `press`, `release`, `tap`, `hold`, `combo`, `combo-cancel`, `release-all`, `pressed`, `actions` | `action_press`, `action_release`, `action_tap`, `hold`, `combo`, `combo_cancel`, `release_all`, `get_pressed`, `list_input_actions` |
+| Render     | `screenshot` (path required) | `screenshot` |
+| Timing     | `wait-time` | `wait_game_time` |
+
+Full RPC reference (signatures, error codes, blacklist): [plugin README](addons/godot_cli_control/README.md#rpc-reference). Output contract & exit codes: see the AI Quickstart in any project's `.claude/skills/godot-cli-control/SKILL.md`.
 
 ## Repository layout
 

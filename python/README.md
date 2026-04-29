@@ -91,15 +91,59 @@ CLI options:
 
 ## CLI
 
+The CLI is the canonical surface — every `GameClient` method has a one-line equivalent. Default output is a JSON envelope (`--text` for legacy strings).
+
 ```bash
+# Lifecycle
 godot-cli-control init [--path DIR] [--force]
 godot-cli-control daemon start [--headless --record --movie-path X --fps N --port N]
 godot-cli-control daemon stop
+godot-cli-control daemon status
 godot-cli-control run <script.py> [--headless ...]
+
+# Read
 godot-cli-control tree [depth]
+godot-cli-control get      <node_path> <prop>
+godot-cli-control text     <node_path>
+godot-cli-control exists   <node_path>      # exit 0=true, 1=false, 2=infra
+godot-cli-control visible  <node_path>      # exit 0=true, 1=false, 2=infra
+godot-cli-control children <node_path> [type-filter]
+godot-cli-control pressed
+godot-cli-control actions [--all]
+
+# Write / call
+godot-cli-control set   <node_path> <prop>   <json-value>
+godot-cli-control call  <node_path> <method> [json-args...]
 godot-cli-control click <node_path>
-godot-cli-control screenshot [output.png]
-godot-cli-control press|release|tap|hold|combo|release-all <args...>
+
+# Input
+godot-cli-control press|release <action>
+godot-cli-control tap   <action> [duration]
+godot-cli-control hold  <action>  <duration>
+godot-cli-control combo --steps-json '[...]'   # or `combo file.json` / `combo -` (stdin)
+godot-cli-control combo-cancel
+godot-cli-control release-all
+
+# Wait
+godot-cli-control wait-node <node_path> [timeout]   # exit 0=found, 1=timeout
+godot-cli-control wait-time <seconds>
+
+# Render (path is required as of 0.2.0)
+godot-cli-control screenshot <output.png>
+```
+
+### Output contract
+
+- success: `{"ok": true, "result": <data>}` on stdout, exit 0
+- error:   `{"ok": false, "error": {"code": N, "message": "..."}}` on stdout, exit 1 (RPC) or 2 (connection / usage)
+- `--text` / `--no-json` switches back to the legacy human-readable strings; errors then go to stderr.
+
+`exists` / `visible` / `wait-node` propagate their boolean result to the exit code, so shell `if` works:
+
+```bash
+if godot-cli-control exists /root/Main/Boss; then
+  godot-cli-control click /root/Main/Boss
+fi
 ```
 
 The port is read from `.cli_control/port` if you don't pass `--port`, so RPC calls just work after `daemon start`.

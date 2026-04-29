@@ -88,11 +88,17 @@ def test_render_skill_documents_module_entry_point() -> None:
     assert "python -m godot_cli_control" in out
 
 
-def test_render_skill_documents_combo_schema_and_python_boundary() -> None:
-    """SKILL.md 模板必须给 agent 划清两件事，否则它会写错代码：
-    1. combo step 的真实 schema（``action`` / ``wait`` keys）。
-    2. 哪些 GameClient 方法仅 Python 可用、shell 没有对应子命令。
-    把字面串作为契约锁住模板，防止后续改文案时回退。"""
+def test_render_skill_documents_combo_schema_and_ai_contract() -> None:
+    """SKILL.md 模板必须给 agent 锁住几件事，否则它会写错代码：
+
+    1. combo step 的真实 schema（``action`` / ``wait`` keys，不是 press/release）。
+    2. 0.2.0 输出契约：默认 JSON 信封 + 退出码语义。
+    3. shell 是 canonical surface（agent 默认走 shell，不必动 Python）。
+    4. ``daemon status`` 在 Quickstart 出现，agent 第一次跑能确认 daemon 状态。
+    5. Python 桥仍在文档里，但定位调整成"跨步保持 client 连接"用。
+
+    字面串作为契约锁住模板，防止后续改文案时回退。
+    """
     from godot_cli_control.skills_install import render_skill
 
     out = render_skill(version="x", cli_help="<HELP>")
@@ -100,12 +106,20 @@ def test_render_skill_documents_combo_schema_and_python_boundary() -> None:
     # combo schema：action + wait（不是 press/release）
     assert '"action"' in out
     assert '"wait"' in out
-    # Python 边界明示
-    assert "Shell vs. Python" in out
-    assert "get_text" in out
+    # JSON 输出契约必须明示
+    assert '"ok": true' in out or '"ok":true' in out
+    assert '"ok": false' in out or '"ok":false' in out
+    # 退出码语义：shell-if 友好的几个命令必须列在 Exit codes 表里
+    assert "Exit codes" in out
+    # shell 优先论调
+    assert "shell" in out.lower()
+    # Python 桥的位置：可调用，但是次选
     assert "wait_for_node" in out
-    # daemon status 在 Quick start 露出
+    assert "get_property" in out
+    # daemon status 在 Quickstart 露出
     assert "daemon status" in out
+    # node path 绝对约束（最常见的 agent 错误）
+    assert "/root/" in out
 
 
 # ── install_skills ──

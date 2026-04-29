@@ -3,18 +3,27 @@
 子命令分三组：
 
 * **Daemon 管理**：``daemon start`` / ``daemon stop`` / ``daemon status`` /
-  ``run <script>`` —— 移植自原 bash wrapper，提供跨平台的 Godot 进程启停。
+  ``run <script>`` —— 跨平台的 Godot 进程启停。
 * **接入**：``init`` —— 在 Godot 项目根一键复制插件、patch ``project.godot``、
-  检测 GODOT_BIN。
-* **RPC 单发**：``click`` / ``tree`` / ``screenshot`` / ``press`` / ``release`` /
-  ``tap`` / ``hold`` / ``combo`` / ``release-all`` —— 与已运行的 daemon 交互。
+  检测 GODOT_BIN，并写出 .claude/.codex 的 SKILL.md。
+* **RPC 单发**：12+ 子命令，覆盖客户端全部能力 —— 让 shell-only AI agent
+  无需写 Python 脚本就能完成读 / 写 / 等待 / 发现操作。
+
+输出契约（**默认 JSON**，AI 友好）：
+
+* 成功：``{"ok": true, "result": <data>}`` 单行写 stdout，exit 0。
+* 失败：``{"ok": false, "error": {"code": N, "message": "..."}}`` 单行写
+  stdout，exit 1（RPC error）/ 2（连接、超时、IO）/ 64（用法错误）。
+* ``--text`` / ``--no-json`` 切回旧的人类可读输出（CHANGELOG 提及兼容）。
+
+子命令的退出码由各 spec 的 ``exit_code_from`` 决定（如 ``exists`` 0=true /
+1=false / 2=error），未指定则 0=success / 1=rpc-error / 2=infra-error。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import json
 import sys
 import traceback
@@ -23,65 +32,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .client import DEFAULT_PORT, GameClient
+from .client import DEFAULT_PORT, GameClient, RpcError
 
-# ── RPC 单发子命令（沿用既有实现） ──
+# ── 输出格式与退出码 ──
 
+OUTPUT_JSON = "json"
+OUTPUT_TEXT = "text"
 
-async def cmd_click(client: GameClient, args: list[str]) -> None:
-    result = await client.click(args[0])
-    print(f"clicked: {result}")
+EXIT_OK = 0
+EXIT_RPC_ERROR = 1
+EXIT_INFRA_ERROR = 2  # 连接 / 超时 / 用户输入解析失败
+EXIT_USAGE = 64  # 命令组合无效（如 combo 既无文件又无 --steps-json）
 
-
-async def cmd_screenshot(client: GameClient, args: list[str]) -> None:
-    data = await client.screenshot()
-    if args:
-        output = Path(args[0])
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(data)
-        print(f"screenshot saved: {output} ({len(data)} bytes)")
-    else:
-        print(base64.b64encode(data).decode())
-
-
-async def cmd_tree(client: GameClient, args: list[str]) -> None:
-    depth = int(args[0]) if args else 3
-    tree = await client.get_scene_tree(depth=depth)
-    print(json.dumps(tree, indent=2, ensure_ascii=False))
+# RPC 错误统一信封（无论 --json 还是 --text）的连接/超时占位 code。GD 端
+# 自身的 code 都是正整数（-32601 等 JSON-RPC 标准码也用上了），所以用负数
+# 区分客户端侧错误：避免 agent 拿到 code 时与服务端 code 撞概念。
+CLIENT_CODE_CONNECTION = -1001
+CLIENT_CODE_TIMEOUT = -1002
+CLIENT_CODE_USAGE = -1003
 
 
-async def cmd_press(client: GameClient, args: list[str]) -> None:
-    result = await client.action_press(args[0])
-    print(f"pressed: {result}")
-
-
-async def cmd_release(client: GameClient, args: list[str]) -> None:
-    result = await client.action_release(args[0])
-    print(f"released: {result}")
-
-
-async def cmd_tap(client: GameClient, args: list[str]) -> None:
-    duration = float(args[1]) if len(args) > 1 else 0.1
-    result = await client.action_tap(args[0], duration)
-    print(f"tapped: {result}")
-
-
-async def cmd_hold(client: GameClient, args: list[str]) -> None:
-    result = await client.hold(args[0], float(args[1]))
-    print(f"holding: {result}")
-
-
-async def cmd_combo(client: GameClient, args: list[str]) -> None:
-    steps = json.loads(Path(args[0]).read_text())
-    if isinstance(steps, dict):
-        steps = steps.get("steps", [])
-    result = await client.combo(steps)
-    print(f"combo done: {result}")
-
-
-async def cmd_release_all(client: GameClient, _args: list[str]) -> None:
-    result = await client.release_all()
-    print(f"released all: {result}")
+# ── RpcSpec：声明一个 RPC 子命令 ──
 
 
 @dataclass(frozen=True)
@@ -93,16 +64,302 @@ class Positional:
     help: str
 
 
+def _default_text_formatter(result: Any) -> str:
+    """fallback：把任意结果丢成紧凑 JSON 一行。"""
+    return json.dumps(result, ensure_ascii=False)
+
+
 @dataclass(frozen=True)
 class RpcSpec:
-    name: str
-    handler: Callable[[GameClient, list[str]], Coroutine[Any, Any, None]]
-    description: str
-    positionals: tuple[Positional, ...]
-    example: str  # 不带 prog 前缀的示例命令，如 "click /root/Main/StartButton"
-    # 额外 epilog 段（schema、注意事项等），位于 "示例:" 段之后。空 = 不附加。
-    extra_epilog: str = ""
+    """声明一个走 GameClient 的 RPC 子命令。
 
+    ``handler`` 现在返回原始数据（dict / str / bool / list…），由顶层 dispatcher
+    根据 ``--json`` / ``--text`` 决定信封。这样新增子命令只关心"调哪个 RPC、
+    取什么字段返回"，不再每个都写 print。
+    """
+
+    name: str
+    handler: Callable[[GameClient, argparse.Namespace], Coroutine[Any, Any, Any]]
+    description: str
+    positionals: tuple[Positional, ...] = ()
+    example: str = ""
+    extra_epilog: str = ""
+    # 文本模式下渲染结果的回调；None → 紧凑 JSON。
+    text_formatter: Callable[[Any], str] = _default_text_formatter
+    # 把 result 转成 exit code；返回 0 视为 success，非 0 即使 ok=true 也用作退出码。
+    # 例：exists / visible / wait-node 用这个把布尔结果直通到 exit code。
+    exit_code_from: Callable[[Any], int] | None = None
+    # 额外 argparse 参数注册器（针对带 flag 或复杂位置参数的命令）。
+    extra_args: Callable[[argparse.ArgumentParser], None] | None = None
+    # 连 daemon **之前**跑的用法校验。抛 ValueError 立即给 EXIT_USAGE 信封，
+    # 避免在 daemon 没起的场景下让 agent 干等 30s retry 才看到 "你 combo 没传 steps"。
+    preflight: Callable[[argparse.Namespace], None] | None = None
+
+
+# ── handler：读路径 / 输出 ──
+
+
+def _parse_json_arg(raw: str) -> Any:
+    """先按 JSON 解析；失败 fallback 当字符串字面量。
+
+    让 ``set /root/Foo position '[10, 20]'`` 自然工作，又让
+    ``set /root/Label text Hello`` 不必给字符串裹一层引号。
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def _preflight_combo(ns: argparse.Namespace) -> None:
+    """连 daemon 前用同一份解析逻辑校验 combo 输入；抛 ValueError 即用法错。
+
+    把解析结果缓存到 ``ns._combo_steps``：stdin 只能读一次，handler 不能再读第二次。
+    """
+    ns._combo_steps = _read_combo_steps(ns)
+
+
+def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
+    """三选一读 combo steps：``--steps-json`` / 位置 ``-`` (stdin) / 文件路径。"""
+    steps_json: str | None = getattr(ns, "steps_json", None)
+    json_file: str | None = getattr(ns, "json_file", None)
+
+    if steps_json is not None:
+        if json_file is not None:
+            raise ValueError(
+                "combo: --steps-json 与位置参数 json_file 互斥；二选一"
+            )
+        raw = steps_json
+    elif json_file == "-":
+        raw = sys.stdin.read()
+    elif json_file:
+        raw = Path(json_file).read_text(encoding="utf-8")
+    else:
+        raise ValueError(
+            "combo: 必须提供 json_file 路径、传 - 走 stdin、"
+            "或加 --steps-json '...'"
+        )
+
+    parsed = json.loads(raw)
+    if isinstance(parsed, dict):
+        parsed = parsed.get("steps", [])
+    if not isinstance(parsed, list):
+        raise ValueError("combo: steps 必须是 JSON 数组或 {steps: [...]} 对象")
+    return parsed
+
+
+# ── 现有 RPC 命令 handler（迁移到 ns 签名 + 返回数据） ──
+
+
+async def cmd_click(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.click(ns.node_path)
+
+
+async def cmd_screenshot(client: GameClient, ns: argparse.Namespace) -> dict:
+    """截屏并写文件。``output_path`` 现在必填 —— base64 灌 stdout 的旧路径
+    会撑爆 LLM 上下文，已删。"""
+    data = await client.screenshot()
+    output = Path(ns.output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(data)
+    return {"path": str(output), "bytes": len(data)}
+
+
+async def cmd_tree(client: GameClient, ns: argparse.Namespace) -> dict:
+    depth = int(ns.depth) if ns.depth else 3
+    return await client.get_scene_tree(depth=depth)
+
+
+async def cmd_press(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.action_press(ns.action)
+
+
+async def cmd_release(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.action_release(ns.action)
+
+
+async def cmd_tap(client: GameClient, ns: argparse.Namespace) -> dict:
+    duration = float(ns.duration) if ns.duration else 0.1
+    return await client.action_tap(ns.action, duration)
+
+
+async def cmd_hold(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.hold(ns.action, float(ns.duration))
+
+
+async def cmd_combo(client: GameClient, ns: argparse.Namespace) -> dict:
+    # preflight 已经解析过；走 ns._combo_steps 避免 stdin 二次读。
+    steps = getattr(ns, "_combo_steps", None)
+    if steps is None:
+        steps = _read_combo_steps(ns)
+    return await client.combo(steps)
+
+
+async def cmd_release_all(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.release_all()
+
+
+# ── 新增的 12 个 AI 友好命令 ──
+
+
+async def cmd_get(client: GameClient, ns: argparse.Namespace) -> Any:
+    """读节点属性，返回原值（字符串/数字/数组/对象/null）。"""
+    return await client.get_property(ns.node_path, ns.prop)
+
+
+async def cmd_set(client: GameClient, ns: argparse.Namespace) -> dict:
+    """写节点属性。``value`` 先按 JSON 解析；失败退回字符串字面量。"""
+    value = _parse_json_arg(ns.value)
+    return await client.set_property(ns.node_path, ns.prop, value)
+
+
+async def cmd_call(client: GameClient, ns: argparse.Namespace) -> Any:
+    """调任意节点方法。每个 arg 同样 JSON-or-string 解析。"""
+    raw_args: list[str] = list(ns.args or [])
+    args = [_parse_json_arg(a) for a in raw_args]
+    return await client.call_method(ns.node_path, ns.method, args)
+
+
+async def cmd_text(client: GameClient, ns: argparse.Namespace) -> str:
+    return await client.get_text(ns.node_path)
+
+
+async def cmd_exists(client: GameClient, ns: argparse.Namespace) -> bool:
+    return await client.node_exists(ns.node_path)
+
+
+async def cmd_visible(client: GameClient, ns: argparse.Namespace) -> bool:
+    return await client.is_visible(ns.node_path)
+
+
+async def cmd_children(
+    client: GameClient, ns: argparse.Namespace
+) -> list[dict]:
+    type_filter = ns.type_filter or ""
+    return await client.get_children(ns.node_path, type_filter=type_filter)
+
+
+async def cmd_wait_node(
+    client: GameClient, ns: argparse.Namespace
+) -> dict:
+    timeout = float(ns.timeout) if ns.timeout else 5.0
+    found = await client.wait_for_node(ns.node_path, timeout=timeout)
+    return {"found": found, "path": ns.node_path, "timeout": timeout}
+
+
+async def cmd_wait_time(
+    client: GameClient, ns: argparse.Namespace
+) -> dict:
+    seconds = float(ns.seconds)
+    return await client.wait_game_time(seconds)
+
+
+async def cmd_pressed(
+    client: GameClient, ns: argparse.Namespace
+) -> list[str]:
+    return await client.get_pressed()
+
+
+async def cmd_combo_cancel(
+    client: GameClient, ns: argparse.Namespace
+) -> dict:
+    return await client.combo_cancel()
+
+
+async def cmd_actions(
+    client: GameClient, ns: argparse.Namespace
+) -> list[str]:
+    return await client.list_input_actions(include_builtin=ns.all)
+
+
+# ── text-mode 格式化 helper ──
+
+
+def _fmt_lines(items: list[Any]) -> str:
+    return "\n".join(str(x) for x in items)
+
+
+def _fmt_children_text(items: list[dict]) -> str:
+    return "\n".join(str(c.get("name", "")) for c in items)
+
+
+def _fmt_bool_text(b: Any) -> str:
+    return "true" if b else "false"
+
+
+def _fmt_get_text(value: Any) -> str:
+    """读到的属性：字符串原样输出，其它类型 JSON 序列化。"""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _fmt_tree_text(tree: Any) -> str:
+    return json.dumps(tree, indent=2, ensure_ascii=False)
+
+
+def _fmt_screenshot_text(r: dict) -> str:
+    return f"screenshot saved: {r['path']} ({r['bytes']} bytes)"
+
+
+def _fmt_wait_node_text(r: dict) -> str:
+    return "found" if r["found"] else "timeout"
+
+
+def _fmt_wait_time_text(r: dict) -> str:
+    return f"waited (success={r.get('success', True)})"
+
+
+# ── exit_code_from helpers ──
+
+
+def _exit_from_bool(b: Any) -> int:
+    return EXIT_OK if b else EXIT_RPC_ERROR
+
+
+def _exit_from_wait_node(r: dict) -> int:
+    return EXIT_OK if r.get("found") else EXIT_RPC_ERROR
+
+
+# ── extra_args registrators ──
+
+
+def _register_combo_args(p: argparse.ArgumentParser) -> None:
+    """combo 的 args：``json_file`` 位置可选，加 ``--steps-json``。
+    互斥校验在 ``_read_combo_steps`` 里做（argparse 里不能同时加 dest 冲突的
+    位置参数和可选参数到 mutually_exclusive_group）。"""
+    p.add_argument(
+        "json_file",
+        nargs="?",
+        default=None,
+        help="JSON 文件路径，或 ``-`` 从 stdin 读；可为 [...steps] 或 {\"steps\": [...]}",
+    )
+    p.add_argument(
+        "--steps-json",
+        default=None,
+        help="直接传 JSON 字符串，不需要文件（与位置参数互斥）",
+    )
+
+
+def _register_actions_flag(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="包含 ui_* 内置动作（默认仅项目自定义动作）",
+    )
+
+
+def _register_call_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("node_path", help="绝对节点路径，如 /root/Main")
+    p.add_argument("method", help="节点上的方法名")
+    p.add_argument(
+        "args",
+        nargs="*",
+        help="方法参数；每个先按 JSON 解析失败 fallback 字符串",
+    )
+
+
+# ── RPC_SPECS 注册表 ──
 
 RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
@@ -117,22 +374,20 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             ),
         ),
         example="click /root/Main/StartButton",
+        text_formatter=lambda r: f"clicked: {r}",
     ),
     RpcSpec(
         name="screenshot",
         handler=cmd_screenshot,
         description=(
-            "截屏。带路径则保存 PNG（推荐），不带则把 base64 写到 stdout"
-            "（量大，几 MB 起步，常会撑爆 LLM 上下文）。"
+            "截屏并写 PNG 文件。**路径必填**（旧版本可省、把 base64 喷到 "
+            "stdout —— 已删，避免撑爆 AI 上下文）。"
         ),
         positionals=(
-            Positional(
-                "output_path",
-                "?",
-                "PNG 输出路径；省略则输出 base64（建议总是给路径）",
-            ),
+            Positional("output_path", None, "PNG 输出路径（必填）"),
         ),
         example="screenshot out.png",
+        text_formatter=_fmt_screenshot_text,
     ),
     RpcSpec(
         name="tree",
@@ -142,6 +397,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             Positional("depth", "?", "遍历深度，默认 3"),
         ),
         example="tree 3",
+        text_formatter=_fmt_tree_text,
     ),
     RpcSpec(
         name="press",
@@ -151,6 +407,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             Positional("action", None, "InputMap 动作名，如 jump"),
         ),
         example="press jump",
+        text_formatter=lambda r: f"pressed: {r}",
     ),
     RpcSpec(
         name="release",
@@ -160,6 +417,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             Positional("action", None, "InputMap 动作名"),
         ),
         example="release jump",
+        text_formatter=lambda r: f"released: {r}",
     ),
     RpcSpec(
         name="tap",
@@ -170,6 +428,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             Positional("duration", "?", "按下时长（秒），默认 0.1"),
         ),
         example="tap jump 0.2",
+        text_formatter=lambda r: f"tapped: {r}",
     ),
     RpcSpec(
         name="hold",
@@ -180,19 +439,20 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             Positional("duration", None, "按住时长（秒）"),
         ),
         example="hold jump 1.5",
+        text_formatter=lambda r: f"holding: {r}",
     ),
     RpcSpec(
         name="combo",
         handler=cmd_combo,
-        description="从 JSON 文件读步骤数组并依次执行（按 action / 等 wait 秒）。",
-        positionals=(
-            Positional(
-                "json_file",
-                None,
-                "JSON 文件路径；可为 [...steps] 或 {\"steps\": [...]}",
-            ),
+        description=(
+            "依次执行一段输入动作。三种喂法：位置 ``<file.json>`` / "
+            "位置 ``-`` (stdin) / ``--steps-json '[...]'``。"
         ),
-        example="combo combo.json",
+        positionals=(),  # combo 用 extra_args 自定义
+        example="combo --steps-json '[{\"action\":\"jump\",\"duration\":0.2}]'",
+        extra_args=_register_combo_args,
+        preflight=_preflight_combo,
+        text_formatter=lambda r: f"combo done: {r}",
         extra_epilog=(
             "step schema（每个 step 二选一，按数组顺序串行执行）:\n"
             "  {\"action\": \"<InputMap 动作名>\", \"duration\": <秒，默认 0.1>}\n"
@@ -200,12 +460,15 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             "  {\"wait\": <秒>}\n"
             "      —— 不动作，纯等待\n"
             "\n"
-            "最小可跑 combo.json:\n"
-            "  [\n"
-            "    {\"action\": \"jump\", \"duration\": 0.2},\n"
-            "    {\"wait\": 0.5},\n"
-            "    {\"action\": \"attack\"}\n"
-            "  ]\n"
+            "最小可跑示例:\n"
+            "  godot-cli-control combo --steps-json \\\n"
+            "    '[{\"action\":\"jump\",\"duration\":0.2},{\"wait\":0.3},{\"action\":\"attack\"}]'\n"
+            "\n"
+            "或从文件读：\n"
+            "  godot-cli-control combo combo.json\n"
+            "\n"
+            "或从 stdin 读：\n"
+            "  cat combo.json | godot-cli-control combo -\n"
             "\n"
             "中途可用 release-all 终止。combo 运行期间任何 press / release /\n"
             "再开 combo 都会被服务端 1004 拒绝（不支持重叠按键）。"
@@ -217,6 +480,145 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         description="释放所有当前持有的输入动作。",
         positionals=(),
         example="release-all",
+        text_formatter=lambda r: f"released all: {r}",
+    ),
+    # ── 新增：读 ──
+    RpcSpec(
+        name="get",
+        handler=cmd_get,
+        description="读节点属性。",
+        positionals=(
+            Positional("node_path", None, "绝对节点路径，如 /root/Main"),
+            Positional("prop", None, "属性名，如 position / text / visible"),
+        ),
+        example="get /root/Main/Score text",
+        text_formatter=_fmt_get_text,
+    ),
+    RpcSpec(
+        name="set",
+        handler=cmd_set,
+        description="写节点属性。value 优先按 JSON 解析（数字/数组/对象），失败退回字符串。",
+        positionals=(
+            Positional("node_path", None, "绝对节点路径"),
+            Positional("prop", None, "属性名"),
+            Positional(
+                "value",
+                None,
+                "JSON 字面量或字符串。例：'42' / '\"hello\"' / '[10, 20]' / 'hello'",
+            ),
+        ),
+        example="set /root/Main/Score text \"42\"",
+        text_formatter=lambda r: f"set: {r}",
+    ),
+    RpcSpec(
+        name="call",
+        handler=cmd_call,
+        description=(
+            "调节点方法。每个参数同 set：先 JSON 解析，失败退回字符串。"
+            "返回值原样（同 ``get`` 渲染规则）。"
+        ),
+        positionals=(),  # 用 extra_args 注册（args 是 nargs='*'）
+        example="call /root/Main start_game 1 \"easy\"",
+        extra_args=_register_call_args,
+        text_formatter=_fmt_get_text,
+    ),
+    RpcSpec(
+        name="text",
+        handler=cmd_text,
+        description="读 Label / Button 的 text（get_text 的便捷形式）。",
+        positionals=(
+            Positional("node_path", None, "绝对节点路径"),
+        ),
+        example="text /root/Main/Title",
+        text_formatter=lambda s: s,
+    ),
+    RpcSpec(
+        name="exists",
+        handler=cmd_exists,
+        description=(
+            "节点是否存在。退出码：0=true, 1=false, 2=连接/超时错误。"
+            "shell ``if godot-cli-control exists /root/Foo; then …`` 可用。"
+        ),
+        positionals=(
+            Positional("node_path", None, "绝对节点路径"),
+        ),
+        example="exists /root/Main/Boss",
+        text_formatter=_fmt_bool_text,
+        exit_code_from=_exit_from_bool,
+    ),
+    RpcSpec(
+        name="visible",
+        handler=cmd_visible,
+        description="节点是否可见。退出码同 exists：0=true, 1=false, 2=infra error。",
+        positionals=(
+            Positional("node_path", None, "绝对节点路径"),
+        ),
+        example="visible /root/Main/Hud",
+        text_formatter=_fmt_bool_text,
+        exit_code_from=_exit_from_bool,
+    ),
+    RpcSpec(
+        name="children",
+        handler=cmd_children,
+        description="列出节点的直接子节点（一层）。",
+        positionals=(
+            Positional("node_path", None, "绝对节点路径"),
+            Positional("type_filter", "?", "可选类型过滤，如 Button / Label"),
+        ),
+        example="children /root/Main",
+        text_formatter=_fmt_children_text,
+    ),
+    RpcSpec(
+        name="wait-node",
+        handler=cmd_wait_node,
+        description=(
+            "轮询直到节点出现（或 timeout）。退出码：0=found, 1=timeout, "
+            "2=infra error。"
+        ),
+        positionals=(
+            Positional("node_path", None, "绝对节点路径"),
+            Positional("timeout", "?", "超时秒，默认 5"),
+        ),
+        example="wait-node /root/Main/StartButton 5",
+        text_formatter=_fmt_wait_node_text,
+        exit_code_from=_exit_from_wait_node,
+    ),
+    RpcSpec(
+        name="wait-time",
+        handler=cmd_wait_time,
+        description="按 game time 等待 N 秒（在 --write-movie 模式下与录像帧对齐）。",
+        positionals=(
+            Positional("seconds", None, "等待秒数（>0）"),
+        ),
+        example="wait-time 0.5",
+        text_formatter=_fmt_wait_time_text,
+    ),
+    RpcSpec(
+        name="pressed",
+        handler=cmd_pressed,
+        description="列出当前模拟器持有的输入动作（press + held 去重合并）。",
+        positionals=(),
+        example="pressed",
+        text_formatter=_fmt_lines,
+    ),
+    RpcSpec(
+        name="combo-cancel",
+        handler=cmd_combo_cancel,
+        description="取消正在运行的 combo（不影响 press/hold）。",
+        positionals=(),
+        example="combo-cancel",
+        text_formatter=lambda r: f"cancelled: {r}",
+    ),
+    RpcSpec(
+        name="actions",
+        handler=cmd_actions,
+        description=(
+            "列出运行项目的 InputMap 动作。默认过滤 ui_* 内置；加 ``--all`` 看全。"
+        ),
+        positionals=(),
+        example="actions",
+        extra_args=_register_actions_flag,
+        text_formatter=_fmt_lines,
     ),
 )
 
@@ -224,7 +626,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
 RPC_BY_NAME: dict[str, RpcSpec] = {s.name: s for s in RPC_SPECS}
 
 
-# ── Daemon / run 子命令 ──
+# ── Daemon / run / init 子命令 ──
 
 
 def cmd_daemon_start(ns: argparse.Namespace) -> int:
@@ -240,39 +642,68 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             port=ns.port,
         )
     except DaemonError as e:
-        print(f"错误：{e}", file=sys.stderr)
-        return 1
-    return 0
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
+        return EXIT_INFRA_ERROR
+    if _output_format(ns) == OUTPUT_JSON:
+        # 跟 daemon status 的信封形状对齐，方便 agent 一套 jq 处理三个命令。
+        port = daemon.current_port() or ns.port
+        pid = daemon.read_pid() if daemon.is_running() else None
+        result: dict[str, Any] = {"started": True, "port": port}
+        if pid is not None:
+            result["pid"] = pid
+        _emit_success_payload(result)
+    return EXIT_OK
 
 
-def cmd_daemon_stop(_ns: argparse.Namespace) -> int:
+def cmd_daemon_stop(ns: argparse.Namespace) -> int:
     from .daemon import Daemon, DaemonError
 
     daemon = Daemon(Path.cwd())
     try:
-        return daemon.stop()
+        rc = daemon.stop()
     except DaemonError as e:
-        print(f"错误：{e}", file=sys.stderr)
-        return 1
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
+        return EXIT_INFRA_ERROR
+    if _output_format(ns) == OUTPUT_JSON:
+        # rc 0=正常停 / 2=ffmpeg 转码失败但 daemon 已停。两种都算"stopped"，
+        # 把 rc 透出让 agent 决定要不要 retry transcode。
+        _emit_success_payload({"stopped": True, "rc": rc})
+    return rc
 
 
-def cmd_daemon_status(_ns: argparse.Namespace) -> int:
+def cmd_daemon_status(ns: argparse.Namespace) -> int:
     """打印 daemon 状态；exit 0=运行中，1=未运行。
 
-    用 stdout 输出 ``running pid=<pid> port=<port>`` 或 ``stopped``，方便脚本
-    grep；exit code 让 shell `if godot-cli-control daemon status; then …` 直
-    接可用，避免 RPC 调用前先靠 ``tree`` 失败试探。
+    JSON 模式（默认）：
+      ``{"ok": true, "result": {"state": "running", "pid": <int>, "port": <int>}}``
+      / ``{"ok": true, "result": {"state": "stopped"}}``
+    Text 模式：
+      ``running pid=<pid> port=<port>`` / ``stopped``
+
+    退出码语义不变（shell ``if godot-cli-control daemon status; then …`` 仍能用）。
     """
     from .daemon import Daemon
 
+    fmt = _output_format(ns)
     daemon = Daemon(Path.cwd())
     if daemon.is_running():
         pid = daemon.read_pid()
         port = daemon.current_port()
-        print(f"running pid={pid} port={port if port is not None else '?'}")
-        return 0
-    print("stopped")
-    return 1
+        if fmt == OUTPUT_JSON:
+            payload: dict[str, Any] = {"state": "running", "pid": pid}
+            if port is not None:
+                payload["port"] = port
+            _emit_success_payload(payload)
+        else:
+            print(
+                f"running pid={pid} port={port if port is not None else '?'}"
+            )
+        return EXIT_OK
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload({"state": "stopped"})
+    else:
+        print("stopped")
+    return EXIT_RPC_ERROR
 
 
 def cmd_run(ns: argparse.Namespace) -> int:
@@ -387,6 +818,44 @@ def cmd_init(ns: argparse.Namespace) -> int:
     )
 
 
+# ── 输出信封 ──
+
+
+def _output_format(ns: argparse.Namespace) -> str:
+    """从 ns 取 ``output_format``；缺省（直接 ``Namespace()`` 调测试）回退 json。"""
+    return getattr(ns, "output_format", OUTPUT_JSON) or OUTPUT_JSON
+
+
+def _emit_success_payload(result: Any) -> None:
+    print(json.dumps({"ok": True, "result": result}, ensure_ascii=False))
+
+
+def _emit_error_payload(code: int, message: str) -> None:
+    print(
+        json.dumps(
+            {"ok": False, "error": {"code": code, "message": message}},
+            ensure_ascii=False,
+        )
+    )
+
+
+def _emit_top_error(ns: argparse.Namespace, code: int, message: str) -> None:
+    """daemon start/stop 这类非 RPC 命令出错时统一信封。"""
+    if _output_format(ns) == OUTPUT_JSON:
+        _emit_error_payload(code, message)
+    else:
+        print(f"错误：{message}", file=sys.stderr)
+
+
+def _emit_rpc_result(spec: RpcSpec, fmt: str, result: Any) -> None:
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload(result)
+    else:
+        text = spec.text_formatter(result)
+        if text:
+            print(text)
+
+
 # ── argparse 装配 ──
 
 
@@ -396,30 +865,29 @@ _TOP_EPILOG = """\
   Daemon 管理:
     daemon start    启动 Godot daemon（可选录制 / headless）
     daemon stop     停止当前 daemon
-    daemon status   显示当前 daemon 状态（pid / port），exit 0=运行中，1=未运行
+    daemon status   显示 daemon 状态（pid / port），exit 0=运行中，1=未运行
     run <script>    自动启停 daemon 并跑用户脚本（脚本需定义 run(bridge)）
 
   接入:
     init            在 Godot 项目根一键复制插件、patch project.godot
 
-  RPC 单发（需先有 daemon 在跑）:
-    click           对节点触发点击
-    screenshot      截屏（PNG 或 base64）
-    tree            dump 场景树 JSON
-    press / release 按下 / 释放输入动作
-    tap / hold      短按 / 按住一段时长
-    combo           从 JSON 文件批量执行输入动作
-    release-all     释放所有当前持有的动作
+  RPC 一发命令（需先 daemon 在跑）:
+    读：     get / text / exists / visible / children / tree / pressed / actions
+    写：     set / call / click
+    输入：   press / release / tap / hold / combo / combo-cancel / release-all
+    等待：   wait-node / wait-time
+    截图：   screenshot
 
-注意：除 RPC 子命令外，仅这里这条 CLI 链上有 click/tree/screenshot 等
-能力；GameClient（Python）还提供 get_text / get_property /
-wait_for_node 等额外方法（不是 CLI 子命令）。需要在 shell 里多步操作时
-请写 `def run(bridge):` 脚本走 `godot-cli-control run`。
+输出契约（默认 --json，AI 友好）:
+  成功： {"ok": true, "result": <data>}        单行 stdout，exit 0
+  失败： {"ok": false, "error": {"code":N,"message":"..."}}
+                                              单行 stdout，exit 1（RPC）/ 2（连接、用法）
+  --text / --no-json 可切回旧的人类可读模式。
 
 任意子命令后追加 -h 查看详情，例如：
   godot-cli-control click -h
-  godot-cli-control daemon start -h
   godot-cli-control combo -h        # 含 step JSON schema 与示例
+  godot-cli-control daemon start -h
 """
 
 
@@ -448,6 +916,36 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
+    """全局 ``--json`` / ``--text`` / ``--no-json``。
+
+    默认 json 是 0.2.0 起的新行为（向 AI agent 倾斜）。``--no-json`` 是
+    ``--text`` 的别名，方便顺手敲。
+    """
+    p.add_argument(
+        "--json",
+        dest="output_format",
+        action="store_const",
+        const=OUTPUT_JSON,
+        default=OUTPUT_JSON,
+        help="输出 JSON 信封（默认）",
+    )
+    p.add_argument(
+        "--text",
+        dest="output_format",
+        action="store_const",
+        const=OUTPUT_TEXT,
+        help="输出旧的人类可读字符串（不再加信封；errors 走 stderr）",
+    )
+    p.add_argument(
+        "--no-json",
+        dest="output_format",
+        action="store_const",
+        const=OUTPUT_TEXT,
+        help="--text 别名",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     from . import _version
 
@@ -473,6 +971,7 @@ def build_parser() -> argparse.ArgumentParser:
             "start / run 启动 daemon 时请用其各自的 --port。"
         ),
     )
+    _add_output_format_flags(parser)
     subs = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     # daemon 组
@@ -481,7 +980,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="管理 Godot daemon 进程",
         description="管理 Godot daemon 进程的启停与状态查询。",
     )
-    daemon_subs = daemon_p.add_subparsers(dest="action", required=True, metavar="<action>")
+    daemon_subs = daemon_p.add_subparsers(
+        dest="action", required=True, metavar="<action>"
+    )
 
     start_p = daemon_subs.add_parser(
         "start",
@@ -503,6 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
             "打印 daemon 状态到 stdout 并以 exit code 表示："
             "0 = 运行中（输出 running pid=<pid> port=<port>），"
             "1 = 未运行（输出 stopped）。"
+            "默认输出 JSON 信封；加 --text 切回旧的字符串格式。"
         ),
     )
 
@@ -583,9 +1085,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # RPC 单发命令
     for spec in RPC_SPECS:
-        epilog = f"示例:\n  godot-cli-control {spec.example}"
+        epilog_parts: list[str] = []
+        if spec.example:
+            epilog_parts.append(f"示例:\n  godot-cli-control {spec.example}")
         if spec.extra_epilog:
-            epilog += "\n\n" + spec.extra_epilog
+            epilog_parts.append(spec.extra_epilog)
+        epilog = "\n\n".join(epilog_parts) if epilog_parts else None
         sp = subs.add_parser(
             spec.name,
             help=spec.description,
@@ -598,6 +1103,8 @@ def build_parser() -> argparse.ArgumentParser:
             if pos.nargs is not None:
                 kwargs["nargs"] = pos.nargs
             sp.add_argument(pos.name, **kwargs)
+        if spec.extra_args is not None:
+            spec.extra_args(sp)
     return parser
 
 
@@ -635,6 +1142,52 @@ def format_full_help() -> str:
     return "\n".join(sections)
 
 
+# ── 主入口 ──
+
+
+async def _run_rpc(
+    spec: RpcSpec, ns: argparse.Namespace, port: int, fmt: str
+) -> int:
+    """启 client → 调 handler → 发信封 → 算 exit code。
+
+    所有非系统级异常在这里收口，让 ``main()`` 拿到一个干净的 exit code。
+    """
+    try:
+        async with GameClient(port=port) as client:
+            result = await spec.handler(client, ns)
+    except RpcError as e:
+        if fmt == OUTPUT_JSON:
+            _emit_error_payload(e.code, e.message)
+        else:
+            print(f"错误：[{e.code}] {e.message}", file=sys.stderr)
+        return EXIT_RPC_ERROR
+    except (ConnectionError, asyncio.TimeoutError, OSError) as e:
+        # 网络层 / IO 层失败：daemon 没起、proxy 干扰、socket 半关等
+        code = (
+            CLIENT_CODE_TIMEOUT
+            if isinstance(e, asyncio.TimeoutError)
+            else CLIENT_CODE_CONNECTION
+        )
+        msg = str(e) or e.__class__.__name__
+        if fmt == OUTPUT_JSON:
+            _emit_error_payload(code, msg)
+        else:
+            print(f"错误：[{code}] {msg}", file=sys.stderr)
+        return EXIT_INFRA_ERROR
+    except (ValueError, json.JSONDecodeError) as e:
+        # 用法错误：combo 没文件没 inline、set value 解析失败……
+        if fmt == OUTPUT_JSON:
+            _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+        else:
+            print(f"错误：{e}", file=sys.stderr)
+        return EXIT_INFRA_ERROR
+
+    _emit_rpc_result(spec, fmt, result)
+    if spec.exit_code_from is not None:
+        return spec.exit_code_from(result)
+    return EXIT_OK
+
+
 def main() -> None:
     parser = build_parser()
     ns = parser.parse_args()
@@ -655,30 +1208,28 @@ def main() -> None:
     # RPC：解析端口（顶层 --port → port file → 默认）
     if ns.cmd in RPC_BY_NAME:
         spec = RPC_BY_NAME[ns.cmd]
+        fmt = _output_format(ns)
+
+        # preflight：连 daemon 之前的用法校验（如 combo 没传 steps）。让 agent
+        # 立刻看到 EXIT_USAGE 信封，不必等 30s connection retry。
+        if spec.preflight is not None:
+            try:
+                spec.preflight(ns)
+            except (ValueError, json.JSONDecodeError) as e:
+                if fmt == OUTPUT_JSON:
+                    _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+                else:
+                    print(f"错误：{e}", file=sys.stderr)
+                sys.exit(EXIT_USAGE)
+
         port = ns.port
         if port is None:
             from .daemon import Daemon
 
             port = Daemon(Path.cwd()).current_port() or DEFAULT_PORT
 
-        # 按 spec.positionals 从 ns 收集参数为 list[str]，handler 签名不变。
-        # 各 nargs 在 ns 上的形态：None → str；"?" → str | None；"*"/"+" → list[str]。
-        rpc_args: list[str] = []
-        for pos in spec.positionals:
-            val = getattr(ns, pos.name)
-            if val is None:
-                continue
-            if isinstance(val, list):
-                rpc_args.extend(val)
-            else:
-                rpc_args.append(val)
-
-        async def run() -> None:
-            async with GameClient(port=port) as client:
-                await spec.handler(client, rpc_args)
-
-        asyncio.run(run())
-        return
+        rc = asyncio.run(_run_rpc(spec, ns, port, fmt))
+        sys.exit(rc)
 
     parser.error(f"unknown command: {ns.cmd}")
 

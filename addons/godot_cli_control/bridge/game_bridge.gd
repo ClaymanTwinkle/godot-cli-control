@@ -117,6 +117,7 @@ func _register_methods() -> void:
 	_methods["input_action_release"] = {"callable": _input_sim_api.handle_action_release, "kind": "sync"}
 	_methods["input_action_tap"] = {"callable": _input_sim_api.handle_action_tap, "kind": "sync"}
 	_methods["input_get_pressed"] = {"callable": _input_sim_api.handle_get_pressed, "kind": "sync"}
+	_methods["list_input_actions"] = {"callable": _input_sim_api.handle_list_input_actions, "kind": "sync"}
 	_methods["input_hold"] = {"callable": _input_sim_api.handle_hold, "kind": "sync"}
 	_methods["input_release_all"] = {"callable": _input_sim_api.handle_release_all, "kind": "sync"}
 	_methods["input_combo_cancel"] = {"callable": _input_sim_api.handle_combo_cancel, "kind": "sync"}

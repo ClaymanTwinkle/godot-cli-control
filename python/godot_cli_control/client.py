@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_PORT: int = 9877
 
 
+class RpcError(RuntimeError):
+    """Raised when GameBridge returns a JSON-RPC error response.
+
+    保留服务端返回的 ``code`` 字段，方便上层（CLI ``--json`` 信封、调用方
+    针对特定错误码 retry）做精确处理。继承 ``RuntimeError`` 以保持向后
+    兼容——既有 ``except RuntimeError`` 仍能 catch。
+    """
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class GameClient:
     """WebSocket client that connects to Godot's GameBridge service."""
 
@@ -97,7 +111,11 @@ class GameClient:
             ) as e:
                 if attempt < retries - 1:
                     wait = min(backoff * (2**attempt), max_wait)
-                    logger.warning(
+                    # 用 debug 而非 warning：daemon 启动期间的 retry 是预期行为，
+                    # 不该污染 stderr —— CLI 默认 JSON 输出后 ``cmd 2>&1 | jq`` 会
+                    # 把 retry 行混进去。最终 ConnectionError 仍然抛出，由 dispatcher
+                    # 信封化到 stdout，agent 在那里能拿到完整失败信号。
+                    logger.debug(
                         "Connection attempt %d failed: %s. Retrying in %.1fs...",
                         attempt + 1, e, wait,
                     )
@@ -163,8 +181,10 @@ class GameClient:
             self._pending.pop(req_id, None)
             raise
         if "error" in response:
-            raise RuntimeError(
-                f"GameBridge error: {response['error']['message']}"
+            err = response["error"]
+            raise RpcError(
+                int(err.get("code", -1)),
+                str(err.get("message", "")),
             )
         return response.get("result", {})
 
@@ -278,3 +298,28 @@ class GameClient:
 
     async def release_all(self) -> dict:
         return await self.request("input_release_all")
+
+    async def get_pressed(self) -> list[str]:
+        """Return the list of input actions currently held by the simulator.
+
+        Wraps the ``input_get_pressed`` RPC; server returns
+        ``{"actions": [...]}`` (already the dedup'd union of momentary +
+        timed-hold actions). Returns a fresh ``list[str]`` so callers can
+        mutate without affecting the cached response.
+        """
+        result = await self.request("input_get_pressed")
+        return [str(a) for a in result.get("actions", [])]
+
+    async def list_input_actions(
+        self, include_builtin: bool = False
+    ) -> list[str]:
+        """List InputMap actions defined in the running project.
+
+        ``include_builtin=False`` (default) drops Godot's ``ui_*`` actions
+        so the result is just the project's own actions — what an AI agent
+        actually wants to see.
+        """
+        result = await self.request(
+            "list_input_actions", {"include_builtin": include_builtin}
+        )
+        return [str(a) for a in result.get("actions", [])]

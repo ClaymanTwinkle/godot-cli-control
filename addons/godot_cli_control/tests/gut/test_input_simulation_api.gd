@@ -112,3 +112,54 @@ func test_release_all_clears_pressed_and_held() -> void:
 	_api.release_all()
 	assert_eq(_api.get_pressed_actions().size(), 0)
 	assert_false(_api.has_active_holds())
+
+
+# ── list_input_actions（0.2.0 新增：AI agent 发现项目动作） ──────────
+
+func test_list_input_actions_default_filters_ui_builtins() -> void:
+	if not InputMap.has_action("test_jump"):
+		InputMap.add_action("test_jump")
+	if not InputMap.has_action("ui_test_accept"):
+		InputMap.add_action("ui_test_accept")
+
+	var result: Dictionary = _api.handle_list_input_actions({})
+	assert_has(result, "actions")
+	var actions: Array = result.actions
+	assert_true("test_jump" in actions, "项目自定义动作应出现")
+	assert_false("ui_test_accept" in actions, "ui_* 内置默认应被过滤")
+
+	InputMap.erase_action("test_jump")
+	InputMap.erase_action("ui_test_accept")
+
+
+func test_list_input_actions_include_builtin_returns_all() -> void:
+	if not InputMap.has_action("test_attack"):
+		InputMap.add_action("test_attack")
+	if not InputMap.has_action("ui_test_cancel"):
+		InputMap.add_action("ui_test_cancel")
+
+	var result: Dictionary = _api.handle_list_input_actions({"include_builtin": true})
+	var actions: Array = result.actions
+	assert_true("test_attack" in actions)
+	assert_true("ui_test_cancel" in actions, "include_builtin=true 应包含 ui_*")
+
+	InputMap.erase_action("test_attack")
+	InputMap.erase_action("ui_test_cancel")
+
+
+func test_list_input_actions_returns_sorted() -> void:
+	# 排序让 AI agent 输出可预测、便于 diff。
+	for name in ["zzz_act", "aaa_act", "mmm_act"]:
+		if not InputMap.has_action(name):
+			InputMap.add_action(name)
+
+	var result: Dictionary = _api.handle_list_input_actions({})
+	var actions: Array = result.actions
+	var picked: Array = []
+	for a in actions:
+		if a in ["aaa_act", "mmm_act", "zzz_act"]:
+			picked.append(a)
+	assert_eq(picked, ["aaa_act", "mmm_act", "zzz_act"], "actions 应按字母序返回")
+
+	for name in ["zzz_act", "aaa_act", "mmm_act"]:
+		InputMap.erase_action(name)

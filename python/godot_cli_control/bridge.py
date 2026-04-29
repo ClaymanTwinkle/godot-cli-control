@@ -55,6 +55,14 @@ class GameBridge:
         """检查节点是否存在。"""
         return self._run(self._client.node_exists(path))
 
+    def is_visible(self, path: str) -> bool:
+        """检查节点是否可见（CanvasItem.is_visible_in_tree）。"""
+        return self._run(self._client.is_visible(path))
+
+    def get_text(self, path: str) -> str:
+        """读取 Label / Button 等节点的 ``text`` 属性（带空字符串兜底）。"""
+        return self._run(self._client.get_text(path))
+
     def wait_for_node(self, path: str, timeout: float = 5.0) -> bool:
         """等待节点出现。"""
         return self._run(self._client.wait_for_node(path, timeout=timeout))
@@ -90,6 +98,18 @@ class GameBridge:
     def combo(self, steps: list[dict]) -> dict:
         """执行连续动作序列。"""
         return self._run(self._client.combo(steps))
+
+    def combo_cancel(self) -> dict:
+        """取消正在运行的 combo（不动 press/hold 状态）。"""
+        return self._run(self._client.combo_cancel())
+
+    def get_pressed(self) -> list[str]:
+        """当前模拟器持有的输入动作列表（press + held 去重合并）。"""
+        return self._run(self._client.get_pressed())
+
+    def list_input_actions(self, include_builtin: bool = False) -> list[str]:
+        """列出运行中项目的 InputMap 动作。默认过滤 ui_* 内置。"""
+        return self._run(self._client.list_input_actions(include_builtin))
 
     # ── 截图 ──
 

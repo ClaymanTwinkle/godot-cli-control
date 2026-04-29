@@ -229,3 +229,190 @@ def test_websockets_connect_supports_proxy_kwarg() -> None:
     sig = inspect.signature(websockets.connect)
     assert "proxy" in sig.parameters, \
         f"websockets.connect missing 'proxy' kwarg; version {websockets.__version__} too old"
+
+
+# ---- 0.2.0：RpcError 必须保留服务端 code ----
+
+
+@pytest.mark.asyncio
+async def test_connect_retries_log_at_debug_not_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """daemon 启动期间的 connection retry 是预期行为，不应该污染 stderr。
+
+    新增于 0.2.0：CLI 默认 JSON-on-stdout 后，``cmd 2>&1 | jq`` 这种常见管道会
+    把 retry 行混进去破坏解析。把 logger.warning 降级到 logger.debug，
+    最终 ConnectionError 仍然抛出由 dispatcher 信封化。
+    """
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="godot_cli_control.client")
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(side_effect=ConnectionRefusedError("nope")),
+    ):
+        client = GameClient(port=9999)
+        with pytest.raises(ConnectionError):
+            await client.connect(retries=2, backoff=0.01, max_wait=0.01)
+
+    # retry 行应该有 —— 但只在 DEBUG 级别
+    debug_msgs = [
+        r for r in caplog.records
+        if r.levelno == logging.DEBUG
+        and "Connection attempt" in r.getMessage()
+    ]
+    assert debug_msgs, "应记录至少一条 retry debug 日志"
+
+    warning_msgs = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING
+        and "Retrying" in r.getMessage()
+    ]
+    assert not warning_msgs, (
+        f"retry 不应在 WARNING+ 级别打印（会污染 AI 的 jq 管道），"
+        f"实际看到：{[r.getMessage() for r in warning_msgs]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_raises_rpc_error_with_code() -> None:
+    """GD 端 ``_send_error(id, code, msg)`` 返回的 code 不能在客户端被丢掉 ——
+    CLI ``--json`` 信封要把它转给 agent 做精确处理（如 1004 combo-in-progress 重试）。"""
+    from godot_cli_control.client import RpcError
+
+    fake_ws = AsyncMock()
+
+    async def hang_iter():
+        # 让 listen task 保持活着 —— 我们手动通过 _pending 注入响应。
+        await asyncio.Event().wait()
+        yield  # noqa: unreachable
+
+    fake_ws.__aiter__ = lambda self: hang_iter()
+    fake_ws.send = AsyncMock()
+    fake_ws.close = AsyncMock()
+
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ):
+        client = GameClient(port=9999)
+        await client.connect(retries=1)
+        try:
+            # 拿到 request 内部生成的 id 后注入一个错误响应
+            loop = asyncio.get_running_loop()
+
+            async def inject_error_after_send():
+                await asyncio.sleep(0.01)
+                req_id = next(iter(client._pending))
+                client._pending[req_id].set_result(
+                    {
+                        "id": req_id,
+                        "error": {"code": 1004, "message": "combo in progress"},
+                    }
+                )
+
+            loop.create_task(inject_error_after_send())
+            with pytest.raises(RpcError) as exc_info:
+                await client.request("input_action_press", timeout=2.0)
+            assert exc_info.value.code == 1004
+            assert exc_info.value.message == "combo in progress"
+            # RuntimeError 子类：老代码 except RuntimeError 仍能 catch
+            assert isinstance(exc_info.value, RuntimeError)
+        finally:
+            if client._listen_task:
+                client._listen_task.cancel()
+                try:
+                    await client._listen_task
+                except asyncio.CancelledError:
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_get_pressed_unwraps_actions_field() -> None:
+    """``get_pressed()`` 必须把 GD 返回的 ``{"actions":[...]}`` 解成 list[str]。"""
+    fake_ws = AsyncMock()
+
+    async def hang_iter():
+        # 让 listen task 保持活着 —— 我们手动通过 _pending 注入响应。
+        await asyncio.Event().wait()
+        yield  # noqa: unreachable
+
+    fake_ws.__aiter__ = lambda self: hang_iter()
+    fake_ws.send = AsyncMock()
+    fake_ws.close = AsyncMock()
+
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ):
+        client = GameClient(port=9999)
+        await client.connect(retries=1)
+        try:
+            loop = asyncio.get_running_loop()
+
+            async def inject_response():
+                await asyncio.sleep(0.01)
+                req_id = next(iter(client._pending))
+                client._pending[req_id].set_result(
+                    {"id": req_id, "result": {"actions": ["jump", "attack"]}}
+                )
+
+            loop.create_task(inject_response())
+            actions = await client.get_pressed()
+            assert actions == ["jump", "attack"]
+        finally:
+            if client._listen_task:
+                client._listen_task.cancel()
+                try:
+                    await client._listen_task
+                except asyncio.CancelledError:
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_list_input_actions_passes_include_builtin_param() -> None:
+    """``list_input_actions(include_builtin=True)`` 必须把参数透传给 RPC，
+    否则 GD 端默认过滤 ui_*。"""
+    fake_ws = AsyncMock()
+
+    async def hang_iter():
+        # 让 listen task 保持活着 —— 我们手动通过 _pending 注入响应。
+        await asyncio.Event().wait()
+        yield  # noqa: unreachable
+
+    fake_ws.__aiter__ = lambda self: hang_iter()
+    fake_ws.send = AsyncMock()
+    fake_ws.close = AsyncMock()
+
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ):
+        client = GameClient(port=9999)
+        await client.connect(retries=1)
+        try:
+            loop = asyncio.get_running_loop()
+
+            async def inject_response():
+                await asyncio.sleep(0.01)
+                req_id = next(iter(client._pending))
+                client._pending[req_id].set_result(
+                    {"id": req_id, "result": {"actions": ["jump"]}}
+                )
+
+            loop.create_task(inject_response())
+            actions = await client.list_input_actions(include_builtin=True)
+            assert actions == ["jump"]
+            # 校验 send 出去的 payload 里 include_builtin=True
+            sent_raw = fake_ws.send.call_args.args[0]
+            import json as _json
+            sent = _json.loads(sent_raw)
+            assert sent["method"] == "list_input_actions"
+            assert sent["params"] == {"include_builtin": True}
+        finally:
+            if client._listen_task:
+                client._listen_task.cancel()
+                try:
+                    await client._listen_task
+                except asyncio.CancelledError:
+                    pass
