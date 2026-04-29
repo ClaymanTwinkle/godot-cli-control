@@ -48,7 +48,7 @@ func _ready() -> void:
 	if err != OK:
 		push_error("GameBridge: Failed to listen on port %d: %s" % [_port, error_string(err)])
 		return
-	print("GameBridge: Listening on ws://localhost:%d" % _port)
+	print("GameBridge: Listening on ws://127.0.0.1:%d" % _port)
 
 
 func _process(_delta: float) -> void:

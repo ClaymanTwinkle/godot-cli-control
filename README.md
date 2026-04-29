@@ -60,7 +60,14 @@ Both are rendered from the same template and pin the current CLI version + `--he
 godot-cli-control init --skills-only
 ```
 
-If you have hand-edited a `SKILL.md` and want to keep your version, use `godot-cli-control init --no-skills` going forward — the two flags are mutually exclusive.
+If you have hand-edited a `SKILL.md` and want to keep your version, you have two options:
+
+- `godot-cli-control init --no-skills` — skip skill writes entirely going forward
+- `godot-cli-control init --skills-no-clobber` — keep existing files, only fill in missing ones (e.g., refresh just the half you accidentally deleted)
+
+The two `--no-*` flags above are mutually exclusive with each other; `--skills-no-clobber` is orthogonal and may be combined with `--skills-only`.
+
+> Optional: add `.claude/` and `.codex/` to your project's `.gitignore` if you don't want the SKILL.md files committed to source control. They are reproducible from the CLI any time via `godot-cli-control init --skills-only`.
 
 ## Manual install (advanced)
 
