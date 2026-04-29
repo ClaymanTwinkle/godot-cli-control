@@ -319,3 +319,27 @@ def test_init_skills_only_still_validates_godot_project(tmp_path: Path) -> None:
 
     assert rc == 1
     assert not (tmp_path / CLAUDE_REL).exists()
+
+
+def test_init_skills_no_clobber_preserves_existing(tmp_path: Path) -> None:
+    """clobber_skills=False 遇到已存在的 SKILL.md 时保留原内容、补缺另一条。"""
+    from godot_cli_control.init_cmd import run_init
+    from godot_cli_control.skills_install import CLAUDE_REL, CODEX_REL
+
+    proj = _make_min_godot_project(tmp_path)
+    # 预先手写 .claude 那份；.codex 缺失
+    (proj / CLAUDE_REL).parent.mkdir(parents=True, exist_ok=True)
+    (proj / CLAUDE_REL).write_text("USER_CUSTOM_KEEP_ME", encoding="utf-8")
+
+    rc = run_init(proj, skills_only=True, clobber_skills=False)
+
+    assert rc == 0
+    # 已存在那条不动
+    assert (
+        (proj / CLAUDE_REL).read_text(encoding="utf-8") == "USER_CUSTOM_KEEP_ME"
+    )
+    # 缺失那条补上
+    assert (proj / CODEX_REL).is_file()
+    assert "USER_CUSTOM_KEEP_ME" not in (
+        proj / CODEX_REL
+    ).read_text(encoding="utf-8")

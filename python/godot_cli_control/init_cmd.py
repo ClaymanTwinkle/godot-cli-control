@@ -35,6 +35,7 @@ def run_init(
     force: bool = False,
     write_skills: bool = True,
     skills_only: bool = False,
+    clobber_skills: bool = True,
 ) -> int:
     """实施接入流程。返回进程 exit code。
 
@@ -42,6 +43,9 @@ def run_init(
     godot_bin 检测），只写 SKILL.md —— 用于 CLI 升级后单独刷新 skill。
     ``write_skills=False``：跳过第 5 步，给已自定义 skill 的用户留逃生口。
     两者由 cli.py 侧的 mutually_exclusive_group 保证不会同时为真。
+    ``clobber_skills=False``：写 skill 时遇到已存在文件就跳过（用户改过
+    SKILL.md、希望保留本地版又允许 init 把缺失那条补上时用）。与
+    ``write_skills=False`` / ``skills_only=True`` 都兼容。
     """
     if not (project_root / "project.godot").is_file():
         print(
@@ -102,6 +106,9 @@ def run_init(
             )
 
     if write_skills:
+        # lazy import：保持与 cli.cmd_init 那侧 `from .init_cmd import run_init`
+        # 对称，两边都不在模块顶层 import，避免任一方将来改成顶层 import
+        # 时形成循环 import。
         from . import _version, cli, skills_install
 
         cli_help = cli.build_parser().format_help()
@@ -110,7 +117,10 @@ def run_init(
             project_root,
             version=version,
             cli_help=cli_help,
-            force=True,  # init 默认即覆盖（spec §4 决定）
+            # 默认 clobber_skills=True 即覆盖（spec §4 决定，让 SKILL.md 跟随
+            # 版本与 CLI 帮助自动同步）；用户加 --skills-no-clobber 时不动现
+            # 有文件，只补缺。
+            force=clobber_skills,
         )
         for p in written:
             print(f"写入 skill：{p.relative_to(project_root)}")

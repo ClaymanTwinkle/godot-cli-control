@@ -334,6 +334,7 @@ def cmd_init(ns: argparse.Namespace) -> int:
         force=ns.force,
         write_skills=not ns.no_skills,
         skills_only=ns.skills_only,
+        clobber_skills=not ns.skills_no_clobber,
     )
 
 
@@ -459,6 +460,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="覆盖已存在的 addons/godot_cli_control",
+    )
+    init_p.add_argument(
+        "--skills-no-clobber",
+        action="store_true",
+        help=(
+            "写 skill 时跳过已存在的 .claude/.codex SKILL.md（默认会覆盖以"
+            "保证版本与 CLI 帮助同步）。与 --no-skills / --skills-only 都兼容。"
+        ),
     )
     skills_group = init_p.add_mutually_exclusive_group()
     skills_group.add_argument(

@@ -148,3 +148,19 @@ def test_init_subcommand_rejects_both_flags() -> None:
 
     with pytest.raises(SystemExit):
         build_parser().parse_args(["init", "--no-skills", "--skills-only"])
+
+
+def test_init_subcommand_accepts_skills_no_clobber() -> None:
+    """--skills-no-clobber 正交于互斥组，可单独使用、也可搭 --skills-only。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["init", "--skills-no-clobber"])
+    assert ns.skills_no_clobber is True
+    assert ns.no_skills is False
+    assert ns.skills_only is False
+
+    ns2 = build_parser().parse_args(
+        ["init", "--skills-only", "--skills-no-clobber"]
+    )
+    assert ns2.skills_only is True
+    assert ns2.skills_no_clobber is True
