@@ -213,7 +213,7 @@ func _should_activate() -> bool:
 		return true
 	if OS.get_environment("GODOT_CLI_CONTROL") == "1":
 		return true
-	if OS.is_debug_build() and ProjectSettings.get_setting(SETTING_AUTO_ENABLE, false):
+	if OS.is_debug_build() and ProjectSettings.get_setting(SETTING_AUTO_ENABLE, true):
 		return true
 	return false
 

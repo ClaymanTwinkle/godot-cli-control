@@ -22,7 +22,7 @@ func _exit_tree() -> void:
 func _ensure_project_settings() -> void:
 	_register_setting(
 		GameBridgeScript.SETTING_AUTO_ENABLE,
-		false,
+		true,
 		TYPE_BOOL,
 		"Auto-start CLI control server in debug builds (release builds always disabled)",
 	)

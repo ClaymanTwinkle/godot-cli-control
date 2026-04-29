@@ -103,20 +103,20 @@ Error codes: `-32600` invalid request, `-32601` unknown method, `-32602` invalid
 
 ## Activation Modes
 
-The plugin defaults to **OFF** even when enabled — you must trigger one of three activation paths:
+Activation paths (any one triggers the bridge):
 
 | Path | Activate by | Use case |
 |---|---|---|
 | **CLI flag** | Pass `--cli-control` to Godot binary | Wrapper script / pytest / CI (this is what `daemon start` uses) |
 | **Env var** | `export GODOT_CLI_CONTROL=1` before launching Godot | Editor F5 with launch args |
-| **Project Setting** | Enable `godot_cli_control/auto_enable_in_debug` in Project Settings | Editor-only debugging; **release builds always disabled regardless** |
+| **Project Setting** | `godot_cli_control/auto_enable_in_debug` (defaults to **ON**) | Editor / debug builds; **release builds always disabled regardless**. Set to `false` to opt out. |
 
 If none triggered, the plugin prints `[Godot CLI Control] inactive — ...` to console and self-destructs the autoload.
 
 ## Security Model
 
 - **TCP server binds 127.0.0.1 only** (never 0.0.0.0). Use SSH tunnel for remote.
-- **Default OFF + release-disabled Project Setting path** prevents accidentally shipping the WebSocket server to players.
+- **Release builds always disabled** via `OS.is_debug_build()` gate — the auto-enable Project Setting only takes effect in debug builds, so exported release games never expose the WebSocket.
 - **PID/port files have mode 0600** (only the running user can read).
 - **Method/property blacklist**: `queue_free`, `set_script`, `add_child`, `texture`, `material`, `script`, `process_mode`, etc., are blocked from RPC mutation. Custom safe hooks: define methods on your business nodes and call via `call_method`.
 - **No auth token** — localhost binding is the primary boundary. Multi-user dev machines should keep daemon stopped when not in use.
