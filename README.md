@@ -4,9 +4,10 @@ WebSocket bridge for headless / scripted control of Godot 4 scenes — click nod
 read/write properties, simulate input, take screenshots, record movies — from a
 Python or shell client.
 
-> **Status**: alpha (`0.1.0`). Dogfooded in
-> [`godot-2d-skeleton`](https://github.com/ClaymanTwinkle/godot-2d-skeleton).
-> Not yet on PyPI / AssetLib.
+> **Status**: alpha. On PyPI (`pipx install godot-cli-control`); Godot AssetLib
+> submission pending ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18)).
+> Dogfooded in [`godot-2d-skeleton`](https://github.com/ClaymanTwinkle/godot-2d-skeleton).
+> Current version tracked in [`CHANGELOG`](addons/godot_cli_control/CHANGELOG.md).
 
 ## Repository layout
 
@@ -79,7 +80,6 @@ Tracked in [issues](https://github.com/ClaymanTwinkle/godot-cli-control/issues).
 Remaining open items:
 
 - AssetLib first submission ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18))
-- GUT unit tests for `LowLevelApi` / `InputSimulationApi` ([#11](https://github.com/ClaymanTwinkle/godot-cli-control/issues/11))
 
 ## License
 
