@@ -321,16 +321,18 @@ def _wait_port_ready(port: int, max_seconds: int) -> bool:
     return False
 
 
-def _ensure_imported(project_root: Path, godot_bin: str) -> None:
-    """首次运行需要 ``--editor --quit`` 生成 ``.godot/`` 缓存。
+_CLASS_CACHE_PATH = Path(".godot") / "global_script_class_cache.cfg"
+# autoload 入口 class_name；只检它一个，新增内部 class 不必改这里
+_REQUIRED_CLASS_MARKER = b'&"GameBridge"'
+
+
+def reimport_project(project_root: Path, godot_bin: str) -> None:
+    """跑一次 ``--headless --editor --quit`` 重建 ``.godot/`` 缓存。
 
     stderr 透传到当前进程而非吞掉：项目损坏 / Godot 版本不兼容时用户能看到
     Godot 自己的报错，比之后 GameBridge 30s 端口探活 timeout 容易诊断。
     """
-    cache = project_root / ".godot" / "global_script_class_cache.cfg"
-    if cache.exists():
-        return
-    print("首次导入项目资源（--editor --quit）...", file=sys.stderr)
+    print("导入项目资源（--editor --quit）...", file=sys.stderr)
     proc = subprocess.run(
         [
             godot_bin,
@@ -349,6 +351,19 @@ def _ensure_imported(project_root: Path, godot_bin: str) -> None:
             f"daemon 启动可能因此失败（看上方 Godot 错误输出）",
             file=sys.stderr,
         )
+
+
+def _ensure_imported(project_root: Path, godot_bin: str) -> None:
+    """daemon 启动兜底：cache 不存在 **或** 不含 GameBridge 时重建。
+
+    后者覆盖：用户没跑 init 直接复制 addon、init 之后又被外部工具改坏 cache、
+    或将来 init 自身的重新导入步骤失败。只检 GameBridge 一个 class_name，
+    它是 autoload 入口，缺它必挂；其它内部 class 不必感知。
+    """
+    cache = project_root / _CLASS_CACHE_PATH
+    if cache.exists() and _REQUIRED_CLASS_MARKER in cache.read_bytes():
+        return
+    reimport_project(project_root, godot_bin)
 
 
 def _transcode_movie(movie_path: Path, control_dir: Path) -> bool:

@@ -20,7 +20,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .daemon import find_godot_binary
+from .daemon import find_godot_binary, reimport_project
 
 PLUGIN_DIR_NAME = "godot_cli_control"
 ADDONS_DIRNAME = "addons"
@@ -97,11 +97,17 @@ def run_init(
                 pass
             (control_dir / "godot_bin").write_text(godot_bin + "\n")
             print(f"检测到 Godot：{godot_bin}（已写入 .cli_control/godot_bin）")
+            # 无条件重新导入：拷了新 .gd、改了 autoload，cache 必然 stale。
+            # 不靠 daemon._ensure_imported 兜底是因为它要等 daemon start 才跑，
+            # 用户这时已经看到 parse error；放在 init 里把"setup 完成"打到位，
+            # 后续 daemon start 纯起服务、无隐性首次延迟。
+            reimport_project(project_root, godot_bin)
         else:
             print(
                 "警告：未自动检测到 Godot 二进制。\n"
                 "请 `export GODOT_BIN=/path/to/godot` 或写到 "
-                ".cli_control/godot_bin。",
+                ".cli_control/godot_bin。\n"
+                "（跳过资源重新导入；首次 daemon start 会兜底重建 cache）",
                 file=sys.stderr,
             )
 

@@ -130,8 +130,28 @@ def main() -> int:
             "PYTHONIOENCODING": "utf-8",
         }
 
+        # 2.5) 预先在裸项目上跑一次编辑器，模拟"用户已经在 Godot 编辑器
+        # 打开过这个项目"的常见场景：会生成 .godot/global_script_class_cache.cfg
+        # 但里面不含 GameBridge / LowLevelApi / InputSimulationApi。
+        # 回归 fix：init 必须刷新这个 cache，否则后续 daemon start 加载
+        # autoload 时 GDScript parser 会撞未知标识符 → parse error → 报
+        # "does not inherit from Node"。
+        run(
+            [godot, "--headless", "--editor", "--quit", "--path", project],
+            env=env,
+        )
+        cache = project / ".godot" / "global_script_class_cache.cfg"
+        if not cache.is_file():
+            _die("预热步骤未生成 global_script_class_cache.cfg")
+        if b'&"GameBridge"' in cache.read_bytes():
+            _die("预热 cache 不应该含 GameBridge（说明项目状态不对）")
+
         # 3) init —— 一键接入
         run([gcc, "init"], cwd=project, env=env)
+
+        # init 必须重新导入：cache 里现在应当含 GameBridge
+        if b'&"GameBridge"' not in cache.read_bytes():
+            _die("init 未刷新 global_script_class_cache.cfg（缺 GameBridge）")
 
         # 验证 init 产物
         if not (project / "addons/godot_cli_control/plugin.cfg").is_file():

@@ -178,6 +178,54 @@ def test_wait_port_ready_returns_false_for_unbound_port() -> None:
     assert _wait_port_ready(port=1, max_seconds=1) is False
 
 
+def test_ensure_imported_rebuilds_when_cache_missing_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已 import 项目场景：cache 在但不含 GameBridge → 必须重建。
+
+    回归：fix #N（init 不刷新 global_script_class_cache 导致 autoload parse 失败）。
+    """
+    from godot_cli_control.daemon import _ensure_imported
+
+    cache_dir = tmp_path / ".godot"
+    cache_dir.mkdir()
+    cache = cache_dir / "global_script_class_cache.cfg"
+    # 模拟 init 之前编辑器生成的 cache：含别的 class，没有 GameBridge
+    cache.write_text(
+        'list=[{\n"base": &"Node",\n"class": &"SomeOtherClass",\n}]\n'
+    )
+
+    called: list[tuple[Path, str]] = []
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.reimport_project",
+        lambda root, bin_: called.append((root, bin_)),
+    )
+    _ensure_imported(tmp_path, "/fake/godot")
+    assert called == [(tmp_path, "/fake/godot")], \
+        "cache 不含 GameBridge 时必须重新导入"
+
+
+def test_ensure_imported_skips_when_cache_has_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from godot_cli_control.daemon import _ensure_imported
+
+    cache_dir = tmp_path / ".godot"
+    cache_dir.mkdir()
+    cache = cache_dir / "global_script_class_cache.cfg"
+    cache.write_text(
+        'list=[{\n"base": &"Node",\n"class": &"GameBridge",\n}]\n'
+    )
+
+    called: list[tuple] = []
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.reimport_project",
+        lambda *a, **k: called.append(a),
+    )
+    _ensure_imported(tmp_path, "/fake/godot")
+    assert called == [], "cache 含 GameBridge 时不该再重新导入"
+
+
 def test_wait_port_ready_returns_true_when_listening() -> None:
     """开一个 ephemeral 端口，daemon 探活应 1s 内返回。"""
     import socket

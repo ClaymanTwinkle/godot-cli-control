@@ -204,6 +204,11 @@ def test_run_init_writes_godot_bin_when_detected(
         "godot_cli_control.init_cmd.find_godot_binary",
         lambda: str(fake_bin),
     )
+    # init 现在会无条件调 reimport_project；用 fake bin 真去 exec 没意义
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.reimport_project",
+        lambda *a, **k: None,
+    )
 
     proj_dir = tmp_path / "proj"
     proj_dir.mkdir()
