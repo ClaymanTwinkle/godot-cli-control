@@ -1,32 +1,51 @@
+<div align="center">
+
 # Godot CLI Control
 
-WebSocket bridge for headless / scripted control of Godot 4 scenes — click nodes,
-read/write properties, simulate input, take screenshots, record movies — from a
-Python or shell client.
+**Drive a running Godot 4 scene from Python, pytest, a shell, or an AI agent — over a localhost WebSocket.**
 
-> **Status**: alpha. On PyPI (`pipx install godot-cli-control`); Godot AssetLib
-> submission pending ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18)).
-> Dogfooded in [`godot-2d-skeleton`](https://github.com/ClaymanTwinkle/godot-2d-skeleton).
-> Current version tracked in [`CHANGELOG`](addons/godot_cli_control/CHANGELOG.md).
+Click nodes. Read & write properties. Simulate input. Take screenshots. Record movies. Black-box test a game without recompiling it.
 
-## Repository layout
+[![PyPI](https://img.shields.io/pypi/v/godot-cli-control.svg)](https://pypi.org/project/godot-cli-control/)
+[![Python](https://img.shields.io/pypi/pyversions/godot-cli-control.svg)](https://pypi.org/project/godot-cli-control/)
+[![Godot](https://img.shields.io/badge/Godot-4.x-478cbf.svg)](https://godotengine.org/)
+[![CI](https://github.com/ClaymanTwinkle/godot-cli-control/actions/workflows/ci.yml/badge.svg)](https://github.com/ClaymanTwinkle/godot-cli-control/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-```
-godot-cli-control/
-├── addons/godot_cli_control/   # Godot 4 plugin (drop into your project's addons/)
-├── python/                     # Python client + CLI (pip-installable)
-└── .github/workflows/          # release packaging
-```
+</div>
 
-Each subdirectory has its own README:
+---
 
-- [`addons/godot_cli_control/README.md`](addons/godot_cli_control/README.md) — plugin install / RPC reference
-- [`python/README.md`](python/README.md) — Python `GameClient` API + CLI usage
+## Why
 
-## One-shot install (recommended)
+Godot ships great tools for *playing* a scene, but very little for *programmatically poking it from outside*. If you want CI to assert that "the boss spawns after the third hit," or you want an AI agent to navigate a menu, or you want a pytest run to drive a 2D skeleton through 200 frames and diff the screenshot — you typically end up writing a one-off in-engine harness per project.
+
+`godot-cli-control` is that harness, generalized:
+
+- It's a **plugin** that drops into `addons/` and exposes a JSON-RPC server bound to `127.0.0.1`.
+- It's a **Python client + CLI** (`pipx install godot-cli-control`) that talks to that server.
+- It's a **pytest plugin** so test files just declare `bridge` and go.
+- It's an **agent integration** — `init` writes Claude Code / Codex skills so AI tools immediately know your scene's automation surface.
+
+One install, one daemon, one consistent API across your editor, your tests, your CI, and your agents.
+
+## Highlights
+
+| | |
+|---|---|
+| **One-shot onboarding** | `godot-cli-control init` copies the addon, patches `project.godot`, autodetects the Godot binary, and writes AI-agent skill files. Idempotent. |
+| **Two client APIs**     | `GameClient` (async/await) for tools and notebooks; `GameBridge` (sync) for scripts and tests. |
+| **pytest fixtures**     | Auto-loaded `godot_daemon` (session) + `bridge` (function) fixtures. Held inputs released between cases. |
+| **21 RPC methods**      | Scene tree introspection, get/set/call on any node, input action simulation, screenshots, wait helpers. |
+| **AI-agent ready**      | `init` ships `.claude/skills/.../SKILL.md` and `.codex/skills/.../SKILL.md` pinned to your installed CLI version. |
+| **Headless or GUI**     | Runs under `--headless` for CI, or with a real window for visual debugging. |
+| **Cross-platform**      | Linux, macOS, and native Windows (no WSL). |
+| **Safe by default**     | Localhost-only bind, OFF unless explicitly activated, release builds always disabled, property/method blacklist. |
+
+## Quickstart
 
 ```bash
-# 1. Install the Python CLI (it bundles the Godot plugin source)
+# 1. Install the CLI (it bundles the Godot plugin source)
 pipx install godot-cli-control
 
 # 2. From your Godot project root: copy plugin, patch project.godot, detect Godot binary
@@ -40,13 +59,99 @@ godot-cli-control screenshot /tmp/x.png
 godot-cli-control daemon stop
 ```
 
-`init` does the manual steps for you:
-- copies `addons/godot_cli_control/` into your project,
-- patches `project.godot` (`[autoload]` + `[editor_plugins]`) so you don't have to click through the Godot Editor,
-- detects the Godot binary and writes `.cli_control/godot_bin` for the daemon,
-- writes `.claude/skills/godot-cli-control/SKILL.md` and `.codex/skills/godot-cli-control/SKILL.md` so any AI agent (Claude Code / Codex) working in your Godot project can immediately learn this CLI. Pass `--no-skills` to skip; `--skills-only` to refresh only the skill files (e.g., after a CLI upgrade).
-
 Want unreleased main? `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"`.
+
+## A taste
+
+**From Python, async:**
+
+```python
+import asyncio
+from godot_cli_control import GameClient
+
+async def main():
+    async with GameClient(port=9877) as client:
+        await client.click("/root/Game/StartButton")
+        await client.action_press("jump")
+        await client.wait_game_time(0.5)
+        await client.action_release("jump")
+        png = await client.screenshot()
+        open("frame.png", "wb").write(png)
+
+asyncio.run(main())
+```
+
+**From pytest (fixtures auto-loaded — no `conftest.py` boilerplate):**
+
+```python
+def test_jump(godot_daemon, bridge):
+    bridge.click("/root/Game/Start")
+    bridge.tap("jump")
+    assert bridge.get_property("/root/Player", "on_floor") is False
+```
+
+**From a shell or wrapper script — same surface:**
+
+```bash
+godot-cli-control daemon start --headless
+godot-cli-control click /root/Game/StartButton
+godot-cli-control tap jump
+godot-cli-control screenshot frame.png
+godot-cli-control daemon stop
+```
+
+## How it fits together
+
+```
+┌────────────────────────────────────┐                ┌────────────────────────────────────┐
+│  Your tooling                      │                │  Your Godot 4 project              │
+│                                    │   WebSocket    │                                    │
+│   ┌──────────────────────────┐     │   JSON-RPC     │   ┌────────────────────────────┐   │
+│   │ godot-cli-control CLI    │     │   127.0.0.1    │   │ addons/godot_cli_control/  │   │
+│   │ GameClient   (async)     │ ◄──────────────────► │   │   GameBridgeNode autoload  │   │
+│   │ GameBridge   (sync)      │     │   :9877        │   │   LowLevelApi              │   │
+│   │ pytest fixtures          │     │   (default)    │   │   InputSimulationApi       │   │
+│   └──────────────────────────┘     │                │   └────────────────────────────┘   │
+└────────────────────────────────────┘                └────────────────────────────────────┘
+```
+
+The plugin is **off by default** even when enabled — see [Activation modes](addons/godot_cli_control/README.md#activation-modes). The server binds `127.0.0.1` only; PID/port files are mode `0600`; release builds are unconditionally disabled. See [Security model](addons/godot_cli_control/README.md#security-model).
+
+## Use cases
+
+- **Black-box automated testing.** Drive your scene from pytest, assert on properties.
+- **CI visual regression.** Screenshot a known state, diff against a golden PNG.
+- **Demo recording.** Run a script that walks the scene, record a movie via Godot's Movie Maker (GUI mode).
+- **AI agents.** Claude Code / Codex pick up the SKILL.md and can immediately operate your scene.
+- **Bug repros.** Capture a sequence of inputs in a script and replay deterministically.
+
+## API at a glance
+
+| Category | Methods |
+|---|---|
+| Scene tree | `get_scene_tree`, `get_children`, `node_exists`, `wait_for_node` |
+| Inspection | `get_property`, `get_text`, `is_visible` |
+| Mutation   | `set_property`, `call_method` |
+| Input      | `action_press`, `action_release`, `action_tap`, `hold`, `combo`, `combo_cancel`, `release_all` |
+| UI         | `click` |
+| Render     | `screenshot` |
+| Timing     | `wait_game_time` |
+
+Full RPC reference (signatures, error codes, blacklist): [plugin README](addons/godot_cli_control/README.md#rpc-reference).
+
+## Repository layout
+
+```
+godot-cli-control/
+├── addons/godot_cli_control/   # Godot 4 plugin (drop into your project's addons/)
+├── python/                     # Python client + CLI (pip-installable)
+└── .github/workflows/          # CI + release packaging
+```
+
+Each subdirectory has its own README:
+
+- [`addons/godot_cli_control/README.md`](addons/godot_cli_control/README.md) — plugin install, RPC reference, activation modes, security model, known limitations
+- [`python/README.md`](python/README.md) — Python `GameClient` / `GameBridge` API + CLI usage + pytest fixtures
 
 ## Agent integration
 
@@ -61,25 +166,32 @@ Both are rendered from the same template and pin the current CLI version + `--he
 godot-cli-control init --skills-only
 ```
 
-If you have hand-edited a `SKILL.md` and want to keep your version, you have two options:
+If you've hand-edited a `SKILL.md` and want to keep your version:
 
 - `godot-cli-control init --no-skills` — skip skill writes entirely going forward
-- `godot-cli-control init --skills-no-clobber` — keep existing files, only fill in missing ones (e.g., refresh just the half you accidentally deleted)
+- `godot-cli-control init --skills-no-clobber` — keep existing files, only fill in missing ones
 
-The two `--no-*` flags above are mutually exclusive with each other; `--skills-no-clobber` is orthogonal and may be combined with `--skills-only`.
+The two `--no-*` flags are mutually exclusive with each other; `--skills-no-clobber` is orthogonal and may be combined with `--skills-only`.
 
-> Optional: add `.claude/` and `.codex/` to your project's `.gitignore` if you don't want the SKILL.md files committed to source control. They are reproducible from the CLI any time via `godot-cli-control init --skills-only`.
+> Optional: add `.claude/` and `.codex/` to your project's `.gitignore` if you don't want the SKILL.md files committed. They are reproducible at any time via `godot-cli-control init --skills-only`.
 
 ## Manual install (advanced)
 
-If you don't want to use `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md) for the long-form walkthrough. The legacy wrappers (`bin/run_cli_control.sh` / `.ps1`) are kept as compatibility shims but **deprecated since 0.1.6 and scheduled for removal in 0.3.0** — new code should call `godot-cli-control <subcommand>` directly.
+If you don't want `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md#manual-setup-if-you-prefer) for the long-form walkthrough. The legacy wrappers (`bin/run_cli_control.sh` / `.ps1`) are kept as compatibility shims but **deprecated since 0.1.6 and scheduled for removal in 0.3.0** — new code should call `godot-cli-control <subcommand>` directly.
+
+## Status
+
+Alpha. Published on PyPI (`pipx install godot-cli-control`); Godot AssetLib submission pending ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18)). Dogfooded in [`godot-2d-skeleton`](https://github.com/ClaymanTwinkle/godot-2d-skeleton). Current version: see [`CHANGELOG`](addons/godot_cli_control/CHANGELOG.md).
 
 ## Roadmap
 
-Tracked in [issues](https://github.com/ClaymanTwinkle/godot-cli-control/issues).
-Remaining open items:
+Tracked in [issues](https://github.com/ClaymanTwinkle/godot-cli-control/issues). Remaining open headline items:
 
 - AssetLib first submission ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18))
+
+## Contributing
+
+Issues and PRs welcome. The plugin's GUT unit tests run via `./addons/godot_cli_control/tests/run_gut.sh` (requires `GODOT_BIN`). The Python package's tests run via `pytest` from `python/`. CI matrix covers Linux, macOS, and Windows.
 
 ## License
 
