@@ -176,10 +176,11 @@ def run_init(project_root, force=False, install_skills_=True, skills_only=False)
 ### `cli.py`
 
 ```python
-init_p.add_argument("--no-skills", action="store_true",
-                    help="跳过 .claude/.codex skill 写入")
-init_p.add_argument("--skills-only", action="store_true",
-                    help="只写 skill 文件，跳过插件复制 / project.godot patch / godot_bin 检测")
+init_skills_group = init_p.add_mutually_exclusive_group()
+init_skills_group.add_argument("--no-skills", action="store_true",
+                               help="跳过 .claude/.codex skill 写入")
+init_skills_group.add_argument("--skills-only", action="store_true",
+                               help="只写 skill 文件，跳过插件复制 / project.godot patch / godot_bin 检测")
 
 def cmd_init(ns):
     return run_init(
@@ -246,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser: ...
 
 ### dev 仓库自身
 
-在本仓库根一次性提交 `.claude/skills/godot-cli-control/SKILL.md`（直接拷贝模板，渲染时占位符不替换，或手动渲染一次），让在本仓库工作的 agent 也能看到 skill。**不**用软链（跨平台脆）。这是一次性提交，不进入 `init` 流程。
+在本仓库根一次性提交 `.claude/skills/godot-cli-control/SKILL.md`：**用渲染好的版本**（占位符替换为当前 wheel 版本与 `build_parser().format_help()` 输出），让在本仓库工作的 agent 看到的内容与终端用户一致。**不**用软链（跨平台脆）。这是一次性提交，不进入 `init` 流程；后续 CLI 命令面变化时手工重渲染即可，与用户项目的自动同步无关。
 
 ### 手动验收（实施完成后跑一遍）
 
@@ -272,7 +273,8 @@ def build_parser() -> argparse.ArgumentParser: ...
 | `templates/` 不含 `__init__.py`，被 hatch 跳过 | 打包后立即跑 `python -c "from importlib.resources import files; print(files('godot_cli_control.templates.skill') / 'SKILL.md')"` 验证；必要时加 force-include |
 | 用户在 `.claude/skills/godot-cli-control/SKILL.md` 自定义后被 init 静默覆盖 | 默认覆盖是用户主动决定（问答 4），但在 README "Agent integration" 段明确警告：「自定义请放到不同 skill 名下，或加 `--no-skills` 后手动维护」 |
 | Codex 后续协议偏离 Claude，单一模板出现分歧 | 现阶段单源；真出现时把 `install_skills` 改成读两份模板，是 < 30 行的局部改动 |
-| `cli.build_parser().format_help()` 输出含本机绝对路径 | 检查 argparse `prog` 设置，必要时 init 渲染前对 help 文本做 prog 归一化（`sys.argv[0]` → `godot-cli-control`） |
+| `cli.build_parser().format_help()` 输出含本机绝对路径 | 已通过 `prog="godot-cli-control"` 在 `_build_parser` 中显式设置规避，无需额外归一化（保留此行作记录） |
+| `--no-skills` 与 `--skills-only` 同时给出语义不明 | argparse 层加 `parser.error("--no-skills 与 --skills-only 互斥")`，或 `init_cmd` 入口检测两者同真即返回非零退出码 |
 
 ## 实施顺序
 
