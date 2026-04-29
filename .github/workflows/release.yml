@@ -25,7 +25,6 @@ jobs:
         # Must run BEFORE the plugin.cfg sed below — hatch-vcs flags any
         # working-tree edit as "dirty" and emits a PEP 440 local version
         # like 0.1.4.dev0+g142591da6.d20260428, which PyPI rejects.
-        working-directory: python
         run: |
           python -m pip install --upgrade pip build
           python -m build
@@ -48,7 +47,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: python-dist
-          path: python/dist/*
+          path: dist/*
 
       - uses: actions/upload-artifact@v4
         with:
@@ -60,7 +59,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            python/dist/*
+            dist/*
             dist-assetlib/*.zip
 
   publish-pypi:
