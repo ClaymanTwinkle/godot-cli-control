@@ -71,7 +71,7 @@ The two `--no-*` flags above are mutually exclusive with each other; `--skills-n
 
 ## Manual install (advanced)
 
-If you don't want to use `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md) for the long-form walkthrough and the legacy wrappers (`addons/godot_cli_control/bin/run_cli_control.sh` for bash, `run_cli_control.ps1` for PowerShell, both kept as compatibility shims).
+If you don't want to use `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md) for the long-form walkthrough. The legacy wrappers (`bin/run_cli_control.sh` / `.ps1`) are kept as compatibility shims but **deprecated since 0.1.6 and scheduled for removal in 0.3.0** — new code should call `godot-cli-control <subcommand>` directly.
 
 ## Roadmap
 

@@ -2,5 +2,9 @@
 
 from godot_cli_control.client import DEFAULT_PORT, GameClient
 
-__all__ = ["GameClient", "DEFAULT_PORT"]
-__version__ = "0.1.0"
+try:
+    from godot_cli_control._version import __version__
+except ImportError:
+    __version__ = "0.0.0+unknown"
+
+__all__ = ["GameClient", "DEFAULT_PORT", "__version__"]

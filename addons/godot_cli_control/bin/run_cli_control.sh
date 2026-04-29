@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+# DEPRECATED since 0.1.6 — slated for removal in 0.3.0.
 # Compatibility shim — historical entry point.
 # 实际逻辑在 Python CLI（python/godot_cli_control/cli.py）。
-# 保留此脚本是为已经把它写进 Makefile / docs / muscle memory 的用户。
+# 保留此脚本是为已经把它写进 Makefile / docs / muscle memory 的用户;
+# 新代码请直接调用 `godot-cli-control <subcommand>`。
 #
 # 推荐新用户直接：
 #   pipx install godot-cli-control

@@ -1,3 +1,4 @@
+# DEPRECATED since 0.1.6 — slated for removal in 0.3.0.
 # Compatibility shim — historical entry point (PowerShell, Windows / pwsh).
 # 实际逻辑在 Python CLI（python/godot_cli_control/cli.py）。
 # 与同目录 run_cli_control.sh 等价，覆盖 start / stop / run / click /
