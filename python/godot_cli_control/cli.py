@@ -371,7 +371,7 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="godot-cli-control",
         description="Godot CLI Control —— 通过命令行远程驱动 Godot 项目",
@@ -459,7 +459,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    parser = _build_parser()
+    parser = build_parser()
     ns = parser.parse_args()
 
     if ns.cmd == "daemon":
