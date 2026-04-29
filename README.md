@@ -42,9 +42,25 @@ godot-cli-control daemon stop
 `init` does the manual steps for you:
 - copies `addons/godot_cli_control/` into your project,
 - patches `project.godot` (`[autoload]` + `[editor_plugins]`) so you don't have to click through the Godot Editor,
-- detects the Godot binary and writes `.cli_control/godot_bin` for the daemon.
+- detects the Godot binary and writes `.cli_control/godot_bin` for the daemon,
+- writes `.claude/skills/godot-cli-control/SKILL.md` and `.codex/skills/godot-cli-control/SKILL.md` so any AI agent (Claude Code / Codex) working in your Godot project can immediately learn this CLI. Pass `--no-skills` to skip; `--skills-only` to refresh only the skill files (e.g., after a CLI upgrade).
 
 Want unreleased main? `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"`.
+
+## Agent integration
+
+When `godot-cli-control init` runs, two `SKILL.md` files are dropped under your Godot project root:
+
+- `.claude/skills/godot-cli-control/SKILL.md` (Claude Code)
+- `.codex/skills/godot-cli-control/SKILL.md` (Codex)
+
+Both are rendered from the same template and pin the current CLI version + `--help` output, so an agent loaded into your project can immediately see the full command surface, the `GameClient` API, and the `def run(bridge)` script convention. After upgrading the CLI (`pipx upgrade godot-cli-control`), refresh both with:
+
+```bash
+godot-cli-control init --skills-only
+```
+
+If you have hand-edited a `SKILL.md` and want to keep your version, use `godot-cli-control init --no-skills` going forward — the two flags are mutually exclusive.
 
 ## Manual install (advanced)
 

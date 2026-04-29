@@ -27,6 +27,8 @@ godot-cli-control daemon stop
 
 `init` is idempotent — running it twice on the same project does nothing the second time. Pass `--force` to overwrite an existing `addons/godot_cli_control/`.
 
+`init` also writes `.claude/skills/godot-cli-control/SKILL.md` and `.codex/skills/godot-cli-control/SKILL.md` so AI agents working in your Godot project can pick up this CLI surface automatically. Use `--no-skills` to skip, or `--skills-only` to refresh just those files after a CLI upgrade. See the [top-level README](../README.md#agent-integration) for details.
+
 ## Async API
 
 ```python
