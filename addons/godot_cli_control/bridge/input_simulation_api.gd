@@ -48,6 +48,8 @@ func handle_action_press(params: Dictionary) -> Dictionary:
 	if _combo_active:
 		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
+	if not InputMap.has_action(action):
+		return _err(1003, "Unknown action: %s" % action)
 	_do_press(action)
 	_pressed_actions[action] = true
 	return {"success": true}
@@ -57,6 +59,8 @@ func handle_action_release(params: Dictionary) -> Dictionary:
 	if _combo_active:
 		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
+	if not InputMap.has_action(action):
+		return _err(1003, "Unknown action: %s" % action)
 	_do_release(action)
 	_pressed_actions.erase(action)
 	_held_actions.erase(action)
@@ -69,6 +73,8 @@ func handle_action_tap(params: Dictionary) -> Dictionary:
 	if _combo_active:
 		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
+	if not InputMap.has_action(action):
+		return _err(1003, "Unknown action: %s" % action)
 	var duration: float = params.get("duration", 0.1) as float
 	_do_press(action)
 	_held_actions[action] = duration
@@ -100,6 +106,8 @@ func handle_hold(params: Dictionary) -> Dictionary:
 	if _combo_active:
 		return _err(1004, "combo in progress")
 	var action: String = params.get("action", "") as String
+	if not InputMap.has_action(action):
+		return _err(1003, "Unknown action: %s" % action)
 	var duration: float = params.get("duration", 0.0) as float
 	_do_press(action)
 	_held_actions[action] = duration
@@ -188,6 +196,11 @@ func _begin_combo_step() -> void:
 		_combo_timer = step["wait"] as float
 	elif step.has("action"):
 		var action: String = step["action"] as String
+		if not InputMap.has_action(action):
+			_abort_combo_with_error(
+				1003, "Unknown action at combo step %d: %s" % [_combo_index, action]
+			)
+			return
 		var duration: float = step.get("duration", 0.1) as float
 		_do_press(action)
 		_held_actions[action] = duration

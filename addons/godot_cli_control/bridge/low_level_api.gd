@@ -3,6 +3,10 @@ extends Node
 ## 低层 API：通用节点操作（click、属性、场景树等）
 
 const _BUILD_TREE_HARD_LIMIT: int = 50
+# 总节点数上限：宽场景（1000+ 子项的 Grid/Container）会构造极大 JSON，
+# 超 outbound buffer（默认 10 MB）后客户端拿到截断包 → STATE_CLOSED 断连。
+# 5000 节点对应 ~500 KB JSON，留足余量。
+const _BUILD_TREE_NODE_LIMIT: int = 5000
 # wait_game_time_async 防呆上限：防止误传 1e9 之类的数值挂死 session
 const _MAX_WAIT_SECONDS: float = 3600.0
 
@@ -169,7 +173,15 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	var root: Node = get_tree().current_scene
 	if root == null:
 		root = get_tree().root
-	var tree: Dictionary = _build_tree(root, max_depth, 0)
+	# counter 用 Array[int] 当 by-ref 计数器：GDScript 没指针/inout，
+	# Array 是引用类型，递归子调用对 counter[0] 的写入对调用方可见。
+	var counter: Array[int] = [0]
+	var tree: Dictionary = _build_tree(root, max_depth, 0, counter)
+	if counter[0] > _BUILD_TREE_NODE_LIMIT:
+		return _err(
+			1004,
+			"scene tree too large (>%d nodes); lower 'depth' or query a subtree" % _BUILD_TREE_NODE_LIMIT,
+		)
 	return {"tree": tree}
 
 
@@ -237,8 +249,11 @@ func _has_property(node: Node, property: String) -> bool:
 	return false
 
 
-## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_HARD_LIMIT (50) 防止无限递归
-func _build_tree(node: Node, max_depth: int, current_depth: int) -> Dictionary:
+## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_HARD_LIMIT (50) 防止无限递归。
+## counter 是 by-ref 计数器：超过 _BUILD_TREE_NODE_LIMIT 时短路（不再递归子节点），
+## 调用方读 counter[0] > LIMIT 决定是否走 1004 错误路径。
+func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[int]) -> Dictionary:
+	counter[0] += 1
 	var entry: Dictionary = {
 		"name": node.name,
 		"type": node.get_class(),
@@ -248,10 +263,13 @@ func _build_tree(node: Node, max_depth: int, current_depth: int) -> Dictionary:
 		entry["visible"] = (node as CanvasItem).visible
 	if "text" in node:
 		entry["text"] = str(node.get("text"))
+	if counter[0] > _BUILD_TREE_NODE_LIMIT:
+		# 超限：不再下递归，但当前 entry 已计入；调用方一次性走错误返回
+		return entry
 	var effective_max: int = _BUILD_TREE_HARD_LIMIT if max_depth == 0 else max_depth
 	if current_depth < effective_max:
 		var children: Array[Dictionary] = []
 		for child: Node in node.get_children():
-			children.append(_build_tree(child, effective_max, current_depth + 1))
+			children.append(_build_tree(child, effective_max, current_depth + 1, counter))
 		entry["children"] = children
 	return entry

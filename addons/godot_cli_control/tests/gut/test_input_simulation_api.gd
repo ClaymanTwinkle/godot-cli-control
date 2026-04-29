@@ -8,11 +8,25 @@ const InputSimulationApiScript := preload("res://addons/godot_cli_control/bridge
 
 var _api: Node
 
+# combo / hold 状态机测试用占位 action。InputMap 不预设这些，由 fixture 注册。
+const _FIXTURE_ACTIONS: Array[String] = ["a", "b", "alpha", "beta"]
+
 
 func before_each() -> void:
 	_api = InputSimulationApiScript.new()
 	_api.name = "InputSimulationApi"
 	add_child_autofree(_api)
+	# #25 修复后 handle_action_press/release/hold 会拒未注册 action（1003）。
+	# 状态机测试关心 combo / 互斥语义，不验 InputMap 校验，先把 fixture action 注册。
+	for name in _FIXTURE_ACTIONS:
+		if not InputMap.has_action(name):
+			InputMap.add_action(name)
+
+
+func after_each() -> void:
+	for name in _FIXTURE_ACTIONS:
+		if InputMap.has_action(name):
+			InputMap.erase_action(name)
 
 
 # ── action_press / action_release / action_tap ────────────────────
@@ -32,6 +46,54 @@ func test_tap_uses_held_track_not_pressed() -> void:
 	# 但 _pressed_actions 不应包含它（间接验证：release 同名 action 后还应清干净）
 	_api.handle_action_release({"action": "ui_accept"})
 	assert_false("ui_accept" in _api.get_pressed_actions())
+
+
+# ── unknown action 校验（不在 InputMap 内） ─────────────────────────
+
+func test_press_unknown_action_returns_1003() -> void:
+	# 拼错 action 必须立刻返回错误，不能静默成功污染 _pressed_actions
+	var bogus: String = "__definitely_not_an_action__"
+	assert_false(InputMap.has_action(bogus))
+	var result: Dictionary = _api.handle_action_press({"action": bogus})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1003)
+	assert_false(bogus in _api.get_pressed_actions(), "失败时不能进 pressed 列表")
+
+
+func test_release_unknown_action_returns_1003() -> void:
+	var bogus: String = "__not_an_action_release__"
+	var result: Dictionary = _api.handle_action_release({"action": bogus})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1003)
+
+
+func test_tap_unknown_action_returns_1003() -> void:
+	var bogus: String = "__not_an_action_tap__"
+	var result: Dictionary = _api.handle_action_tap({"action": bogus, "duration": 0.1})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1003)
+	assert_false(bogus in _api.get_pressed_actions())
+
+
+func test_hold_unknown_action_returns_1003() -> void:
+	var bogus: String = "__not_an_action_hold__"
+	var result: Dictionary = _api.handle_hold({"action": bogus, "duration": 1.0})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1003)
+	assert_false(_api.has_active_holds())
+
+
+func test_combo_unknown_action_aborts_with_1003() -> void:
+	# combo step 引用未注册 action：必须 abort 整盘并通过 request_id 回 1003，
+	# 否则 _combo_active 卡 true 后续全 1004。
+	var probe := _ComboCallbackProbe.new()
+	_api.setup(probe.record)
+	_api._combo_request_id = "req-bogus"
+	_api.start_combo([{"action": "__bogus_action__", "duration": 0.1}])
+	assert_false(_api.is_combo_active())
+	assert_eq(probe.calls.size(), 1)
+	assert_has(probe.calls[0].result, "error")
+	assert_eq(int(probe.calls[0].result.error.code), 1003)
 
 
 # ── combo 状态机 ──────────────────────────────────────────────────

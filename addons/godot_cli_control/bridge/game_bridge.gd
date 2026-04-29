@@ -176,8 +176,14 @@ func _handle_message(raw: String) -> void:
 
 
 func _run_async(id: String, handler: Callable, params: Dictionary) -> void:
-	var result: Dictionary = await handler.call(params)
-	_dispatch_result(id, result)
+	# 不能直接 `as Dictionary` —— handler 返回 null 或非 dict 会强转成 null，
+	# 后续 `result.has("error")` 在 null 上引擎错误，**响应永远不会发出**，
+	# 客户端 await 挂死到 timeout。先收原 Variant 自己 type-check。
+	var raw: Variant = await handler.call(params)
+	if not raw is Dictionary:
+		_send_error(id, -32603, "internal: async handler returned non-dict")
+		return
+	_dispatch_result(id, raw as Dictionary)
 
 
 func _dispatch_result(id: String, result: Dictionary) -> void:

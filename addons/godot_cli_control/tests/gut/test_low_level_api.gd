@@ -114,6 +114,36 @@ func test_call_method_nonexistent_returns_1003() -> void:
 	assert_eq(int(result.error.code), 1003)
 
 
+# ── _build_tree 节点总数上限（防 outbound buffer 超限） ───────────────
+
+func test_build_tree_short_circuits_above_node_limit() -> void:
+	# 不打满 5000+ 节点（慢且与场景耦合）：预填 counter 到上限，
+	# 验证 _build_tree 递归一层后短路、返回的 entry 不含 children。
+	var leaf: Node = Node.new()
+	leaf.name = "Leaf"
+	add_child_autofree(leaf)
+	var counter: Array[int] = [LowLevelApiScript._BUILD_TREE_NODE_LIMIT]
+	var entry: Dictionary = _api._build_tree(leaf, 5, 0, counter)
+	# leaf 自身被计入 → counter 变成 LIMIT+1
+	assert_eq(int(counter[0]), LowLevelApiScript._BUILD_TREE_NODE_LIMIT + 1)
+	# 超 limit 后立刻 return，不下递归 children
+	assert_does_not_have(entry, "children")
+
+
+func test_build_tree_under_limit_includes_children() -> void:
+	# 控制组：counter 远未到上限时正常带 children
+	var parent: Node = Node.new()
+	parent.name = "Parent"
+	add_child_autofree(parent)
+	var c1: Node = Node.new()
+	c1.name = "C1"
+	parent.add_child(c1)
+	var counter: Array[int] = [0]
+	var entry: Dictionary = _api._build_tree(parent, 5, 0, counter)
+	assert_has(entry, "children")
+	assert_eq((entry.children as Array).size(), 1)
+
+
 # ── handle_node_exists / handle_get_children ──────────────────────
 
 func test_node_exists_true_for_real_path() -> void:
