@@ -94,6 +94,38 @@ def test_exec_user_script_returns_1_on_missing_run(
     assert rc == 1
 
 
+def test_exec_user_script_friendly_error_on_connection_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon 没起 → GameBridge 抛 ConnectionError 时，cmd_run 必须给一行
+    可读提示，而不是把 traceback 直接喷给用户。"""
+
+    def _raise_conn(*_: Any, **__: Any) -> None:
+        raise ConnectionError("Failed to connect after 1 attempts")
+
+    import godot_cli_control.bridge as bridge_mod
+
+    monkeypatch.setattr(bridge_mod, "GameBridge", _raise_conn)
+
+    script = tmp_path / "user_script.py"
+    _write(script, "def run(bridge):\n    pass\n")
+
+    from godot_cli_control.cli import _exec_user_script
+
+    rc = _exec_user_script(script, port=9999)
+    assert rc == 1
+
+    captured = capsys.readouterr()
+    # 友好提示包含端口、原因、引导用户起 daemon 的 hint
+    assert "连接 daemon 失败" in captured.err
+    assert "9999" in captured.err
+    assert "daemon start" in captured.err
+    # 不是 raw traceback：不应出现 Traceback 头
+    assert "Traceback (most recent call last)" not in captured.err
+
+
 def test_exec_user_script_cleans_up_sys_path_and_sys_modules(
     tmp_path: Path, stub_bridge: None
 ) -> None:

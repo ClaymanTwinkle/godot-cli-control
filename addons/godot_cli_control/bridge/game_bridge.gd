@@ -46,7 +46,12 @@ func _ready() -> void:
 	# 安全：显式绑 127.0.0.1，避免 Godot TCPServer 默认 "*" 暴露到 LAN
 	var err: Error = _tcp_server.listen(_port, "127.0.0.1")
 	if err != OK:
-		push_error("GameBridge: Failed to listen on port %d: %s" % [_port, error_string(err)])
+		# push_error 在 headless 下只进 Godot 内部 log，不上 stderr。daemon
+		# subprocess 看不到 root cause，超时 30s 后只能报 "GameBridge not ready"。
+		# printerr 直接写 stderr，subprocess 默认透传 → 用户立刻看到端口冲突。
+		var msg: String = "GameBridge: Failed to listen on port %d: %s" % [_port, error_string(err)]
+		push_error(msg)
+		printerr(msg)
 		return
 	print("GameBridge: Listening on ws://127.0.0.1:%d" % _port)
 

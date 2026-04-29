@@ -799,7 +799,18 @@ def _exec_user_script(script_path: Path, port: int) -> int:
             return 1
 
         print(f"运行 {script_path}...", file=sys.stderr)
-        bridge = GameBridge(port=port)
+        # GameBridge.__init__ 在连接 daemon 失败时抛 ConnectionError；不友好地
+        # 走 cmd_run 默认 traceback 路径会让用户以为是脚本出错。单独捕获给
+        # 一行可读信息（daemon 没起、端口写错、防火墙拦截 等）。
+        try:
+            bridge = GameBridge(port=port)
+        except ConnectionError as e:
+            print(
+                f"错误：连接 daemon 失败 (port={port}): {e}\n"
+                "提示：先运行 `godot-cli-control daemon start` 或检查端口是否被占用。",
+                file=sys.stderr,
+            )
+            return 1
         try:
             module.run(bridge)
         except Exception:  # noqa: BLE001

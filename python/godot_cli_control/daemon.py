@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from .client import DEFAULT_PORT
 
@@ -132,7 +133,15 @@ class Daemon:
             self.movie_path_file.write_text(movie_path)
             print(f"录制模式：{movie_path} ({fps}fps)", file=sys.stderr)
 
-        proc = subprocess.Popen(args, env=env)
+        # detach 子进程：避免 Ctrl+C 时 SIGINT 同时打到 Godot（父进程会先死，
+        # finally 路径再 stop 已死的 PID 日志混乱）。POSIX 用新 session 隔离
+        # signal group，Windows 用 CREATE_NEW_PROCESS_GROUP。
+        popen_kwargs: dict[str, Any] = {"env": env}
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(args, **popen_kwargs)
         self.pid_file.write_text(str(proc.pid))
 
         # 启动后 1s 仍存活才认为 launch 成功（捕获 --cli-control 拒识/参数错误）

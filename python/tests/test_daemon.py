@@ -178,6 +178,62 @@ def test_wait_port_ready_returns_false_for_unbound_port() -> None:
     assert _wait_port_ready(port=1, max_seconds=1) is False
 
 
+def test_start_detaches_subprocess_signal_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """daemon Popen 必须把 Godot 隔离到独立 signal group。
+
+    否则 Ctrl+C 时 SIGINT 同时打到 Godot —— daemon 比 Python 父进程先死，
+    finally 路径再 stop 已死的 PID 日志混乱。POSIX 用 start_new_session，
+    Windows 用 CREATE_NEW_PROCESS_GROUP。
+    """
+    import sys as _sys
+
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999_999_997
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured.update(kwargs)
+        return _FakeProc()
+
+    daemon = Daemon(tmp_path)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _record_popen
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
+    )
+
+    daemon.start(port=29998)
+
+    if _sys.platform == "win32":
+        # Windows：CREATE_NEW_PROCESS_GROUP（值 0x200）必须在 creationflags
+        import subprocess as _sp
+
+        assert captured.get("creationflags", 0) & _sp.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert captured.get("start_new_session") is True, \
+            "POSIX 必须 start_new_session 把 SIGINT 与父 group 隔离"
+
+
 def test_ensure_imported_rebuilds_when_cache_missing_class(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
