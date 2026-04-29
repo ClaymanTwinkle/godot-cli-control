@@ -159,7 +159,16 @@ func _begin_combo_step() -> void:
 		if _send_response_callback.is_valid() and not req_id.is_empty():
 			_send_response_callback.call(req_id, {"success": true, "completed_steps": completed})
 		return
-	var step: Dictionary = _combo_steps[_combo_index] as Dictionary
+	# 非法 step 必须把 combo 整盘 abort 并通过原 request_id 回错误。
+	# 否则 _combo_active 卡 true，后续 press / release / combo 全部 1004，
+	# 客户端原 await 也挂死到 timeout。
+	var raw: Variant = _combo_steps[_combo_index]
+	if not raw is Dictionary:
+		_abort_combo_with_error(
+			-32602, "combo step must be object at index %d" % _combo_index
+		)
+		return
+	var step: Dictionary = raw as Dictionary
 	if step.has("wait"):
 		_combo_timer = step["wait"] as float
 	elif step.has("action"):
@@ -168,6 +177,17 @@ func _begin_combo_step() -> void:
 		_do_press(action)
 		_held_actions[action] = duration
 		_combo_timer = duration
+	else:
+		_abort_combo_with_error(
+			-32602, "combo step missing 'wait' or 'action' at index %d" % _combo_index
+		)
+
+
+func _abort_combo_with_error(code: int, message: String) -> void:
+	var req_id: String = _combo_request_id
+	_end_combo()
+	if _send_response_callback.is_valid() and not req_id.is_empty():
+		_send_response_callback.call(req_id, _err(code, message))
 
 
 func _end_combo() -> void:

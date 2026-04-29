@@ -135,12 +135,29 @@ func _handle_message(raw: String) -> void:
 		_send_error("", -32600, "Invalid JSON")
 		return
 	var msg: Dictionary = parsed as Dictionary
-	var id: String = msg.get("id", "") as String
-	var method: String = msg.get("method", "") as String
-	var params: Dictionary = msg.get("params", {}) as Dictionary
+	# `id` 缺失 → 空串（client 用空串当 fire-and-forget）；非 String 视为协议错。
+	# 不能直接 `as String` 强转，整数/null 失败赋空串后客户端拿不到自己的 id。
+	var id_raw: Variant = msg.get("id", "")
+	if not id_raw is String:
+		_send_error("", -32600, "id must be string")
+		return
+	var id: String = id_raw as String
+	var method_raw: Variant = msg.get("method", "")
+	if not method_raw is String:
+		_send_error(id, -32600, "method must be string")
+		return
+	var method: String = method_raw as String
 	if method.is_empty():
 		_send_error(id, -32600, "Missing method")
 		return
+	# params 缺失 → 空 dict（合法）；存在但非 Dictionary → 协议错。
+	# 不在这里挡，handler 内 `params.get` 会在 null 上崩，连接进入「不发响应」死锁，
+	# 客户端 await 挂死到 30s timeout（参见 client.request）。
+	var params_raw: Variant = msg.get("params", {})
+	if not params_raw is Dictionary:
+		_send_error(id, -32600, "params must be object")
+		return
+	var params: Dictionary = params_raw as Dictionary
 	if not _methods.has(method):
 		_send_error(id, -32601, "Unknown method: %s" % method)
 		return

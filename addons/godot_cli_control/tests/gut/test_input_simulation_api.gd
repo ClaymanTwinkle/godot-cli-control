@@ -69,6 +69,40 @@ func test_cancel_combo_returns_completed_count() -> void:
 	assert_false(_api.is_combo_active(), "cancel 后 combo 应不再 active")
 
 
+# ── combo 非法 step：不能让 _combo_active 卡死 ───────────────────
+
+class _ComboCallbackProbe:
+	var calls: Array = []
+	func record(id: String, result: Dictionary) -> void:
+		calls.append({"id": id, "result": result})
+
+
+func test_combo_aborts_on_non_dict_step() -> void:
+	# 客户端误传字符串 / 数字当 step：必须 abort 整盘 combo 并通过 request_id
+	# 回 -32602；否则 _combo_active 卡 true 导致后续所有 RPC 1004，client 挂死。
+	var probe := _ComboCallbackProbe.new()
+	_api.setup(probe.record)
+	_api._combo_request_id = "req-1"
+	_api.start_combo(["not a dict"])
+	assert_false(_api.is_combo_active(), "非法 step 后 combo 必须 abort")
+	assert_eq(probe.calls.size(), 1, "应通过原 request_id 回响应")
+	assert_eq(str(probe.calls[0].id), "req-1")
+	assert_has(probe.calls[0].result, "error")
+	assert_eq(int(probe.calls[0].result.error.code), -32602)
+
+
+func test_combo_aborts_on_step_missing_action_and_wait() -> void:
+	# step 是 dict 但既无 wait 又无 action：同样 abort。
+	var probe := _ComboCallbackProbe.new()
+	_api.setup(probe.record)
+	_api._combo_request_id = "req-2"
+	_api.start_combo([{"unknown_key": 42}])
+	assert_false(_api.is_combo_active())
+	assert_eq(probe.calls.size(), 1)
+	assert_has(probe.calls[0].result, "error")
+	assert_eq(int(probe.calls[0].result.error.code), -32602)
+
+
 # ── release_all ────────────────────────────────────────────────────
 
 func test_release_all_clears_pressed_and_held() -> void:
