@@ -111,7 +111,10 @@ def run_init(
         # 时形成循环 import。
         from . import _version, cli, skills_install
 
-        cli_help = cli.build_parser().format_help()
+        # 用 format_full_help() 而非 build_parser().format_help()：让 SKILL.md
+        # 内嵌完整 help 树（顶层 + 每个子命令、含 daemon 三动作），agent 不再需
+        # 要为了看 combo -h / daemon start -h 再 shell 出去。
+        cli_help = cli.format_full_help()
         version = getattr(_version, "__version__", "unknown")
         written = skills_install.install_skills(
             project_root,

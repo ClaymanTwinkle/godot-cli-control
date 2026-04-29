@@ -150,6 +150,93 @@ def test_init_subcommand_rejects_both_flags() -> None:
         build_parser().parse_args(["init", "--no-skills", "--skills-only"])
 
 
+def test_version_flag_prints_version(capsys: pytest.CaptureFixture[str]) -> None:
+    """``-V`` / ``--version`` 必须打印版本并 exit 0。SKILL.md 渲染依赖该版本号
+    保持可用，回归保护。"""
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "godot-cli-control" in out
+
+
+def test_daemon_status_subcommand_parses() -> None:
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["daemon", "status"])
+    assert ns.cmd == "daemon"
+    assert ns.action == "status"
+
+
+def test_daemon_status_returns_1_when_not_running(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """无 daemon 时 ``daemon status`` 必须输出 ``stopped`` 且 exit 1，
+    供 shell ``if … status; then …`` 直接判分支。"""
+    import godot_cli_control.daemon as daemon_mod
+
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: False)
+
+    from godot_cli_control.cli import cmd_daemon_status
+
+    rc = cmd_daemon_status(__import__("argparse").Namespace())
+    assert rc == 1
+    assert "stopped" in capsys.readouterr().out
+
+
+def test_daemon_status_returns_0_when_running(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import godot_cli_control.daemon as daemon_mod
+
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: True)
+    monkeypatch.setattr(daemon_mod.Daemon, "read_pid", lambda self: 4242)
+    monkeypatch.setattr(daemon_mod.Daemon, "current_port", lambda self: 9877)
+
+    from godot_cli_control.cli import cmd_daemon_status
+
+    rc = cmd_daemon_status(__import__("argparse").Namespace())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "running" in out and "4242" in out and "9877" in out
+
+
+def test_format_full_help_covers_every_subcommand() -> None:
+    """``format_full_help`` 必须遍历到所有顶层子命令 + daemon 三动作。
+    SKILL.md 完全依赖这一点 —— 漏一个，agent 那侧的 -h 就要靠 shell 出去查。"""
+    from godot_cli_control.cli import RPC_SPECS, format_full_help
+
+    full = format_full_help()
+    for spec in RPC_SPECS:
+        assert f"godot-cli-control {spec.name} --help" in full, (
+            f"format_full_help 漏了 RPC 子命令：{spec.name}"
+        )
+    for action in ("start", "stop", "status"):
+        assert f"godot-cli-control daemon {action} --help" in full
+    for top in ("init", "run"):
+        assert f"godot-cli-control {top} --help" in full
+
+
+def test_combo_help_documents_step_schema() -> None:
+    """``combo -h`` 的 epilog 必须含真实 step schema：之前 SKILL.md 文案错把
+    schema 写成 ``press/release/wait``，agent 写出来的 combo 文件全跑不通。"""
+    from godot_cli_control.cli import build_parser
+
+    parser = build_parser()
+    sub = next(
+        sp
+        for action in parser._actions  # noqa: SLF001
+        if hasattr(action, "choices") and action.choices is not None
+        for name, sp in action.choices.items()
+        if name == "combo"
+    )
+    epilog = sub.epilog or ""
+    assert '"action"' in epilog and '"wait"' in epilog
+    assert "duration" in epilog
+
+
 def test_init_subcommand_accepts_skills_no_clobber() -> None:
     """--skills-no-clobber 正交于互斥组，可单独使用、也可搭 --skills-only。"""
     from godot_cli_control.cli import build_parser
