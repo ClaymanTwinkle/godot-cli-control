@@ -221,6 +221,10 @@ func _send_json(data: Dictionary) -> void:
 
 
 func _should_activate() -> bool:
+	# 显式禁用：GODOT_CLI_CONTROL=0 是最高优先 escape hatch，
+	# 即使存在 --cli-control flag 或 debug auto-enable 也强制关闭。
+	if OS.get_environment("GODOT_CLI_CONTROL") == "0":
+		return false
 	if _has_cli_flag("--cli-control"):
 		return true
 	if OS.get_environment("GODOT_CLI_CONTROL") == "1":
