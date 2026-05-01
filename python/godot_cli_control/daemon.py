@@ -38,6 +38,10 @@ class Daemon:
         # Godot 进程的 stdout+stderr。每次 start 时 truncate 重写，stop 后保留
         # 让用户回溯最近一次启动失败的根因（issue #38）。
         self.log_file = self.control_dir / "godot.log"
+        # 启动失败时把 returncode 落盘，让 daemon status 能在 stopped 状态下
+        # 直接报「last exit: <code>」，省下一轮回溯。stop / 新一轮 start 会
+        # 清掉。issue #38。
+        self.exit_code_file = self.control_dir / "last_exit_code"
 
     # ── 状态查询 ──
 
@@ -116,6 +120,9 @@ class Daemon:
         # 没走 stop，旧路径会留在文件里，本次 stop 流程触发针对错误文件的
         # ffmpeg 转码（多半失败但也可能转个旧 .avi 误导用户）。
         self.movie_path_file.unlink(missing_ok=True)
+        # 上一轮 last_exit_code 在新一轮 start 时也作废 —— 否则 start 成功后
+        # status 还会拿出陈旧的退出码骗用户。
+        self.exit_code_file.unlink(missing_ok=True)
 
         self.port_file.write_text(str(port))
 
@@ -160,6 +167,7 @@ class Daemon:
         # 启动后 1s 仍存活才认为 launch 成功（捕获 --cli-control 拒识/参数错误）
         time.sleep(1)
         if proc.poll() is not None:
+            self._record_exit_code(proc.returncode)
             self._cleanup_state_files()
             raise DaemonError(
                 f"Godot exited immediately after launch (returncode={proc.returncode}).\n"
@@ -169,6 +177,8 @@ class Daemon:
         print(f"等待 GameBridge 就绪 (port {port})...", file=sys.stderr)
         if not _wait_port_ready(port, wait_seconds, proc=proc):
             crashed_rc = proc.poll()
+            if crashed_rc is not None:
+                self._record_exit_code(crashed_rc)
             self._terminate(proc.pid)
             self._cleanup_state_files()
             if crashed_rc is not None:
@@ -240,6 +250,25 @@ class Daemon:
         if value and Path(value).is_file() and os.access(value, os.X_OK):
             return value
         return None
+
+    def read_last_exit_code(self) -> int | None:
+        """读上一次启动失败的 Godot returncode；没有 / 解析失败返回 None。"""
+        if not self.exit_code_file.exists():
+            return None
+        try:
+            return int(self.exit_code_file.read_text().strip())
+        except (ValueError, OSError):
+            return None
+
+    def _record_exit_code(self, rc: int | None) -> None:
+        """落盘 last exit code。返回 None 时（理论上不该发生 —— poll 已确认死了）
+        跳过写入，避免给 status 一个误导的 ``last_exit_code: None``。"""
+        if rc is None:
+            return
+        try:
+            self.exit_code_file.write_text(str(rc))
+        except OSError:
+            pass
 
     def _format_log_tail(self, n: int = 30) -> str:
         """渲染 godot.log 末尾若干行，给启动失败的 DaemonError 拼可读上下文。

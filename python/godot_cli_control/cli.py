@@ -712,16 +712,25 @@ def cmd_daemon_status(ns: argparse.Namespace) -> int:
                 f"running pid={pid} port={port if port is not None else '?'}"
             )
         return EXIT_OK
-    # Stopped：若上一轮启动留下了 godot.log，把路径透出来。issue #38 要求
-    # 在 daemon 已退出时让用户能直接看到日志位置而不是手摸 .cli_control/。
+    # Stopped：若上一轮启动留下了 godot.log / last_exit_code，把诊断信息透出来。
+    # issue #38 要求 daemon 已退出时直接告诉用户「last exit: <code>, see ...log」，
+    # 不让用户再手摸 .cli_control/ 翻文件。
     stopped_payload: dict[str, Any] = {"state": "stopped"}
     if daemon.log_file.exists():
         stopped_payload["last_log"] = str(daemon.log_file)
+    last_rc = daemon.read_last_exit_code()
+    if last_rc is not None:
+        stopped_payload["last_exit_code"] = last_rc
     if fmt == OUTPUT_JSON:
         _emit_success_payload(stopped_payload)
     else:
+        hints: list[str] = []
+        if "last_exit_code" in stopped_payload:
+            hints.append(f"last exit: {stopped_payload['last_exit_code']}")
         if "last_log" in stopped_payload:
-            print(f"stopped (last log: {stopped_payload['last_log']})")
+            hints.append(f"see {stopped_payload['last_log']}")
+        if hints:
+            print(f"stopped ({', '.join(hints)})")
         else:
             print("stopped")
     return EXIT_RPC_ERROR

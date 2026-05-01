@@ -512,18 +512,47 @@ def test_daemon_status_stopped_includes_last_log(
     assert payload["result"]["last_log"] == str(log)
 
 
+def test_daemon_status_stopped_includes_last_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """issue #38 进阶：last_exit_code 文件存在时，JSON 必须把退出码透出。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+
+    monkeypatch.chdir(tmp_path)
+    control_dir = tmp_path / ".cli_control"
+    control_dir.mkdir()
+    (control_dir / "godot.log").write_text("FATAL\n")
+    (control_dir / "last_exit_code").write_text("137")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: False)
+
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_daemon_status
+
+    ns = __import__("argparse").Namespace(output_format=OUTPUT_JSON)
+    rc = cmd_daemon_status(ns)
+    assert rc == 1
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["result"]["last_exit_code"] == 137
+    assert payload["result"]["last_log"].endswith("godot.log")
+
+
 def test_daemon_status_stopped_text_mode_includes_last_log(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """text 模式下也要带 last log 提示，否则人类用户读不到。"""
+    """text 模式下也要带 last exit + log 提示，否则人类用户读不到。"""
     import godot_cli_control.daemon as daemon_mod
 
     monkeypatch.chdir(tmp_path)
     control_dir = tmp_path / ".cli_control"
     control_dir.mkdir()
     (control_dir / "godot.log").write_text("crash\n")
+    (control_dir / "last_exit_code").write_text("11")
 
     monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: False)
 
@@ -533,7 +562,9 @@ def test_daemon_status_stopped_text_mode_includes_last_log(
     rc = cmd_daemon_status(ns)
     assert rc == 1
     out = capsys.readouterr().out
-    assert "stopped" in out and "godot.log" in out
+    assert "stopped" in out
+    assert "last exit: 11" in out
+    assert "godot.log" in out
 
 
 def test_run_rpc_emits_success_envelope(

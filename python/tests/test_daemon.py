@@ -963,3 +963,105 @@ def test_wait_port_ready_returns_false_when_proc_died(
     )
     # 必须秒返：max_seconds=10 但因 proc 死了第一轮就跳出
     assert _wait_port_ready(port=1, max_seconds=10, proc=_DeadProc()) is False
+
+
+# ── last_exit_code 持久化 ──
+
+
+def test_start_records_exit_code_on_immediate_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1s poll 抓到崩溃 → returncode 必须落盘到 last_exit_code 文件。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    class _DeadProc:
+        pid = 999_999_100
+        returncode = 137
+
+        def poll(self) -> int:
+            return 137
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen",
+        lambda *a, **k: _DeadProc(),
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="exited immediately"):
+        daemon.start(port=29904)
+    assert daemon.read_last_exit_code() == 137
+
+
+def test_start_records_exit_code_on_port_wait_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """探活期间 Godot 自死 → returncode 也必须落盘。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    class _LateCrashProc:
+        pid = 999_999_050
+        _polls = 0
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            return None if self._polls == 1 else 11
+
+        @property
+        def returncode(self) -> int | None:
+            return None if self._polls == 0 else 11
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen",
+        lambda *a, **k: _LateCrashProc(),
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="exited during launch"):
+        daemon.start(port=29905, wait_seconds=2)
+    assert daemon.read_last_exit_code() == 11
+
+
+def test_start_clears_stale_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """新一轮 start 必须清掉上次的 last_exit_code，否则 status 永远显示陈旧值。"""
+    daemon, _ = _setup_start_env(tmp_path, monkeypatch)
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
+    daemon.exit_code_file.write_text("99")  # 上一轮残留
+
+    daemon.start(port=29906)
+    assert daemon.read_last_exit_code() is None, \
+        "新一轮 start 必须 invalidate 旧 exit code"
+
+
+def test_read_last_exit_code_handles_garbage(tmp_path: Path) -> None:
+    daemon = Daemon(tmp_path)
+    daemon.control_dir.mkdir()
+    daemon.exit_code_file.write_text("not a number")
+    assert daemon.read_last_exit_code() is None
+
+
+def test_read_last_exit_code_none_when_missing(tmp_path: Path) -> None:
+    daemon = Daemon(tmp_path)
+    assert daemon.read_last_exit_code() is None
