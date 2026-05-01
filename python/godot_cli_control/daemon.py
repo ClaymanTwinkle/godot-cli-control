@@ -77,6 +77,7 @@ class Daemon:
         fps: int = 30,
         port: int = 0,  # 0 = OS 自动分配；显式 --port 9877 仍可固定
         wait_seconds: int = 30,
+        idle_timeout: int = 0,
     ) -> int:
         """启动 Godot daemon，等端口就绪后返回 PID。"""
         # 项目根校验：拒绝在非 Godot 项目目录跑，避免 Godot 用 --path .
@@ -140,6 +141,8 @@ class Daemon:
         ]
         if headless:
             args.append("--headless")
+        if idle_timeout > 0:
+            args.append(f"--game-bridge-idle-timeout={idle_timeout}")
 
         env = os.environ.copy()
         if record:

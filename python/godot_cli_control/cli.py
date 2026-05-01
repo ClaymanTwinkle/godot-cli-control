@@ -641,6 +641,13 @@ RPC_BY_NAME: dict[str, RpcSpec] = {s.name: s for s in RPC_SPECS}
 
 def cmd_daemon_start(ns: argparse.Namespace) -> int:
     from .daemon import Daemon, DaemonError
+    from ._duration import parse_duration
+
+    try:
+        idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
+    except ValueError as e:
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
+        return EXIT_USAGE
 
     daemon = Daemon(Path.cwd())
     try:
@@ -650,6 +657,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             headless=ns.headless,
             fps=ns.fps,
             port=ns.port,
+            idle_timeout=idle_seconds,
         )
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
@@ -810,11 +818,18 @@ def cmd_daemon_ls(ns: argparse.Namespace) -> int:
 def cmd_run(ns: argparse.Namespace) -> int:
     """加载用户脚本（要求定义 ``run(bridge)``），自动启停 daemon。"""
     from .daemon import Daemon, DaemonError
+    from ._duration import parse_duration
 
     script_path = Path(ns.script)
     if not script_path.exists():
         print(f"错误：找不到脚本: {script_path}", file=sys.stderr)
         return 1
+
+    try:
+        idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
+    except ValueError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return EXIT_USAGE
 
     daemon = Daemon(Path.cwd())
     auto_started = False
@@ -826,6 +841,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
                 headless=ns.headless,
                 fps=ns.fps,
                 port=ns.port,
+                idle_timeout=idle_seconds,
             )
         except DaemonError as e:
             print(f"错误：{e}", file=sys.stderr)
@@ -1025,6 +1041,12 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
         type=int,
         default=0,
         help="GameBridge 监听端口（默认 0 = OS 自动分配；写入 .cli_control/port）",
+    )
+    p.add_argument(
+        "--idle-timeout",
+        type=str,
+        default="0",
+        help="空闲超时（如 30m / 2h / 90s / 0=关闭，默认关）。开启后 Godot 端 Timer 自动 quit。",
     )
 
 

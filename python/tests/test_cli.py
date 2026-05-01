@@ -1168,3 +1168,15 @@ def test_daemon_stop_subcommand_parses_all_and_project() -> None:
     import pytest as _pt
     with _pt.raises(SystemExit):
         build_parser().parse_args(["daemon", "stop", "--all", "--project", "/tmp/x"])
+
+
+def test_daemon_start_idle_timeout_flag_parses() -> None:
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "start", "--idle-timeout", "30m"])
+    assert ns.idle_timeout == "30m"
+
+
+def test_daemon_start_idle_timeout_default_is_zero() -> None:
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "start"])
+    assert ns.idle_timeout == "0"

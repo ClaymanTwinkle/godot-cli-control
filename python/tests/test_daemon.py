@@ -1170,6 +1170,92 @@ def test_start_with_port_zero_writes_actual_port(
     assert 1024 < written < 65536
 
 
+def test_start_passes_idle_timeout_to_popen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """daemon.start(idle_timeout=10) 必须把 --game-bridge-idle-timeout=10 加到 Popen argv。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999_999_010
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _record_popen
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
+    )
+    from godot_cli_control import registry as _reg
+    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
+
+    daemon = Daemon(tmp_path)
+    daemon.start(port=0, idle_timeout=10)
+    assert any(a == "--game-bridge-idle-timeout=10" for a in captured["args"])
+
+
+def test_start_omits_idle_timeout_when_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """idle_timeout=0 (默认) 时 argv 里不该有该 flag —— 保持旧行为。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999_999_020
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _record_popen
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
+    )
+    from godot_cli_control import registry as _reg
+    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
+
+    daemon = Daemon(tmp_path)
+    daemon.start(port=0)  # 不传 idle_timeout 用默认
+    assert not any(a.startswith("--game-bridge-idle-timeout=") for a in captured["args"])
+
+
 def test_start_registers_in_global_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
