@@ -42,6 +42,10 @@ OUTPUT_TEXT = "text"
 EXIT_OK = 0
 EXIT_RPC_ERROR = 1
 EXIT_INFRA_ERROR = 2  # 连接 / 超时 / 用户输入解析失败
+# `daemon stop --all` 专用：至少一条 stop 失败。不复用 EXIT_INFRA_ERROR(=2) —— 单个项目
+# stop rc=2 是「daemon 已停但 ffmpeg 转码失败」的合法成功旁路；--all 聚合若也用 2，
+# 调用方分不清「全停成功只是某个 transcode 失败」与「真有 daemon 没停掉」。
+EXIT_PARTIAL = 3
 EXIT_USAGE = 64  # 命令组合无效（如 combo 既无文件又无 --steps-json）
 
 # RPC 错误统一信封（无论 --json 还是 --text）的连接/超时占位 code。GD 端
@@ -641,6 +645,13 @@ RPC_BY_NAME: dict[str, RpcSpec] = {s.name: s for s in RPC_SPECS}
 
 def cmd_daemon_start(ns: argparse.Namespace) -> int:
     from .daemon import Daemon, DaemonError
+    from ._duration import parse_duration
+
+    try:
+        idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
+    except ValueError as e:
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
+        return EXIT_USAGE
 
     daemon = Daemon(Path.cwd())
     try:
@@ -650,6 +661,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             headless=ns.headless,
             fps=ns.fps,
             port=ns.port,
+            idle_timeout=idle_seconds,
         )
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
@@ -670,17 +682,64 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
 
 def cmd_daemon_stop(ns: argparse.Namespace) -> int:
     from .daemon import Daemon, DaemonError
+    from . import registry
 
-    daemon = Daemon(Path.cwd())
+    fmt = _output_format(ns)
+
+    if getattr(ns, "all", False):
+        records = registry.list_all()
+        if not records:
+            if fmt == OUTPUT_JSON:
+                _emit_success_payload({"stopped": [], "rc": 0})
+            else:
+                print("(no running daemons)")
+            return EXIT_OK
+        results: list[dict[str, Any]] = []
+        had_failure = False
+        for r in records:
+            entry: dict[str, Any] = {
+                "project_root": r.project_root,
+                "pid": r.pid,
+                "port": r.port,
+            }
+            try:
+                rc = Daemon(Path(r.project_root)).stop()
+                entry["rc"] = rc
+                if fmt != OUTPUT_JSON:
+                    suffix = f" (rc={rc})" if rc != 0 else ""
+                    print(f"stopped pid={r.pid} port={r.port} {r.project_root}{suffix}")
+            except DaemonError as e:
+                entry["rc"] = EXIT_INFRA_ERROR
+                entry["error"] = str(e)
+                had_failure = True
+                # 单条失败不能阻止其余 daemon 收尾
+                print(f"[{r.project_root}] {e}", file=sys.stderr)
+            results.append(entry)
+        # rc 含义：0 = 全部成功；EXIT_PARTIAL = 至少一条 DaemonError。注意单条 stop
+        # 返回 2（ffmpeg 转码失败但 daemon 已停）不算"失败"，按成功汇总；调用方
+        # 想要逐条状态请看 JSON 输出 / 文本里的每行 rc=N 标记。
+        rc_total = EXIT_PARTIAL if had_failure else EXIT_OK
+        if fmt == OUTPUT_JSON:
+            _emit_success_payload({"stopped": results, "rc": rc_total})
+        else:
+            failed = sum(1 for x in results if "error" in x)
+            print(
+                f"summary: {len(results) - failed}/{len(results)} stopped"
+                + (f", {failed} failed" if failed else "")
+            )
+        return rc_total
+
+    target = (ns.project.resolve() if getattr(ns, "project", None) else Path.cwd())
+    daemon = Daemon(target)
     try:
         rc = daemon.stop()
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
         return EXIT_INFRA_ERROR
-    if _output_format(ns) == OUTPUT_JSON:
+    if fmt == OUTPUT_JSON:
         # rc 0=正常停 / 2=ffmpeg 转码失败但 daemon 已停。两种都算"stopped"，
         # 把 rc 透出让 agent 决定要不要 retry transcode。
-        _emit_success_payload({"stopped": True, "rc": rc})
+        _emit_success_payload({"stopped": True, "rc": rc, "project_root": str(target)})
     return rc
 
 
@@ -712,21 +771,81 @@ def cmd_daemon_status(ns: argparse.Namespace) -> int:
                 f"running pid={pid} port={port if port is not None else '?'}"
             )
         return EXIT_OK
+    # Stopped：若上一轮启动留下了 godot.log / last_exit_code，把诊断信息透出来。
+    # issue #38 要求 daemon 已退出时直接告诉用户「last exit: <code>, see ...log」，
+    # 不让用户再手摸 .cli_control/ 翻文件。
+    stopped_payload: dict[str, Any] = {"state": "stopped"}
+    if daemon.log_file.exists():
+        stopped_payload["last_log"] = str(daemon.log_file)
+    last_rc = daemon.read_last_exit_code()
+    if last_rc is not None:
+        stopped_payload["last_exit_code"] = last_rc
     if fmt == OUTPUT_JSON:
-        _emit_success_payload({"state": "stopped"})
+        _emit_success_payload(stopped_payload)
     else:
-        print("stopped")
+        hints: list[str] = []
+        if "last_exit_code" in stopped_payload:
+            hints.append(f"last exit: {stopped_payload['last_exit_code']}")
+        if "last_log" in stopped_payload:
+            hints.append(f"see {stopped_payload['last_log']}")
+        if hints:
+            print(f"stopped ({', '.join(hints)})")
+        else:
+            print("stopped")
     return EXIT_RPC_ERROR
+
+
+def cmd_daemon_ls(ns: argparse.Namespace) -> int:
+    """跨项目列出运行中的 daemon。
+
+    扫全局注册表 ~/.local/state/godot-cli-control/daemons/，对每条记录探活。
+    死记录会被 list_all 自动清理（连同对应项目的 .cli_control/godot.pid 与 port）。
+    JSON 模式：{"ok": true, "result": {"daemons": [...]}}（信封一致）。
+    Text 模式：每条一行 `<pid>\t<port>\t<project_root>\t<started_at>`；空时 (no running daemons)。
+    """
+    from . import registry
+
+    fmt = _output_format(ns)
+    records = registry.list_all()
+    payload = {
+        "daemons": [
+            {
+                "project_root": r.project_root,
+                "pid": r.pid,
+                "port": r.port,
+                "started_at": r.started_at,
+                "godot_bin": r.godot_bin,
+                "log_path": r.log_path,
+            }
+            for r in records
+        ]
+    }
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload(payload)
+    else:
+        if not records:
+            print("(no running daemons)")
+        else:
+            for r in records:
+                print(f"{r.pid}\t{r.port}\t{r.project_root}\t{r.started_at}")
+    return EXIT_OK
 
 
 def cmd_run(ns: argparse.Namespace) -> int:
     """加载用户脚本（要求定义 ``run(bridge)``），自动启停 daemon。"""
     from .daemon import Daemon, DaemonError
+    from ._duration import parse_duration
 
     script_path = Path(ns.script)
     if not script_path.exists():
         print(f"错误：找不到脚本: {script_path}", file=sys.stderr)
         return 1
+
+    try:
+        idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
+    except ValueError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return EXIT_USAGE
 
     daemon = Daemon(Path.cwd())
     auto_started = False
@@ -738,6 +857,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
                 headless=ns.headless,
                 fps=ns.fps,
                 port=ns.port,
+                idle_timeout=idle_seconds,
             )
         except DaemonError as e:
             print(f"错误：{e}", file=sys.stderr)
@@ -935,8 +1055,14 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--port",
         type=int,
-        default=DEFAULT_PORT,
-        help=f"GameBridge 监听端口（默认 {DEFAULT_PORT}）",
+        default=0,
+        help="GameBridge 监听端口（默认 0 = OS 自动分配；写入 .cli_control/port）",
+    )
+    p.add_argument(
+        "--idle-timeout",
+        type=str,
+        default="0",
+        help="空闲超时（如 30m / 2h / 90s / 0=关闭，默认关）。开启后 Godot 端 Timer 自动 quit。",
     )
 
 
@@ -1015,10 +1141,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_daemon_flags(start_p)
 
-    daemon_subs.add_parser(
+    stop_p = daemon_subs.add_parser(
         "stop",
         help="停止 daemon",
-        description="停止 .cli_control/godot.pid 记录的 daemon。",
+        description=(
+            "停止 daemon。无 flag 时停 cwd 项目；--all 停所有注册的 daemon；"
+            "--project <path> 停指定项目。"
+        ),
+    )
+    stop_grp = stop_p.add_mutually_exclusive_group()
+    stop_grp.add_argument(
+        "--all", action="store_true",
+        help="停止注册表中所有运行中的 daemon"
+    )
+    stop_grp.add_argument(
+        "--project", type=Path, default=None,
+        help="停止指定项目根的 daemon（绝对/相对路径均可）"
     )
 
     daemon_subs.add_parser(
@@ -1031,6 +1169,16 @@ def build_parser() -> argparse.ArgumentParser:
             "默认输出 JSON 信封；加 --text 切回旧的字符串格式。"
         ),
     )
+
+    ls_p = daemon_subs.add_parser(
+        "ls",
+        help="列出所有正在运行的 daemon（跨项目）",
+        description=(
+            "扫描全局注册表 ~/.local/state/godot-cli-control/daemons/，"
+            "列出所有探活通过的 daemon。死记录会被自动清理。"
+        ),
+    )
+    _add_output_format_flags(ls_p)
 
     # run：自动启停 + 跑用户脚本
     run_p = subs.add_parser(
@@ -1261,6 +1409,8 @@ def main() -> None:
             sys.exit(cmd_daemon_stop(ns))
         if ns.action == "status":
             sys.exit(cmd_daemon_status(ns))
+        if ns.action == "ls":
+            sys.exit(cmd_daemon_ls(ns))
         parser.error(f"unknown daemon action: {ns.action}")
     if ns.cmd == "run":
         sys.exit(cmd_run(ns))

@@ -12,6 +12,8 @@ venv/
 .coverage.*
 coverage.xml
 htmlcov/
+# uv 本地 dev 锁；本项目作为库发布，不入库（避免给下游消费者制造噪音）
+uv.lock
 
 # hatch-vcs generated
 python/godot_cli_control/_version.py

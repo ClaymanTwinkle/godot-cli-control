@@ -344,3 +344,64 @@ func test_sync_input_action_press_routes_to_input_sim_api() -> void:
 	assert_does_not_have(f, "error")
 	assert_eq(_input.press_calls.size(), 1)
 	assert_eq(str(_input.press_calls[0].action), "jump")
+
+
+# ── idle-timeout / in-flight 计数 ─────────────────────────────────
+# 防止回归：长操作（>idle_timeout 的 wait_game_time / combo）期间 _check_idle
+# 不能 quit，否则客户端拿不到响应。
+
+func test_in_flight_starts_at_zero() -> void:
+	assert_eq(_bridge._in_flight, 0)
+
+
+func test_sync_dispatch_returns_in_flight_to_zero() -> void:
+	_send('{"id": "s1", "method": "click", "params": {}}')
+	assert_eq(_bridge._in_flight, 0, "sync 派发完成后 _in_flight 必须归零")
+
+
+func test_async_dispatch_returns_in_flight_to_zero() -> void:
+	_send('{"id": "a1", "method": "wait_for_node", "params": {"path": "/X", "timeout": 1.0}}')
+	# stub 在 await get_tree().process_frame 期间 _in_flight 应保持 1
+	assert_eq(_bridge._in_flight, 1, "async 等待期间 _in_flight 应为 1")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_eq(_bridge._in_flight, 0, "async 派发完成后 _in_flight 必须归零")
+
+
+func test_async_with_id_keeps_in_flight_until_callback() -> void:
+	# 关键场景：input_combo 长动作（实际可能 5s+）期间，daemon 不能因 idle quit
+	_send('{"id": "c1", "method": "input_combo", "params": {"steps": []}}')
+	assert_eq(_bridge._in_flight, 1, "async_with_id handler 未回响前 _in_flight 应为 1")
+	_input.finish_combo(0, {"success": true})
+	assert_eq(_bridge._in_flight, 0, "回调后 _in_flight 必须归零")
+
+
+func test_async_handler_returning_non_dict_decrements_in_flight() -> void:
+	# type-guard 路径也必须减计数，否则 handler bug 会让 daemon 永远不 idle
+	_bridge._methods["wait_for_node"] = {
+		"callable": _async_returning_null,
+		"kind": "async",
+	}
+	_send('{"id": "wn", "method": "wait_for_node", "params": {}}')
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_eq(_bridge._in_flight, 0, "非 dict 错误路径也必须把 _in_flight 减回 0")
+
+
+func test_validation_failure_does_not_increment_in_flight() -> void:
+	# Invalid JSON / 协议错没进过 handler，不应碰计数
+	_send("not json")
+	_send('{"id": 42, "method": "click"}')  # id 非串
+	_send('{"id": "x", "method": "no_such"}')  # 未知方法
+	assert_eq(_bridge._in_flight, 0, "校验失败路径不应增 _in_flight")
+
+
+func test_check_idle_resets_activity_when_busy() -> void:
+	# _check_idle 在 _in_flight > 0 时必须把活动戳推到现在 —— 否则一个跨越
+	# 整个 idle_timeout 的长操作会被 quit。
+	_bridge._idle_timeout_secs = 1
+	_bridge._in_flight = 1
+	_bridge._last_activity_ms = Time.get_ticks_msec() - 60_000  # 装作 60s 前
+	_bridge._check_idle()
+	var now: int = Time.get_ticks_msec()
+	assert_almost_eq(_bridge._last_activity_ms, now, 200, "busy 时 _check_idle 必须把活动戳推到 ~now")

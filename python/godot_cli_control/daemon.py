@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .client import DEFAULT_PORT
+from . import registry as _registry
 
 
 class DaemonError(RuntimeError):
@@ -35,6 +35,13 @@ class Daemon:
         self.pid_file = self.control_dir / "godot.pid"
         self.port_file = self.control_dir / "port"
         self.movie_path_file = self.control_dir / "movie_path"
+        # Godot 进程的 stdout+stderr。每次 start 时 truncate 重写，stop 后保留
+        # 让用户回溯最近一次启动失败的根因（issue #38）。
+        self.log_file = self.control_dir / "godot.log"
+        # 启动失败时把 returncode 落盘，让 daemon status 能在 stopped 状态下
+        # 直接报「last exit: <code>」，省下一轮回溯。stop / 新一轮 start 会
+        # 清掉。issue #38。
+        self.exit_code_file = self.control_dir / "last_exit_code"
 
     # ── 状态查询 ──
 
@@ -68,8 +75,9 @@ class Daemon:
         movie_path: str | None = None,
         headless: bool = False,
         fps: int = 30,
-        port: int = DEFAULT_PORT,
+        port: int = 0,  # 0 = OS 自动分配；显式 --port 9877 仍可固定
         wait_seconds: int = 30,
+        idle_timeout: int = 0,
     ) -> int:
         """启动 Godot daemon，等端口就绪后返回 PID。"""
         # 项目根校验：拒绝在非 Godot 项目目录跑，避免 Godot 用 --path .
@@ -99,6 +107,11 @@ class Daemon:
         if not os.access(bin_path, os.X_OK):
             raise DaemonError(f"Godot binary not executable: {bin_path}")
 
+        # spawn 前快速判定端口空闲。GameBridge 那头 listen 失败只 printerr 不
+        # 退进程；daemon 这头探活又走 create_connection，会握手到占端口的进程上
+        # 误报启动成功，后续 RPC 全打错。先 bind 一次让占用立刻可见。
+        actual_port = _allocate_port(port)
+
         # 先确保 import 缓存就位（避免首次启动 GameBridge 来不及绑端口）
         _ensure_imported(self.project_root, bin_path)
 
@@ -113,18 +126,23 @@ class Daemon:
         # 没走 stop，旧路径会留在文件里，本次 stop 流程触发针对错误文件的
         # ffmpeg 转码（多半失败但也可能转个旧 .avi 误导用户）。
         self.movie_path_file.unlink(missing_ok=True)
+        # 上一轮 last_exit_code 在新一轮 start 时也作废 —— 否则 start 成功后
+        # status 还会拿出陈旧的退出码骗用户。
+        self.exit_code_file.unlink(missing_ok=True)
 
-        self.port_file.write_text(str(port))
+        self.port_file.write_text(str(actual_port))
 
         args: list[str] = [
             bin_path,
             "--path",
             str(self.project_root),
             "--cli-control",
-            f"--game-bridge-port={port}",
+            f"--game-bridge-port={actual_port}",
         ]
         if headless:
             args.append("--headless")
+        if idle_timeout > 0:
+            args.append(f"--game-bridge-idle-timeout={idle_timeout}")
 
         env = os.environ.copy()
         if record:
@@ -141,26 +159,56 @@ class Daemon:
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             popen_kwargs["start_new_session"] = True
-        proc = subprocess.Popen(args, **popen_kwargs)
+
+        # 把 Godot 的 stdout+stderr 落到 .cli_control/godot.log。truncate 重写
+        # 让 log 始终对应最近一次启动；子进程 dup 之后这边的 fh 可以立即关闭，
+        # daemon 不必长期持有 fd。issue #38。
+        log_fh = open(self.log_file, "wb")
+        try:
+            popen_kwargs["stdout"] = log_fh
+            popen_kwargs["stderr"] = subprocess.STDOUT
+            proc = subprocess.Popen(args, **popen_kwargs)
+        finally:
+            log_fh.close()
         self.pid_file.write_text(str(proc.pid))
 
         # 启动后 1s 仍存活才认为 launch 成功（捕获 --cli-control 拒识/参数错误）
         time.sleep(1)
         if proc.poll() is not None:
+            self._record_exit_code(proc.returncode)
             self._cleanup_state_files()
             raise DaemonError(
-                f"Godot exited immediately after launch (returncode={proc.returncode})"
+                f"Godot exited immediately after launch (returncode={proc.returncode}).\n"
+                f"{self._format_log_tail()}"
             )
 
-        print(f"等待 GameBridge 就绪 (port {port})...", file=sys.stderr)
-        if not _wait_port_ready(port, wait_seconds):
+        print(f"等待 GameBridge 就绪 (port {actual_port})...", file=sys.stderr)
+        if not _wait_port_ready(actual_port, wait_seconds, proc=proc):
+            crashed_rc = proc.poll()
+            if crashed_rc is not None:
+                self._record_exit_code(crashed_rc)
             self._terminate(proc.pid)
             self._cleanup_state_files()
+            if crashed_rc is not None:
+                # 端口探活期间 Godot 自己挂了（autoload 报错 / scene load 失败 等）。
+                # 这是 issue #38 报告的"daemon start 报成功后 RPC 全失败"主线场景。
+                raise DaemonError(
+                    f"Godot exited during launch (returncode={crashed_rc}).\n"
+                    f"{self._format_log_tail()}"
+                )
             raise DaemonError(
-                f"GameBridge not ready on port {port} within {wait_seconds}s"
+                f"GameBridge not ready on port {actual_port} within {wait_seconds}s.\n"
+                f"{self._format_log_tail()}"
             )
 
         print(f"Godot 已启动 (PID {proc.pid})", file=sys.stderr)
+        _registry.register(
+            self.project_root,
+            pid=proc.pid,
+            port=actual_port,
+            godot_bin=bin_path,
+            log_path=str(self.log_file),
+        )
         return proc.pid
 
     # ── 停止 ──
@@ -197,13 +245,17 @@ class Daemon:
     # ── 内部 ──
 
     def _cleanup_state_files(self) -> None:
-        """清理 daemon 启停产生的 pid/port 临时文件。
+        """清理本 daemon 的所有持久化状态：本地 pid/port + 全局 registry 记录。
 
-        port_file 跟随 pid_file 一起清，避免后续 ``current_port()`` 读到 stale
-        值把 RPC 请求发到已不存在的端口。``movie_path`` 在 stop 流程中独立处理。
+        三者同生同死 —— ``start()`` 成功后一并写入；任何 stop 路径（包括 start
+        途中失败的回滚清理）必须把它们一并清掉，否则下次 ``daemon ls`` / 启动
+        校验会误以为还有进程在跑。``movie_path`` 在 stop 流程中独立处理。
         """
         self.pid_file.unlink(missing_ok=True)
         self.port_file.unlink(missing_ok=True)
+        # start 失败回滚路径还没 register 时，unregister 是 unlink(missing_ok=True)，
+        # 行为一致；保持一处兜底比让所有 caller 记得手动 unregister 更不易遗漏。
+        _registry.unregister(self.project_root)
 
     def read_godot_bin_pref(self) -> str | None:
         """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。"""
@@ -217,6 +269,63 @@ class Daemon:
         if value and Path(value).is_file() and os.access(value, os.X_OK):
             return value
         return None
+
+    def read_last_exit_code(self) -> int | None:
+        """读上一次启动失败的 Godot returncode；没有 / 解析失败返回 None。"""
+        if not self.exit_code_file.exists():
+            return None
+        try:
+            return int(self.exit_code_file.read_text().strip())
+        except (ValueError, OSError) as e:
+            # 静默吞掉会让 status 显示「stopped」而不带 last_exit，用户以为没崩过；
+            # 起码 stderr 提示一句让人有线索。不抛 —— 上层 status 路径不该被
+            # 一个诊断辅助文件读失败击穿。
+            print(
+                f"warning: failed to read {self.exit_code_file}: {e}",
+                file=sys.stderr,
+            )
+            return None
+
+    def _record_exit_code(self, rc: int | None) -> None:
+        """落盘 last exit code。返回 None 时（理论上不该发生 —— poll 已确认死了）
+        跳过写入，避免给 status 一个误导的 ``last_exit_code: None``。"""
+        if rc is None:
+            return
+        try:
+            self.exit_code_file.write_text(str(rc))
+        except OSError as e:
+            # 写不进去（磁盘满 / .cli_control 只读）会让后续 daemon status 报
+            # 「stopped」而不带 last_exit_code，用户找不到 Godot 真正的退出码。
+            # 至少 print 一句到 stderr，留下根因线索。
+            print(
+                f"warning: failed to record last exit code to {self.exit_code_file}: {e}",
+                file=sys.stderr,
+            )
+
+    def _format_log_tail(self, n: int = 30) -> str:
+        """渲染 godot.log 末尾若干行，给启动失败的 DaemonError 拼可读上下文。
+
+        从文件末尾倒着 8KB 一块读，避免一次性 read_text() 把潜在的大日志整盘吞内存
+        —— 启动失败路径目前日志都很小，但若将来 status 也调本函数，遇到长跑后崩溃
+        的几百 MB 日志会爆。
+
+        失败兜底成 ``(log unavailable)`` 而不是抛异常 —— 启动错误本身比 log
+        读取错误更重要，不能让 IO 失败盖掉真正的根因。
+        """
+        header = f"Godot 日志（{self.log_file}）末尾 {n} 行："
+        try:
+            tail_bytes, total_size = _read_tail_bytes(self.log_file, n)
+        except OSError:
+            return f"(log unavailable: {self.log_file})"
+        if total_size == 0:
+            return f"{header}\n  (空 — Godot 进程未输出任何内容)"
+        text = tail_bytes.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if len(lines) <= n:
+            body = text.rstrip()
+        else:
+            body = "...\n" + "\n".join(lines[-n:])
+        return f"{header}\n{body}"
 
     def _terminate(self, pid: int, timeout: float = 10.0) -> None:
         """SIGTERM → wait → SIGKILL。"""
@@ -277,6 +386,34 @@ def find_godot_binary() -> str | None:
 def _process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == "win32":  # pragma: no cover
+        # Windows 上 os.kill(pid, 0) 把 0 当 signal.CTRL_C_EVENT（值就是 0），
+        # 会向当前 console 发 Ctrl+C —— 自己把自己/pytest 中断了。所以走
+        # OpenProcess + GetExitCodeProcess。
+        # POSIX CI 进不到这里；Windows CI 上 fail-under 不跑，故整块跳过覆盖率统计。
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -319,9 +456,75 @@ def _force_kill_signal() -> int:
     return getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
-def _wait_port_ready(port: int, max_seconds: int) -> bool:
+def _read_tail_bytes(path: Path, target_lines: int, chunk: int = 8192) -> tuple[bytes, int]:
+    """读取 path 末尾若干行（>= target_lines），返回 (字节串, 文件总大小)。
+
+    倒着 8KB 一块往前读，遇到超过 target_lines 个 ``\\n`` 即停。空文件返回 (b'', 0)。
+    """
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        total_size = f.tell()
+        if total_size == 0:
+            return b"", 0
+        end = total_size
+        chunks: list[bytes] = []
+        newlines = 0
+        # target_lines 是"行数"；至少多读一段 newline 用于切分
+        needed = target_lines + 1
+        while end > 0 and newlines <= needed:
+            start = max(0, end - chunk)
+            f.seek(start)
+            buf = f.read(end - start)
+            chunks.append(buf)
+            newlines += buf.count(b"\n")
+            end = start
+        chunks.reverse()
+        return b"".join(chunks), total_size
+
+
+def _allocate_port(requested: int) -> int:
+    """返回可用端口。requested=0 → OS 分配；requested>0 → 校验未被占用后返回原值。
+
+    Race window：bind→close→spawn→Godot listen 之间窗口达数秒（Godot 要 import
+    项目+autoload+_ready 才 listen）。这段时间里其它进程仍可能抢走端口；当下
+    Godot 端 listen 失败只 push_error+printerr，daemon 这边在日志 tail 里能看到，
+    但不会被自动重试。**推荐用默认 --port 0** 让 OS 每次分配新端口，从根上回避。
+
+    SO_REUSEADDR：避免上一轮 daemon 刚 stop、内核仍在 TIME_WAIT 时显式
+    --port N 立刻起新 daemon 报 EADDRINUSE。Godot TCPServer 内部也开了
+    SO_REUSEADDR，这里探测必须对齐，否则会出现"探测说占用、Godot 实际能 bind"
+    的假阳性。
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", requested))
+        except OSError as e:
+            raise DaemonError(
+                f"port {requested} already in use ({e}). 另一个进程正在占用该端口，"
+                f"Godot 起不来。请 stop 旧 daemon 或换 --port（默认 --port 0 由 OS 分配最稳）。"
+            ) from e
+        return sock.getsockname()[1]
+    finally:
+        sock.close()
+
+
+def _wait_port_ready(
+    port: int,
+    max_seconds: int,
+    proc: subprocess.Popen[Any] | None = None,
+) -> bool:
+    """轮询直到端口可连接或超时。
+
+    若传入 ``proc``，每轮先检查它是否已退出 —— Godot 在 GameBridge 起来前自己
+    挂了（autoload 报错、--cli-control 接错……）就立刻返回 False，不让用户干等
+    剩下的 wait_seconds。issue #38。
+    """
     deadline = time.time() + max_seconds
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return True

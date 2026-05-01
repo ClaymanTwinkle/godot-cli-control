@@ -11,6 +11,14 @@ var _tcp_server: TCPServer = TCPServer.new()
 var _active_peer: WebSocketPeer = null
 var _active_stream: StreamPeerTCP = null
 var _port: int = DEFAULT_PORT
+var _idle_timeout_secs: int = 0
+var _last_activity_ms: int = 0
+# 正在处理中的请求数。> 0 表示 daemon 没闲着，idle 检查必须放过 —— 否则
+# 一条 wait_game_time(3600) 会被 30m idle-timeout 半路打断，客户端拿不到响应。
+# 入：消息通过参数校验、即将派发到 handler 时 +1。
+# 出：_dispatch_result（sync/async/async_with_id 三条路径的最终响应点）-1。
+# 校验失败的 _send_error 不计数（没进过 handler）。
+var _in_flight: int = 0
 var _outbound_buffer_size: int = DEFAULT_OUTBOUND_BUFFER_MB * 1024 * 1024
 var _low_level_api: LowLevelApi = null
 var _input_sim_api: InputSimulationApi = null
@@ -23,7 +31,12 @@ var _methods: Dictionary = {}
 
 func _ready() -> void:
 	if not _should_activate():
-		print("[Godot CLI Control] inactive — pass --cli-control, set GODOT_CLI_CONTROL=1, or enable %s in Project Settings (debug build only)" % SETTING_AUTO_ENABLE)
+		print(
+			(
+				"[Godot CLI Control] inactive — pass --cli-control, set GODOT_CLI_CONTROL=1, or enable %s in Project Settings (debug build only)"
+				% SETTING_AUTO_ENABLE
+			)
+		)
 		queue_free()
 		return
 	# 即使 SceneTree 暂停也要继续运行
@@ -39,7 +52,9 @@ func _ready() -> void:
 	# 构建统一方法注册表
 	_register_methods()
 	# 缓存 outbound buffer 大小（ProjectSettings 可覆盖默认 10MB，至少 1MB）
-	var mb: int = int(ProjectSettings.get_setting(SETTING_OUTBOUND_BUFFER_MB, DEFAULT_OUTBOUND_BUFFER_MB))
+	var mb: int = int(
+		ProjectSettings.get_setting(SETTING_OUTBOUND_BUFFER_MB, DEFAULT_OUTBOUND_BUFFER_MB)
+	)
 	_outbound_buffer_size = max(1, mb) * 1024 * 1024
 	# 启动 TCP 服务器
 	_port = _parse_port_from_args()
@@ -54,6 +69,16 @@ func _ready() -> void:
 		printerr(msg)
 		return
 	print("GameBridge: Listening on ws://127.0.0.1:%d" % _port)
+	_idle_timeout_secs = _parse_idle_timeout_from_args()
+	_last_activity_ms = Time.get_ticks_msec()
+	if _idle_timeout_secs > 0:
+		var t: Timer = Timer.new()
+		t.wait_time = 1.0
+		t.autostart = true
+		t.process_mode = Node.PROCESS_MODE_ALWAYS
+		t.timeout.connect(_check_idle)
+		add_child(t)
+		print("GameBridge: idle-timeout %ds enabled" % _idle_timeout_secs)
 
 
 func _process(_delta: float) -> void:
@@ -118,14 +143,22 @@ func _register_methods() -> void:
 	_methods["wait_game_time"] = {"callable": _low_level_api.wait_game_time_async, "kind": "async"}
 	_methods["screenshot"] = {"callable": _wrap_screenshot, "kind": "async"}
 	# 输入模拟（同步）
-	_methods["input_action_press"] = {"callable": _input_sim_api.handle_action_press, "kind": "sync"}
-	_methods["input_action_release"] = {"callable": _input_sim_api.handle_action_release, "kind": "sync"}
+	_methods["input_action_press"] = {
+		"callable": _input_sim_api.handle_action_press, "kind": "sync"
+	}
+	_methods["input_action_release"] = {
+		"callable": _input_sim_api.handle_action_release, "kind": "sync"
+	}
 	_methods["input_action_tap"] = {"callable": _input_sim_api.handle_action_tap, "kind": "sync"}
 	_methods["input_get_pressed"] = {"callable": _input_sim_api.handle_get_pressed, "kind": "sync"}
-	_methods["list_input_actions"] = {"callable": _input_sim_api.handle_list_input_actions, "kind": "sync"}
+	_methods["list_input_actions"] = {
+		"callable": _input_sim_api.handle_list_input_actions, "kind": "sync"
+	}
 	_methods["input_hold"] = {"callable": _input_sim_api.handle_hold, "kind": "sync"}
 	_methods["input_release_all"] = {"callable": _input_sim_api.handle_release_all, "kind": "sync"}
-	_methods["input_combo_cancel"] = {"callable": _input_sim_api.handle_combo_cancel, "kind": "sync"}
+	_methods["input_combo_cancel"] = {
+		"callable": _input_sim_api.handle_combo_cancel, "kind": "sync"
+	}
 	# 输入模拟（async_with_id：handler 自行通过 _on_async_response 回响）
 	_methods["input_combo"] = {"callable": _input_sim_api.handle_combo, "kind": "async_with_id"}
 
@@ -136,6 +169,7 @@ func _wrap_screenshot(_params: Dictionary) -> Dictionary:
 
 
 func _handle_message(raw: String) -> void:
+	_last_activity_ms = Time.get_ticks_msec()
 	var parsed: Variant = JSON.parse_string(raw)
 	if parsed == null or not parsed is Dictionary:
 		_send_error("", -32600, "Invalid JSON")
@@ -170,6 +204,7 @@ func _handle_message(raw: String) -> void:
 	var entry: Dictionary = _methods[method] as Dictionary
 	var handler: Callable = entry["callable"] as Callable
 	var kind: String = entry["kind"] as String
+	_in_flight += 1
 	match kind:
 		"sync":
 			var result: Dictionary = handler.call(params)
@@ -186,12 +221,14 @@ func _run_async(id: String, handler: Callable, params: Dictionary) -> void:
 	# 客户端 await 挂死到 timeout。先收原 Variant 自己 type-check。
 	var raw: Variant = await handler.call(params)
 	if not raw is Dictionary:
+		_in_flight = max(0, _in_flight - 1)
 		_send_error(id, -32603, "internal: async handler returned non-dict")
 		return
 	_dispatch_result(id, raw as Dictionary)
 
 
 func _dispatch_result(id: String, result: Dictionary) -> void:
+	_in_flight = max(0, _in_flight - 1)
 	if result.has("error"):
 		var err: Dictionary = result["error"] as Dictionary
 		_send_error(id, err["code"] as int, err["message"] as String)
@@ -253,9 +290,35 @@ func _parse_port_from_args() -> int:
 			var port: int = parts[1].to_int()
 			if port < 1 or port > 65535:
 				push_warning(
-					"GameBridge: Port %d out of range [1, 65535], falling back to %d"
-					% [port, DEFAULT_PORT]
+					(
+						"GameBridge: Port %d out of range [1, 65535], falling back to %d"
+						% [port, DEFAULT_PORT]
+					)
 				)
 				return DEFAULT_PORT
 			return port
 	return DEFAULT_PORT
+
+
+func _parse_idle_timeout_from_args() -> int:
+	for arg: String in OS.get_cmdline_args():
+		if arg.begins_with("--game-bridge-idle-timeout="):
+			var parts: PackedStringArray = arg.split("=", false, 1)
+			if parts.size() != 2 or not parts[1].is_valid_int():
+				push_warning("GameBridge: Invalid idle-timeout %s, disabling" % arg)
+				return 0
+			var secs: int = parts[1].to_int()
+			return secs if secs > 0 else 0
+	return 0
+
+
+func _check_idle() -> void:
+	# 有正在处理的请求 → daemon 没闲着；把活动戳推到现在，等所有请求落地后
+	# 再开始计时。否则一个 wait_game_time(idle_timeout+1) 就会被半路 quit。
+	if _in_flight > 0:
+		_last_activity_ms = Time.get_ticks_msec()
+		return
+	var idle_ms: int = Time.get_ticks_msec() - _last_activity_ms
+	if idle_ms / 1000 >= _idle_timeout_secs:
+		print("GameBridge: idle for %ds, shutting down" % (idle_ms / 1000))
+		get_tree().quit()
