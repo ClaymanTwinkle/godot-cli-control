@@ -36,7 +36,8 @@ import asyncio
 from godot_cli_control import GameClient
 
 async def main():
-    async with GameClient(port=9877) as client:
+    # Omitting port lets GameClient auto-discover from .cli_control/port (written by daemon start)
+    async with GameClient() as client:
         tree = await client.get_scene_tree(depth=3)
         await client.click("/root/MyScene/Button")
         await client.action_press("jump")
@@ -84,7 +85,7 @@ def test_jump(godot_daemon, bridge):
 CLI options:
 
 ```
---godot-cli-port=N           # GameBridge port (default 9877)
+--godot-cli-port=N           # GameBridge port (default: read from .cli_control/port)
 --godot-cli-no-headless      # open a real Godot window
 --godot-cli-project-root=DIR # default: pytest rootdir
 ```
@@ -96,9 +97,10 @@ The CLI is the canonical surface — every `GameClient` method has a one-line eq
 ```bash
 # Lifecycle
 godot-cli-control init [--path DIR] [--force]
-godot-cli-control daemon start [--headless --record --movie-path X --fps N --port N]
-godot-cli-control daemon stop
+godot-cli-control daemon start [--headless --record --movie-path X --fps N --port N --idle-timeout 30m]
+godot-cli-control daemon stop [--all | --project PATH]
 godot-cli-control daemon status
+godot-cli-control daemon ls                  # list running daemons across all projects
 godot-cli-control run <script.py> [--headless ...]
 
 # Read

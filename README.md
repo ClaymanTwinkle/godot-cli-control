@@ -69,7 +69,8 @@ import asyncio
 from godot_cli_control import GameClient
 
 async def main():
-    async with GameClient(port=9877) as client:
+    # Omitting port lets GameClient auto-discover from .cli_control/port (written by daemon start)
+    async with GameClient() as client:
         await client.click("/root/Game/StartButton")
         await client.action_press("jump")
         await client.wait_game_time(0.5)
@@ -113,11 +114,13 @@ Pass `--text` (or `--no-json`) to switch back to legacy human-readable output.
 │   ┌──────────────────────────┐     │   JSON-RPC     │   ┌────────────────────────────┐   │
 │   │ godot-cli-control CLI    │     │   127.0.0.1    │   │ addons/godot_cli_control/  │   │
 │   │ GameClient   (async)     │ ◄──────────────────► │   │   GameBridgeNode autoload  │   │
-│   │ GameBridge   (sync)      │     │   :9877        │   │   LowLevelApi              │   │
-│   │ pytest fixtures          │     │   (default)    │   │   InputSimulationApi       │   │
+│   │ GameBridge   (sync)      │     │   :<port>      │   │   LowLevelApi              │   │
+│   │ pytest fixtures          │     │   (auto)       │   │   InputSimulationApi       │   │
 │   └──────────────────────────┘     │                │   └────────────────────────────┘   │
 └────────────────────────────────────┘                └────────────────────────────────────┘
 ```
+
+`<port>` is OS-assigned by default; the actual value is written to `.cli_control/port` when the daemon starts. CLI subcommands and `GameClient()` (no port arg) auto-discover it from there.
 
 The plugin is **off by default** even when enabled — see [Activation modes](addons/godot_cli_control/README.md#activation-modes). The server binds `127.0.0.1` only; PID/port files are mode `0600`; release builds are unconditionally disabled. See [Security model](addons/godot_cli_control/README.md#security-model).
 
@@ -183,6 +186,13 @@ The two `--no-*` flags are mutually exclusive with each other; `--skills-no-clob
 ## Manual install (advanced)
 
 If you don't want `init`, copy the plugin manually and enable it from the editor — see the [plugin README](addons/godot_cli_control/README.md#manual-setup-if-you-prefer) for the long-form walkthrough. The legacy wrappers (`bin/run_cli_control.sh` / `.ps1`) are kept as compatibility shims but **deprecated since 0.1.6 and scheduled for removal in 0.3.0** — new code should call `godot-cli-control <subcommand>` directly.
+
+## Recent changes
+
+- **Default daemon port is now OS-assigned (was 9877).** The actual port is written to `.cli_control/port`; CLI subcommands and `GameClient()` (no port arg) auto-discover it. External scripts that hardcoded `127.0.0.1:9877` should either read `.cli_control/port` or pass `--port 9877` explicitly to `daemon start`.
+- **New: `godot-cli-control daemon ls`** — list daemons across all projects.
+- **New: `godot-cli-control daemon stop --all`** / **`--project <path>`** — batch / cross-project stop.
+- **New: `godot-cli-control daemon start --idle-timeout 30m`** — opt-in: auto-shutdown the Godot process after N minutes of no RPC activity. Default off.
 
 ## Status
 
