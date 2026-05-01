@@ -461,12 +461,16 @@ def test_daemon_status_json_envelope_running(
 
 
 def test_daemon_status_json_envelope_stopped(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     import json as _json
 
     import godot_cli_control.daemon as daemon_mod
 
+    # chdir tmp_path 避免读到工作目录里残留的 .cli_control/godot.log
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: False)
 
     from godot_cli_control.cli import OUTPUT_JSON, cmd_daemon_status
@@ -476,6 +480,60 @@ def test_daemon_status_json_envelope_stopped(
     assert rc == 1  # exit code 语义不变
     payload = _json.loads(capsys.readouterr().out)
     assert payload == {"ok": True, "result": {"state": "stopped"}}
+
+
+def test_daemon_status_stopped_includes_last_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """issue #38：daemon 已停 + .cli_control/godot.log 存在 → status 必须把
+    日志路径透出来，让用户立刻知道去哪 cat 上次启动失败的原因。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+
+    monkeypatch.chdir(tmp_path)
+    control_dir = tmp_path / ".cli_control"
+    control_dir.mkdir()
+    log = control_dir / "godot.log"
+    log.write_text("ERROR: autoload failed\n")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: False)
+
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_daemon_status
+
+    ns = __import__("argparse").Namespace(output_format=OUTPUT_JSON)
+    rc = cmd_daemon_status(ns)
+    assert rc == 1
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["result"]["state"] == "stopped"
+    assert payload["result"]["last_log"] == str(log)
+
+
+def test_daemon_status_stopped_text_mode_includes_last_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """text 模式下也要带 last log 提示，否则人类用户读不到。"""
+    import godot_cli_control.daemon as daemon_mod
+
+    monkeypatch.chdir(tmp_path)
+    control_dir = tmp_path / ".cli_control"
+    control_dir.mkdir()
+    (control_dir / "godot.log").write_text("crash\n")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: False)
+
+    from godot_cli_control.cli import OUTPUT_TEXT, cmd_daemon_status
+
+    ns = __import__("argparse").Namespace(output_format=OUTPUT_TEXT)
+    rc = cmd_daemon_status(ns)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "stopped" in out and "godot.log" in out
 
 
 def test_run_rpc_emits_success_envelope(

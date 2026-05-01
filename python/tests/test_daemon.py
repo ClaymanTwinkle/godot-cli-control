@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -747,3 +748,218 @@ def test_start_rejects_non_executable_godot_bin(
     daemon = Daemon(tmp_path)
     with pytest.raises(DaemonError, match="not executable"):
         daemon.start()
+
+
+# ---------------------------------------------------------------------------
+# issue #38：godot stdout/stderr 捕获 + 启动失败时输出 log tail
+# ---------------------------------------------------------------------------
+
+
+def test_start_redirects_godot_output_to_log_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Popen 必须把 stdout 指向 godot.log、stderr 合并 —— 用户事后能 cat 日志。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999_999_500
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured["kwargs"] = kwargs
+        # 模拟 Godot 写一行到日志再继续 —— 验证 fh 是真的 writable。
+        kwargs["stdout"].write(b"hello from godot\n")
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _record_popen
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
+    )
+
+    daemon = Daemon(tmp_path)
+    daemon.start(port=29900)
+
+    # 1) Popen 拿到的 stdout 是文件、stderr 合并到 stdout
+    assert captured["kwargs"]["stderr"] == subprocess.STDOUT
+    # 2) 文件写在约定位置
+    assert daemon.log_file.exists()
+    assert daemon.log_file.read_bytes() == b"hello from godot\n"
+
+
+def test_start_immediate_crash_includes_log_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1s poll 抓到立即崩溃 → DaemonError 必须把 godot.log 末尾贴出来。
+
+    issue #38：之前只报 "exited immediately (returncode=N)"，用户还得手动
+    `cat .cli_control/godot.log`。现在直接拼到 message 里。
+    """
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    class _DeadProc:
+        pid = 999_999_400
+        returncode = 1
+
+        def poll(self) -> int:
+            return 1
+
+    def _spew_log(args: list[str], **kwargs: Any) -> _DeadProc:
+        kwargs["stdout"].write(
+            b"GODOT FATAL: autoload script not found at res://main.gd\n"
+        )
+        return _DeadProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _spew_log
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="autoload script not found") as ei:
+        daemon.start(port=29901)
+    assert "exited immediately" in str(ei.value)
+    # log 文件保留供事后查阅
+    assert daemon.log_file.exists()
+
+
+def test_start_detects_crash_during_port_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口探活期间 Godot 自死 → 报「exited during launch」+ log tail，
+    不再误报「GameBridge not ready within 30s」让用户怀疑端口冲突。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    # 首次 poll() 返回 None（1s 存活检查通过），之后变非 None（探活时崩溃）。
+    class _LateCrashProc:
+        pid = 999_999_300
+        returncode = 11
+        _polls = 0
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            return None if self._polls == 1 else 11
+
+    def _make_proc(args: list[str], **kwargs: Any) -> _LateCrashProc:
+        kwargs["stdout"].write(b"ERROR: scene main.tscn referenced missing res\n")
+        return _LateCrashProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _make_proc
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="exited during launch") as ei:
+        daemon.start(port=29902, wait_seconds=2)
+    assert "scene main.tscn" in str(ei.value)
+
+
+def test_start_port_timeout_includes_log_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Godot 仍在跑但 GameBridge 超时未就绪 → message 也带 log tail，便于诊断
+    （比如 GameBridge autoload 没启用、端口被占等情况）。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    class _LiveProc:
+        pid = 999_999_200
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _make_proc(args: list[str], **kwargs: Any) -> _LiveProc:
+        # 通过子进程的 stdout fh 写日志：这样可以躲过 start() 自己的 truncate。
+        kwargs["stdout"].write(b"WARN: no GameBridge autoload registered\n")
+        return _LiveProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _make_proc
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: False
+    )
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="not ready") as ei:
+        daemon.start(port=29903, wait_seconds=1)
+    assert "no GameBridge autoload registered" in str(ei.value)
+
+
+def test_format_log_tail_truncates_long_logs(tmp_path: Path) -> None:
+    daemon = Daemon(tmp_path)
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
+    daemon.log_file.write_text("\n".join(f"line{i}" for i in range(100)))
+    out = daemon._format_log_tail(n=5)
+    assert "line99" in out
+    assert "line95" in out
+    assert "line0" not in out, "末尾 5 行不应该包含开头"
+    assert out.startswith("Godot 日志（")
+
+
+def test_format_log_tail_handles_missing_log(tmp_path: Path) -> None:
+    daemon = Daemon(tmp_path)
+    out = daemon._format_log_tail()
+    assert "log unavailable" in out
+
+
+def test_wait_port_ready_returns_false_when_proc_died(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """端口未开 + proc.poll() 已返回非 None → 立刻 False，不再等到 deadline。"""
+    class _DeadProc:
+        def poll(self) -> int:
+            return 137
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.time.sleep", lambda *_: None
+    )
+    # 必须秒返：max_seconds=10 但因 proc 死了第一轮就跳出
+    assert _wait_port_ready(port=1, max_seconds=10, proc=_DeadProc()) is False

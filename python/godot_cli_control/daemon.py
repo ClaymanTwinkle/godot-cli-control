@@ -35,6 +35,9 @@ class Daemon:
         self.pid_file = self.control_dir / "godot.pid"
         self.port_file = self.control_dir / "port"
         self.movie_path_file = self.control_dir / "movie_path"
+        # Godot 进程的 stdout+stderr。每次 start 时 truncate 重写，stop 后保留
+        # 让用户回溯最近一次启动失败的根因（issue #38）。
+        self.log_file = self.control_dir / "godot.log"
 
     # ── 状态查询 ──
 
@@ -141,7 +144,17 @@ class Daemon:
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             popen_kwargs["start_new_session"] = True
-        proc = subprocess.Popen(args, **popen_kwargs)
+
+        # 把 Godot 的 stdout+stderr 落到 .cli_control/godot.log。truncate 重写
+        # 让 log 始终对应最近一次启动；子进程 dup 之后这边的 fh 可以立即关闭，
+        # daemon 不必长期持有 fd。issue #38。
+        log_fh = open(self.log_file, "wb")
+        try:
+            popen_kwargs["stdout"] = log_fh
+            popen_kwargs["stderr"] = subprocess.STDOUT
+            proc = subprocess.Popen(args, **popen_kwargs)
+        finally:
+            log_fh.close()
         self.pid_file.write_text(str(proc.pid))
 
         # 启动后 1s 仍存活才认为 launch 成功（捕获 --cli-control 拒识/参数错误）
@@ -149,15 +162,25 @@ class Daemon:
         if proc.poll() is not None:
             self._cleanup_state_files()
             raise DaemonError(
-                f"Godot exited immediately after launch (returncode={proc.returncode})"
+                f"Godot exited immediately after launch (returncode={proc.returncode}).\n"
+                f"{self._format_log_tail()}"
             )
 
         print(f"等待 GameBridge 就绪 (port {port})...", file=sys.stderr)
-        if not _wait_port_ready(port, wait_seconds):
+        if not _wait_port_ready(port, wait_seconds, proc=proc):
+            crashed_rc = proc.poll()
             self._terminate(proc.pid)
             self._cleanup_state_files()
+            if crashed_rc is not None:
+                # 端口探活期间 Godot 自己挂了（autoload 报错 / scene load 失败 等）。
+                # 这是 issue #38 报告的"daemon start 报成功后 RPC 全失败"主线场景。
+                raise DaemonError(
+                    f"Godot exited during launch (returncode={crashed_rc}).\n"
+                    f"{self._format_log_tail()}"
+                )
             raise DaemonError(
-                f"GameBridge not ready on port {port} within {wait_seconds}s"
+                f"GameBridge not ready on port {port} within {wait_seconds}s.\n"
+                f"{self._format_log_tail()}"
             )
 
         print(f"Godot 已启动 (PID {proc.pid})", file=sys.stderr)
@@ -217,6 +240,26 @@ class Daemon:
         if value and Path(value).is_file() and os.access(value, os.X_OK):
             return value
         return None
+
+    def _format_log_tail(self, n: int = 30) -> str:
+        """渲染 godot.log 末尾若干行，给启动失败的 DaemonError 拼可读上下文。
+
+        失败兜底成 ``(log unavailable)`` 而不是抛异常 —— 启动错误本身比 log
+        读取错误更重要，不能让 IO 失败盖掉真正的根因。
+        """
+        try:
+            text = self.log_file.read_text(errors="replace")
+        except OSError:
+            return f"(log unavailable: {self.log_file})"
+        lines = text.splitlines()
+        header = f"Godot 日志（{self.log_file}）末尾 {n} 行："
+        if not lines:
+            return f"{header}\n  (空 — Godot 进程未输出任何内容)"
+        if len(lines) <= n:
+            body = text.rstrip()
+        else:
+            body = "...\n" + "\n".join(lines[-n:])
+        return f"{header}\n{body}"
 
     def _terminate(self, pid: int, timeout: float = 10.0) -> None:
         """SIGTERM → wait → SIGKILL。"""
@@ -319,9 +362,21 @@ def _force_kill_signal() -> int:
     return getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
-def _wait_port_ready(port: int, max_seconds: int) -> bool:
+def _wait_port_ready(
+    port: int,
+    max_seconds: int,
+    proc: subprocess.Popen[Any] | None = None,
+) -> bool:
+    """轮询直到端口可连接或超时。
+
+    若传入 ``proc``，每轮先检查它是否已退出 —— Godot 在 GameBridge 起来前自己
+    挂了（autoload 报错、--cli-control 接错……）就立刻返回 False，不让用户干等
+    剩下的 wait_seconds。issue #38。
+    """
     deadline = time.time() + max_seconds
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return True
