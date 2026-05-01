@@ -15,8 +15,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .client import DEFAULT_PORT
-
 
 class DaemonError(RuntimeError):
     """Daemon 启停过程中可恢复的错误（用户应看到 message，不必看 traceback）。"""
