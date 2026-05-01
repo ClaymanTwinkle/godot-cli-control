@@ -386,10 +386,11 @@ def find_godot_binary() -> str | None:
 def _process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: no cover
         # Windows 上 os.kill(pid, 0) 把 0 当 signal.CTRL_C_EVENT（值就是 0），
         # 会向当前 console 发 Ctrl+C —— 自己把自己/pytest 中断了。所以走
         # OpenProcess + GetExitCodeProcess。
+        # POSIX CI 进不到这里；Windows CI 上 fail-under 不跑，故整块跳过覆盖率统计。
         import ctypes
         from ctypes import wintypes
 
