@@ -51,8 +51,12 @@ def register(
         "godot_bin": godot_bin,
         "log_path": log_path,
     }
+    # 原子写：先写 .tmp 再 os.replace，避免被 SIGKILL / OOM 打断后留下 0 字节
+    # 文件让 list_all 误删尚未完成的注册。docstring 的"幂等"才真正成立。
     target = _REGISTRY_DIR / f"{project_hash(project_root)}.json"
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    os.replace(tmp, target)
 
 
 def unregister(project_root: Path) -> None:

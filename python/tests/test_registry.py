@@ -64,3 +64,11 @@ def test_project_hash_stable(tmp_path: Path) -> None:
     h1 = registry.project_hash(p)
     h2 = registry.project_hash(p)
     assert h1 == h2 and len(h1) == 12
+
+
+def test_process_alive_branches() -> None:
+    """直接覆盖 _process_alive 四个分支，避免未来 'simplify' 误改 PermissionError 含义。"""
+    assert registry._process_alive(0) is False
+    assert registry._process_alive(-1) is False
+    assert registry._process_alive(os.getpid()) is True
+    assert registry._process_alive(2_000_000) is False
