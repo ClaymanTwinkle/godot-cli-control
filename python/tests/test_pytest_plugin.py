@@ -301,7 +301,11 @@ def test_project_root_option_is_respected(pytester: pytest.Pytester) -> None:
         plugin.GameBridge = FakeBridge
 
         def pytest_terminal_summary(terminalreporter, exitstatus, config):
-            terminalreporter.write_line(f"SEEN_ROOTS={SEEN_ROOTS}")
+            # 用 str() 逐条打印 —— 列表的 repr 在 Windows 上是
+            # repr(WindowsPath(...)) 用正斜杠，str(WindowsPath) 用反斜杠，
+            # 测试若直接 in 整个列表 repr 会 mismatch。
+            for p in SEEN_ROOTS:
+                terminalreporter.write_line(f"SEEN_ROOT={p}")
         """
     )
     pytester.makepyfile("def test_x(bridge): pass")

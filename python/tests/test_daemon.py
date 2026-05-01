@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -823,6 +824,11 @@ def test_start_rejects_when_port_already_in_use(
     assert not daemon.port_file.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows 没有 X 权限位，os.access(X_OK) 对任意存在的文件都返回 True；"
+    "可执行性需靠扩展名 / Win32 PE 头判定，是单独的功能点（见 issue），与本用例无关。",
+)
 def test_start_rejects_non_executable_godot_bin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
