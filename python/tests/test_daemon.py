@@ -734,6 +734,54 @@ def test_process_alive_negative_pid_is_dead() -> None:
 # ── start 校验 godot_bin 可执行 ──
 
 
+def test_start_rejects_when_port_already_in_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端口已被别的进程监听 → daemon.start 立刻报错，不 spawn Godot。
+
+    场景（issue #?）：旧 daemon 没 stop 干净 / 别的服务占了同端口。GameBridge
+    listen 失败时只 printerr 不退进程，daemon 这头 create_connection 又会
+    握手到错的进程上误报启动成功，后续 RPC 全打错。spawn 前先 bind 校验
+    端口空闲，被占就直接报「port N already in use」。
+    """
+    import socket as _socket
+
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    popen_called: list = []
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen",
+        lambda *a, **k: popen_called.append(a) or (_ for _ in ()).throw(
+            AssertionError("Popen 不该被调用 —— 端口校验应在此之前失败")
+        ),
+    )
+
+    sock = _socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    busy_port = sock.getsockname()[1]
+    try:
+        daemon = Daemon(tmp_path)
+        with pytest.raises(DaemonError, match="in use"):
+            daemon.start(port=busy_port)
+    finally:
+        sock.close()
+
+    assert popen_called == [], "端口被占时不应 spawn Godot"
+    # 失败时不该污染 .cli_control 状态
+    assert not daemon.pid_file.exists()
+    assert not daemon.port_file.exists()
+
+
 def test_start_rejects_non_executable_godot_bin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

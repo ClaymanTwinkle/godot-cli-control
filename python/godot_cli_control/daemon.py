@@ -106,6 +106,11 @@ class Daemon:
         if not os.access(bin_path, os.X_OK):
             raise DaemonError(f"Godot binary not executable: {bin_path}")
 
+        # spawn 前快速判定端口空闲。GameBridge 那头 listen 失败只 printerr 不
+        # 退进程；daemon 这头探活又走 create_connection，会握手到占端口的进程上
+        # 误报启动成功，后续 RPC 全打错。先 bind 一次让占用立刻可见。
+        _check_port_available(port)
+
         # 先确保 import 缓存就位（避免首次启动 GameBridge 来不及绑端口）
         _ensure_imported(self.project_root, bin_path)
 
@@ -389,6 +394,26 @@ def _process_is_godot(pid: int) -> bool:
 
 def _force_kill_signal() -> int:
     return getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _check_port_available(port: int) -> None:
+    """spawn Godot 之前 bind 一次 ``127.0.0.1:port``，被占就抛 DaemonError。
+
+    Linux/macOS/Windows 上无 ``SO_REUSEADDR`` / ``SO_REUSEPORT`` 时，bind 占用
+    端口会失败 —— 用这一点判定端口是否被别的进程持有。bind 与 Godot 子进程实际
+    bind 之间存在 race window，但常见的「被占」场景里占用方持续占着，race 不
+    影响主线诊断价值。
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as e:
+        raise DaemonError(
+            f"port {port} already in use ({e}). 另一个进程正在占用该端口，"
+            f"Godot 起不来。请 stop 旧 daemon 或换 --port。"
+        ) from e
+    finally:
+        sock.close()
 
 
 def _wait_port_ready(
