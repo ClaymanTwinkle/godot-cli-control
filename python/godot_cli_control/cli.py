@@ -670,17 +670,52 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
 
 def cmd_daemon_stop(ns: argparse.Namespace) -> int:
     from .daemon import Daemon, DaemonError
+    from . import registry
 
-    daemon = Daemon(Path.cwd())
+    fmt = _output_format(ns)
+
+    if getattr(ns, "all", False):
+        records = registry.list_all()
+        if not records:
+            if fmt == OUTPUT_JSON:
+                _emit_success_payload({"stopped": [], "rc": 0})
+            else:
+                print("(no running daemons)")
+            return EXIT_OK
+        results: list[dict[str, Any]] = []
+        worst = 0
+        for r in records:
+            entry: dict[str, Any] = {
+                "project_root": r.project_root,
+                "pid": r.pid,
+                "port": r.port,
+            }
+            try:
+                rc = Daemon(Path(r.project_root)).stop()
+                entry["rc"] = rc
+                worst = max(worst, rc)
+            except DaemonError as e:
+                entry["rc"] = EXIT_INFRA_ERROR
+                entry["error"] = str(e)
+                worst = max(worst, EXIT_INFRA_ERROR)
+                # 单条失败不能阻止其余 daemon 收尾
+                print(f"[{r.project_root}] {e}", file=sys.stderr)
+            results.append(entry)
+        if fmt == OUTPUT_JSON:
+            _emit_success_payload({"stopped": results, "rc": worst})
+        return worst
+
+    target = (ns.project.resolve() if getattr(ns, "project", None) else Path.cwd())
+    daemon = Daemon(target)
     try:
         rc = daemon.stop()
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
         return EXIT_INFRA_ERROR
-    if _output_format(ns) == OUTPUT_JSON:
+    if fmt == OUTPUT_JSON:
         # rc 0=正常停 / 2=ffmpeg 转码失败但 daemon 已停。两种都算"stopped"，
         # 把 rc 透出让 agent 决定要不要 retry transcode。
-        _emit_success_payload({"stopped": True, "rc": rc})
+        _emit_success_payload({"stopped": True, "rc": rc, "project_root": str(target)})
     return rc
 
 
@@ -1068,10 +1103,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_daemon_flags(start_p)
 
-    daemon_subs.add_parser(
+    stop_p = daemon_subs.add_parser(
         "stop",
         help="停止 daemon",
-        description="停止 .cli_control/godot.pid 记录的 daemon。",
+        description=(
+            "停止 daemon。无 flag 时停 cwd 项目；--all 停所有注册的 daemon；"
+            "--project <path> 停指定项目。"
+        ),
+    )
+    stop_grp = stop_p.add_mutually_exclusive_group()
+    stop_grp.add_argument(
+        "--all", action="store_true",
+        help="停止注册表中所有运行中的 daemon"
+    )
+    stop_grp.add_argument(
+        "--project", type=Path, default=None,
+        help="停止指定项目根的 daemon（绝对/相对路径均可）"
     )
 
     daemon_subs.add_parser(

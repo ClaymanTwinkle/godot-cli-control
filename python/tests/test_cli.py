@@ -825,7 +825,10 @@ def test_daemon_stop_emits_json_envelope(
     rc = cmd_daemon_stop(ns)
     assert rc == 2  # exit code 直通：agent 既能从 stdout JSON 拿到 rc=2，也能从 $? 看
     payload = _json.loads(capsys.readouterr().out.strip())
-    assert payload == {"ok": True, "result": {"stopped": True, "rc": 2}}
+    assert payload["ok"] is True
+    assert payload["result"]["stopped"] is True
+    assert payload["result"]["rc"] == 2
+    assert "project_root" in payload["result"]
 
 
 def test_cmd_set_passes_json_parsed_value_to_client(
@@ -1087,3 +1090,81 @@ def test_daemon_ls_subcommand_parses() -> None:
     ns = build_parser().parse_args(["daemon", "ls"])
     assert ns.cmd == "daemon"
     assert ns.action == "ls"
+
+
+def test_daemon_stop_all_invokes_terminate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--all 应对注册表里每条记录调 Daemon(...).stop()。"""
+    from godot_cli_control import registry
+    monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
+
+    proj1 = tmp_path / "a"; proj1.mkdir()
+    proj2 = tmp_path / "b"; proj2.mkdir()
+    import os
+    registry.register(proj1, pid=os.getpid(), port=1, godot_bin="x", log_path="y")
+    registry.register(proj2, pid=os.getpid(), port=2, godot_bin="x", log_path="y")
+
+    stopped: list[Path] = []
+    def fake_stop(self) -> int:
+        stopped.append(self.project_root)
+        return 0
+    import godot_cli_control.daemon as daemon_mod
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", fake_stop)
+
+    from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON
+    import argparse
+    ns = argparse.Namespace(all=True, project=None, output_format=OUTPUT_JSON)
+    rc = cmd_daemon_stop(ns)
+    assert rc == 0
+    assert {p.resolve() for p in stopped} == {proj1.resolve(), proj2.resolve()}
+
+
+def test_daemon_stop_project_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--project <path> 应对该项目调 Daemon(...).stop()，与 cwd 无关。"""
+    target = tmp_path / "p"; target.mkdir()
+    seen: list[Path] = []
+    import godot_cli_control.daemon as daemon_mod
+    monkeypatch.setattr(daemon_mod.Daemon, "stop",
+                        lambda self: (seen.append(self.project_root), 0)[1])
+
+    from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON
+    import argparse
+    ns = argparse.Namespace(all=False, project=target, output_format=OUTPUT_JSON)
+    rc = cmd_daemon_stop(ns)
+    assert rc == 0
+    assert seen == [target.resolve()]
+
+
+def test_daemon_stop_default_uses_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """无 --all 也无 --project 时，行为与今天一致：使用 cwd 的 Daemon。"""
+    monkeypatch.chdir(tmp_path)
+    import godot_cli_control.daemon as daemon_mod
+    seen: list[Path] = []
+    monkeypatch.setattr(daemon_mod.Daemon, "stop",
+                        lambda self: (seen.append(self.project_root), 0)[1])
+
+    from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON
+    import argparse
+    ns = argparse.Namespace(all=False, project=None, output_format=OUTPUT_JSON)
+    rc = cmd_daemon_stop(ns)
+    assert rc == 0
+    assert seen == [tmp_path.resolve()]
+
+
+def test_daemon_stop_subcommand_parses_all_and_project() -> None:
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "stop", "--all"])
+    assert ns.all is True
+
+    ns = build_parser().parse_args(["daemon", "stop", "--project", "/tmp/x"])
+    assert str(ns.project) == "/tmp/x"
+
+    # mutually exclusive — argparse should refuse both
+    import pytest as _pt
+    with _pt.raises(SystemExit):
+        build_parser().parse_args(["daemon", "stop", "--all", "--project", "/tmp/x"])
