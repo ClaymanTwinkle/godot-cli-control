@@ -219,7 +219,6 @@ class Daemon:
         if not _process_alive(pid):
             print(f"Godot (PID {pid}) 已不在运行，清理 PID 文件", file=sys.stderr)
             self._cleanup_state_files()
-            _registry.unregister(self.project_root)
             return 0
         if not _process_is_godot(pid):
             raise DaemonError(
@@ -230,7 +229,6 @@ class Daemon:
         print(f"关闭 Godot (PID {pid})...", file=sys.stderr)
         self._terminate(pid)
         self._cleanup_state_files()
-        _registry.unregister(self.project_root)
         print("Godot 已停止", file=sys.stderr)
 
         # 录制转码（即使失败也认为 stop 成功；返回非 0 让 CI 感知）
@@ -244,13 +242,17 @@ class Daemon:
     # ── 内部 ──
 
     def _cleanup_state_files(self) -> None:
-        """清理 daemon 启停产生的 pid/port 临时文件。
+        """清理本 daemon 的所有持久化状态：本地 pid/port + 全局 registry 记录。
 
-        port_file 跟随 pid_file 一起清，避免后续 ``current_port()`` 读到 stale
-        值把 RPC 请求发到已不存在的端口。``movie_path`` 在 stop 流程中独立处理。
+        三者同生同死 —— ``start()`` 成功后一并写入；任何 stop 路径（包括 start
+        途中失败的回滚清理）必须把它们一并清掉，否则下次 ``daemon ls`` / 启动
+        校验会误以为还有进程在跑。``movie_path`` 在 stop 流程中独立处理。
         """
         self.pid_file.unlink(missing_ok=True)
         self.port_file.unlink(missing_ok=True)
+        # start 失败回滚路径还没 register 时，unregister 是 unlink(missing_ok=True)，
+        # 行为一致；保持一处兜底比让所有 caller 记得手动 unregister 更不易遗漏。
+        _registry.unregister(self.project_root)
 
     def read_godot_bin_pref(self) -> str | None:
         """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。"""

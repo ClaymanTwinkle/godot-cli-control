@@ -1173,26 +1173,19 @@ def test_start_with_port_zero_writes_actual_port(
 def test_start_registers_in_global_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """start() 成功后必须写全局注册表；stop() 必须清除注册记录。
+    """start() 成功后必须写全局注册表 JSON；stop() 必须删除该 JSON。
 
-    _FakeProc.pid = 999_999_900 是假 PID，不是真实进程，所以 registry.list_all()
-    的存活探测会把它剔除。需要 patch registry._process_alive 让它认为该 PID 活着，
-    才能验证注册表写入；stop 结束时再恢复默认，确认 unregister 被调用。
+    直接断言 registry 目录下的文件存在 / 不存在，比走 list_all() 更严：
+    list_all() 自带死 PID 剪枝，会让"忘记 unregister"的 bug 偷偷过去。
     """
     from godot_cli_control import registry
 
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
-    # 让 registry.list_all 认为假 PID 是活进程
-    monkeypatch.setattr(registry, "_process_alive", lambda pid: True)
-
     daemon, _ = _setup_start_env(tmp_path, monkeypatch)
+    record_file = tmp_path / "reg" / f"{registry.project_hash(tmp_path)}.json"
+
     daemon.start(port=0)
+    assert record_file.exists(), "start() 后注册表 JSON 应存在"
 
-    records = registry.list_all()
-    assert len(records) == 1
-    assert records[0].pid > 0  # _FakeProc.pid = 999_999_900
-
-    # 恢复真实 _process_alive，stop 读到死 PID → 走死 PID 自愈分支 → unregister
-    monkeypatch.setattr(registry, "_process_alive", lambda pid: False)
     daemon.stop()
-    assert registry.list_all() == []
+    assert not record_file.exists(), "stop() 后注册表 JSON 应被 unregister 删掉"
