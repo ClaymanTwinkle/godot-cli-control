@@ -13,6 +13,12 @@ var _active_stream: StreamPeerTCP = null
 var _port: int = DEFAULT_PORT
 var _idle_timeout_secs: int = 0
 var _last_activity_ms: int = 0
+# 正在处理中的请求数。> 0 表示 daemon 没闲着，idle 检查必须放过 —— 否则
+# 一条 wait_game_time(3600) 会被 30m idle-timeout 半路打断，客户端拿不到响应。
+# 入：消息通过参数校验、即将派发到 handler 时 +1。
+# 出：_dispatch_result（sync/async/async_with_id 三条路径的最终响应点）-1。
+# 校验失败的 _send_error 不计数（没进过 handler）。
+var _in_flight: int = 0
 var _outbound_buffer_size: int = DEFAULT_OUTBOUND_BUFFER_MB * 1024 * 1024
 var _low_level_api: LowLevelApi = null
 var _input_sim_api: InputSimulationApi = null
@@ -198,6 +204,7 @@ func _handle_message(raw: String) -> void:
 	var entry: Dictionary = _methods[method] as Dictionary
 	var handler: Callable = entry["callable"] as Callable
 	var kind: String = entry["kind"] as String
+	_in_flight += 1
 	match kind:
 		"sync":
 			var result: Dictionary = handler.call(params)
@@ -214,12 +221,14 @@ func _run_async(id: String, handler: Callable, params: Dictionary) -> void:
 	# 客户端 await 挂死到 timeout。先收原 Variant 自己 type-check。
 	var raw: Variant = await handler.call(params)
 	if not raw is Dictionary:
+		_in_flight = max(0, _in_flight - 1)
 		_send_error(id, -32603, "internal: async handler returned non-dict")
 		return
 	_dispatch_result(id, raw as Dictionary)
 
 
 func _dispatch_result(id: String, result: Dictionary) -> void:
+	_in_flight = max(0, _in_flight - 1)
 	if result.has("error"):
 		var err: Dictionary = result["error"] as Dictionary
 		_send_error(id, err["code"] as int, err["message"] as String)
@@ -304,6 +313,11 @@ func _parse_idle_timeout_from_args() -> int:
 
 
 func _check_idle() -> void:
+	# 有正在处理的请求 → daemon 没闲着；把活动戳推到现在，等所有请求落地后
+	# 再开始计时。否则一个 wait_game_time(idle_timeout+1) 就会被半路 quit。
+	if _in_flight > 0:
+		_last_activity_ms = Time.get_ticks_msec()
+		return
 	var idle_ms: int = Time.get_ticks_msec() - _last_activity_ms
 	if idle_ms / 1000 >= _idle_timeout_secs:
 		print("GameBridge: idle for %ds, shutting down" % (idle_ms / 1000))

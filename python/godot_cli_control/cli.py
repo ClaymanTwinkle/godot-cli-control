@@ -42,6 +42,10 @@ OUTPUT_TEXT = "text"
 EXIT_OK = 0
 EXIT_RPC_ERROR = 1
 EXIT_INFRA_ERROR = 2  # 连接 / 超时 / 用户输入解析失败
+# `daemon stop --all` 专用：至少一条 stop 失败。不复用 EXIT_INFRA_ERROR(=2) —— 单个项目
+# stop rc=2 是「daemon 已停但 ffmpeg 转码失败」的合法成功旁路；--all 聚合若也用 2，
+# 调用方分不清「全停成功只是某个 transcode 失败」与「真有 daemon 没停掉」。
+EXIT_PARTIAL = 3
 EXIT_USAGE = 64  # 命令组合无效（如 combo 既无文件又无 --steps-json）
 
 # RPC 错误统一信封（无论 --json 还是 --text）的连接/超时占位 code。GD 端
@@ -691,7 +695,7 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
                 print("(no running daemons)")
             return EXIT_OK
         results: list[dict[str, Any]] = []
-        worst = 0
+        had_failure = False
         for r in records:
             entry: dict[str, Any] = {
                 "project_root": r.project_root,
@@ -701,17 +705,29 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
             try:
                 rc = Daemon(Path(r.project_root)).stop()
                 entry["rc"] = rc
-                worst = max(worst, rc)
+                if fmt != OUTPUT_JSON:
+                    suffix = f" (rc={rc})" if rc != 0 else ""
+                    print(f"stopped pid={r.pid} port={r.port} {r.project_root}{suffix}")
             except DaemonError as e:
                 entry["rc"] = EXIT_INFRA_ERROR
                 entry["error"] = str(e)
-                worst = max(worst, EXIT_INFRA_ERROR)
+                had_failure = True
                 # 单条失败不能阻止其余 daemon 收尾
                 print(f"[{r.project_root}] {e}", file=sys.stderr)
             results.append(entry)
+        # rc 含义：0 = 全部成功；EXIT_PARTIAL = 至少一条 DaemonError。注意单条 stop
+        # 返回 2（ffmpeg 转码失败但 daemon 已停）不算"失败"，按成功汇总；调用方
+        # 想要逐条状态请看 JSON 输出 / 文本里的每行 rc=N 标记。
+        rc_total = EXIT_PARTIAL if had_failure else EXIT_OK
         if fmt == OUTPUT_JSON:
-            _emit_success_payload({"stopped": results, "rc": worst})
-        return worst
+            _emit_success_payload({"stopped": results, "rc": rc_total})
+        else:
+            failed = sum(1 for x in results if "error" in x)
+            print(
+                f"summary: {len(results) - failed}/{len(results)} stopped"
+                + (f", {failed} failed" if failed else "")
+            )
+        return rc_total
 
     target = (ns.project.resolve() if getattr(ns, "project", None) else Path.cwd())
     daemon = Daemon(target)

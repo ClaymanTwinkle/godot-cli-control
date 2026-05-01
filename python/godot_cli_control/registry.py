@@ -18,6 +18,9 @@ _REGISTRY_DIR = Path.home() / ".local" / "state" / "godot-cli-control" / "daemon
 
 @dataclass(frozen=True)
 class DaemonRecord:
+    # ``project_root`` 始终是 resolve() 后的绝对路径（见 ``register()``）。
+    # 同一个项目被 daemon start 软链接路径访问时，``daemon ls`` 输出的会是真实
+    # 路径而非传入的软链接 —— 有意为之，让任何路径表述都对齐到唯一注册项。
     project_root: str
     pid: int
     port: int

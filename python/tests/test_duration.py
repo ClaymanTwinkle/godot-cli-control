@@ -23,3 +23,14 @@ def test_parse_bare_int_means_seconds() -> None:
 def test_parse_invalid_raises() -> None:
     with pytest.raises(ValueError, match="invalid duration"):
         parse_duration("two minutes")
+
+
+def test_parse_rejects_internal_whitespace() -> None:
+    # 与帮助文本保持一致：30m 合法、"30 m" 不合法
+    with pytest.raises(ValueError, match="invalid duration"):
+        parse_duration("30 m")
+
+
+def test_parse_allows_outer_whitespace() -> None:
+    # shell 复制粘贴带尾换行/前导空格仍要 work
+    assert parse_duration("  30m\n") == 1800

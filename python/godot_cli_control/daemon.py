@@ -276,7 +276,14 @@ class Daemon:
             return None
         try:
             return int(self.exit_code_file.read_text().strip())
-        except (ValueError, OSError):
+        except (ValueError, OSError) as e:
+            # 静默吞掉会让 status 显示「stopped」而不带 last_exit，用户以为没崩过；
+            # 起码 stderr 提示一句让人有线索。不抛 —— 上层 status 路径不该被
+            # 一个诊断辅助文件读失败击穿。
+            print(
+                f"warning: failed to read {self.exit_code_file}: {e}",
+                file=sys.stderr,
+            )
             return None
 
     def _record_exit_code(self, rc: int | None) -> None:
@@ -286,23 +293,34 @@ class Daemon:
             return
         try:
             self.exit_code_file.write_text(str(rc))
-        except OSError:
-            pass
+        except OSError as e:
+            # 写不进去（磁盘满 / .cli_control 只读）会让后续 daemon status 报
+            # 「stopped」而不带 last_exit_code，用户找不到 Godot 真正的退出码。
+            # 至少 print 一句到 stderr，留下根因线索。
+            print(
+                f"warning: failed to record last exit code to {self.exit_code_file}: {e}",
+                file=sys.stderr,
+            )
 
     def _format_log_tail(self, n: int = 30) -> str:
         """渲染 godot.log 末尾若干行，给启动失败的 DaemonError 拼可读上下文。
 
+        从文件末尾倒着 8KB 一块读，避免一次性 read_text() 把潜在的大日志整盘吞内存
+        —— 启动失败路径目前日志都很小，但若将来 status 也调本函数，遇到长跑后崩溃
+        的几百 MB 日志会爆。
+
         失败兜底成 ``(log unavailable)`` 而不是抛异常 —— 启动错误本身比 log
         读取错误更重要，不能让 IO 失败盖掉真正的根因。
         """
+        header = f"Godot 日志（{self.log_file}）末尾 {n} 行："
         try:
-            text = self.log_file.read_text(errors="replace")
+            tail_bytes, total_size = _read_tail_bytes(self.log_file, n)
         except OSError:
             return f"(log unavailable: {self.log_file})"
-        lines = text.splitlines()
-        header = f"Godot 日志（{self.log_file}）末尾 {n} 行："
-        if not lines:
+        if total_size == 0:
             return f"{header}\n  (空 — Godot 进程未输出任何内容)"
+        text = tail_bytes.decode("utf-8", errors="replace")
+        lines = text.splitlines()
         if len(lines) <= n:
             body = text.rstrip()
         else:
@@ -410,20 +428,54 @@ def _force_kill_signal() -> int:
     return getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
+def _read_tail_bytes(path: Path, target_lines: int, chunk: int = 8192) -> tuple[bytes, int]:
+    """读取 path 末尾若干行（>= target_lines），返回 (字节串, 文件总大小)。
+
+    倒着 8KB 一块往前读，遇到超过 target_lines 个 ``\\n`` 即停。空文件返回 (b'', 0)。
+    """
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        total_size = f.tell()
+        if total_size == 0:
+            return b"", 0
+        end = total_size
+        chunks: list[bytes] = []
+        newlines = 0
+        # target_lines 是"行数"；至少多读一段 newline 用于切分
+        needed = target_lines + 1
+        while end > 0 and newlines <= needed:
+            start = max(0, end - chunk)
+            f.seek(start)
+            buf = f.read(end - start)
+            chunks.append(buf)
+            newlines += buf.count(b"\n")
+            end = start
+        chunks.reverse()
+        return b"".join(chunks), total_size
+
+
 def _allocate_port(requested: int) -> int:
     """返回可用端口。requested=0 → OS 分配；requested>0 → 校验未被占用后返回原值。
 
-    bind 后立刻关闭与 Godot 子进程实际 listen 之间存在极小 race window，但内核
-    短期内不会立即重用同一端口；真撞上时 Godot listen 失败仍会通过日志被发现。
+    Race window：bind→close→spawn→Godot listen 之间窗口达数秒（Godot 要 import
+    项目+autoload+_ready 才 listen）。这段时间里其它进程仍可能抢走端口；当下
+    Godot 端 listen 失败只 push_error+printerr，daemon 这边在日志 tail 里能看到，
+    但不会被自动重试。**推荐用默认 --port 0** 让 OS 每次分配新端口，从根上回避。
+
+    SO_REUSEADDR：避免上一轮 daemon 刚 stop、内核仍在 TIME_WAIT 时显式
+    --port N 立刻起新 daemon 报 EADDRINUSE。Godot TCPServer 内部也开了
+    SO_REUSEADDR，这里探测必须对齐，否则会出现"探测说占用、Godot 实际能 bind"
+    的假阳性。
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", requested))
         except OSError as e:
             raise DaemonError(
                 f"port {requested} already in use ({e}). 另一个进程正在占用该端口，"
-                f"Godot 起不来。请 stop 旧 daemon 或换 --port。"
+                f"Godot 起不来。请 stop 旧 daemon 或换 --port（默认 --port 0 由 OS 分配最稳）。"
             ) from e
         return sock.getsockname()[1]
     finally:
