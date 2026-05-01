@@ -952,8 +952,8 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--port",
         type=int,
-        default=DEFAULT_PORT,
-        help=f"GameBridge 监听端口（默认 {DEFAULT_PORT}）",
+        default=0,
+        help="GameBridge 监听端口（默认 0 = OS 自动分配；写入 .cli_control/port）",
     )
 
 

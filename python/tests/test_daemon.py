@@ -1141,3 +1141,14 @@ def test_read_last_exit_code_handles_garbage(tmp_path: Path) -> None:
 def test_read_last_exit_code_none_when_missing(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
     assert daemon.read_last_exit_code() is None
+
+
+def test_start_with_port_zero_writes_actual_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """port=0 时 .cli_control/port 落盘的应是 OS 分配的实际端口，不是 0。"""
+    daemon, _ = _setup_start_env(tmp_path, monkeypatch)
+    daemon.start(port=0)
+    written = int(daemon.port_file.read_text().strip())
+    assert written != 0
+    assert 1024 < written < 65536

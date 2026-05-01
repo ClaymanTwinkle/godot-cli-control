@@ -75,7 +75,7 @@ class Daemon:
         movie_path: str | None = None,
         headless: bool = False,
         fps: int = 30,
-        port: int = DEFAULT_PORT,
+        port: int = 0,  # 0 = OS 自动分配；显式 --port 9877 仍可固定
         wait_seconds: int = 30,
     ) -> int:
         """启动 Godot daemon，等端口就绪后返回 PID。"""
@@ -109,7 +109,7 @@ class Daemon:
         # spawn 前快速判定端口空闲。GameBridge 那头 listen 失败只 printerr 不
         # 退进程；daemon 这头探活又走 create_connection，会握手到占端口的进程上
         # 误报启动成功，后续 RPC 全打错。先 bind 一次让占用立刻可见。
-        _allocate_port(port)
+        actual_port = _allocate_port(port)
 
         # 先确保 import 缓存就位（避免首次启动 GameBridge 来不及绑端口）
         _ensure_imported(self.project_root, bin_path)
@@ -129,14 +129,14 @@ class Daemon:
         # status 还会拿出陈旧的退出码骗用户。
         self.exit_code_file.unlink(missing_ok=True)
 
-        self.port_file.write_text(str(port))
+        self.port_file.write_text(str(actual_port))
 
         args: list[str] = [
             bin_path,
             "--path",
             str(self.project_root),
             "--cli-control",
-            f"--game-bridge-port={port}",
+            f"--game-bridge-port={actual_port}",
         ]
         if headless:
             args.append("--headless")
@@ -179,8 +179,8 @@ class Daemon:
                 f"{self._format_log_tail()}"
             )
 
-        print(f"等待 GameBridge 就绪 (port {port})...", file=sys.stderr)
-        if not _wait_port_ready(port, wait_seconds, proc=proc):
+        print(f"等待 GameBridge 就绪 (port {actual_port})...", file=sys.stderr)
+        if not _wait_port_ready(actual_port, wait_seconds, proc=proc):
             crashed_rc = proc.poll()
             if crashed_rc is not None:
                 self._record_exit_code(crashed_rc)
@@ -194,7 +194,7 @@ class Daemon:
                     f"{self._format_log_tail()}"
                 )
             raise DaemonError(
-                f"GameBridge not ready on port {port} within {wait_seconds}s.\n"
+                f"GameBridge not ready on port {actual_port} within {wait_seconds}s.\n"
                 f"{self._format_log_tail()}"
             )
 
