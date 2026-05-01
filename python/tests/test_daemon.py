@@ -224,6 +224,9 @@ def test_start_detaches_subprocess_signal_group(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
+    # 隔离全局注册表
+    from godot_cli_control import registry as _reg
+    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
 
     daemon.start(port=29998)
 
@@ -310,7 +313,11 @@ def test_wait_port_ready_returns_true_when_listening() -> None:
 def _setup_start_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, port_ready: bool = True
 ) -> tuple[Daemon, Path]:
-    """返回 (daemon, fake_bin)。已 patch find_godot_binary、_ensure_imported、Popen、sleep、_wait_port_ready。"""
+    """返回 (daemon, fake_bin)。已 patch find_godot_binary、_ensure_imported、Popen、sleep、_wait_port_ready。
+
+    同时把 registry._REGISTRY_DIR 重定向到 tmp_path/reg，避免成功 start()
+    的测试污染真实 ~/.local/state/godot-cli-control/daemons/。
+    """
     _touch_godot_project(tmp_path)
     fake_bin = tmp_path / "fake_godot"
     fake_bin.write_text("")
@@ -337,6 +344,9 @@ def _setup_start_env(
         "godot_cli_control.daemon._wait_port_ready",
         lambda *a, **k: port_ready,
     )
+    # 隔离全局注册表：把写入重定向到临时目录，避免污染 ~/.local/state/…
+    from godot_cli_control import registry as _reg
+    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
     return Daemon(tmp_path), fake_bin
 
 
@@ -595,6 +605,9 @@ def test_start_record_writes_movie_path_file_and_args(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
+    # 隔离全局注册表
+    from godot_cli_control import registry as _reg
+    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
 
     daemon = Daemon(tmp_path)
     movie = tmp_path / "rec.avi"
@@ -868,6 +881,9 @@ def test_start_redirects_godot_output_to_log_file(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
+    # 隔离全局注册表
+    from godot_cli_control import registry as _reg
+    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
 
     daemon = Daemon(tmp_path)
     daemon.start(port=29900)
@@ -1152,3 +1168,31 @@ def test_start_with_port_zero_writes_actual_port(
     written = int(daemon.port_file.read_text().strip())
     assert written != 0
     assert 1024 < written < 65536
+
+
+def test_start_registers_in_global_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """start() 成功后必须写全局注册表；stop() 必须清除注册记录。
+
+    _FakeProc.pid = 999_999_900 是假 PID，不是真实进程，所以 registry.list_all()
+    的存活探测会把它剔除。需要 patch registry._process_alive 让它认为该 PID 活着，
+    才能验证注册表写入；stop 结束时再恢复默认，确认 unregister 被调用。
+    """
+    from godot_cli_control import registry
+
+    monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
+    # 让 registry.list_all 认为假 PID 是活进程
+    monkeypatch.setattr(registry, "_process_alive", lambda pid: True)
+
+    daemon, _ = _setup_start_env(tmp_path, monkeypatch)
+    daemon.start(port=0)
+
+    records = registry.list_all()
+    assert len(records) == 1
+    assert records[0].pid > 0  # _FakeProc.pid = 999_999_900
+
+    # 恢复真实 _process_alive，stop 读到死 PID → 走死 PID 自愈分支 → unregister
+    monkeypatch.setattr(registry, "_process_alive", lambda pid: False)
+    daemon.stop()
+    assert registry.list_all() == []

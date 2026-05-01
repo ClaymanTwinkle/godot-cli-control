@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import registry as _registry
+
 
 class DaemonError(RuntimeError):
     """Daemon 启停过程中可恢复的错误（用户应看到 message，不必看 traceback）。"""
@@ -197,6 +199,13 @@ class Daemon:
             )
 
         print(f"Godot 已启动 (PID {proc.pid})", file=sys.stderr)
+        _registry.register(
+            self.project_root,
+            pid=proc.pid,
+            port=actual_port,
+            godot_bin=bin_path,
+            log_path=str(self.log_file),
+        )
         return proc.pid
 
     # ── 停止 ──
@@ -210,6 +219,7 @@ class Daemon:
         if not _process_alive(pid):
             print(f"Godot (PID {pid}) 已不在运行，清理 PID 文件", file=sys.stderr)
             self._cleanup_state_files()
+            _registry.unregister(self.project_root)
             return 0
         if not _process_is_godot(pid):
             raise DaemonError(
@@ -220,6 +230,7 @@ class Daemon:
         print(f"关闭 Godot (PID {pid})...", file=sys.stderr)
         self._terminate(pid)
         self._cleanup_state_files()
+        _registry.unregister(self.project_root)
         print("Godot 已停止", file=sys.stderr)
 
         # 录制转码（即使失败也认为 stop 成功；返回非 0 让 CI 感知）
