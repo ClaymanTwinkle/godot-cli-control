@@ -12,6 +12,7 @@ import pytest
 from godot_cli_control.daemon import (
     Daemon,
     DaemonError,
+    _allocate_port,
     _process_alive,
     _wait_port_ready,
 )
@@ -663,6 +664,33 @@ def test_ensure_imported_rebuilds_when_cache_missing(
     )
     _ensure_imported(tmp_path, "/fake/godot")
     assert called == [(tmp_path, "/fake/godot")]
+
+
+# ── _allocate_port ──
+
+
+def test_allocate_port_zero_returns_os_assigned() -> None:
+    port = _allocate_port(0)
+    assert 1024 < port < 65536
+
+
+def test_allocate_port_specific_returns_same() -> None:
+    # Get a free port from the OS, release it, then ask for that exact port
+    free = _allocate_port(0)
+    assert _allocate_port(free) == free
+
+
+def test_allocate_port_raises_when_occupied() -> None:
+    import socket as _s
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    occupied = sock.getsockname()[1]
+    try:
+        with pytest.raises(DaemonError, match="already in use"):
+            _allocate_port(occupied)
+    finally:
+        sock.close()
 
 
 # ── stop 后录制转码失败 → 返回 2 ──
