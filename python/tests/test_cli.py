@@ -1044,3 +1044,46 @@ def test_run_rpc_text_mode_uses_text_formatter(
 
     assert rc == 0
     assert capsys.readouterr().out.strip() == "true"
+
+
+def test_daemon_ls_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from godot_cli_control import registry
+    monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
+
+    from godot_cli_control.cli import cmd_daemon_ls, OUTPUT_JSON
+    import argparse
+
+    rc = cmd_daemon_ls(argparse.Namespace(output_format=OUTPUT_JSON))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert '"daemons": []' in out
+
+
+def test_daemon_ls_lists_active_daemon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+    from godot_cli_control import registry
+    monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
+    proj = tmp_path / "p"; proj.mkdir()
+    registry.register(
+        proj, pid=os.getpid(), port=12345, godot_bin="x", log_path="y"
+    )
+
+    from godot_cli_control.cli import cmd_daemon_ls, OUTPUT_JSON
+    import argparse
+
+    rc = cmd_daemon_ls(argparse.Namespace(output_format=OUTPUT_JSON))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "12345" in out
+    assert str(proj.resolve()) in out
+
+
+def test_daemon_ls_subcommand_parses() -> None:
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "ls"])
+    assert ns.cmd == "daemon"
+    assert ns.action == "ls"

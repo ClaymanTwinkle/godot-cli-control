@@ -736,6 +736,42 @@ def cmd_daemon_status(ns: argparse.Namespace) -> int:
     return EXIT_RPC_ERROR
 
 
+def cmd_daemon_ls(ns: argparse.Namespace) -> int:
+    """跨项目列出运行中的 daemon。
+
+    扫全局注册表 ~/.local/state/godot-cli-control/daemons/，对每条记录探活。
+    死记录会被 list_all 自动清理（连同对应项目的 .cli_control/godot.pid 与 port）。
+    JSON 模式：{"ok": true, "result": {"daemons": [...]}}（信封一致）。
+    Text 模式：每条一行 `<pid>\t<port>\t<project_root>\t<started_at>`；空时 (no running daemons)。
+    """
+    from . import registry
+
+    fmt = _output_format(ns)
+    records = registry.list_all()
+    payload = {
+        "daemons": [
+            {
+                "project_root": r.project_root,
+                "pid": r.pid,
+                "port": r.port,
+                "started_at": r.started_at,
+                "godot_bin": r.godot_bin,
+                "log_path": r.log_path,
+            }
+            for r in records
+        ]
+    }
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload(payload)
+    else:
+        if not records:
+            print("(no running daemons)")
+        else:
+            for r in records:
+                print(f"{r.pid}\t{r.port}\t{r.project_root}\t{r.started_at}")
+    return EXIT_OK
+
+
 def cmd_run(ns: argparse.Namespace) -> int:
     """加载用户脚本（要求定义 ``run(bridge)``），自动启停 daemon。"""
     from .daemon import Daemon, DaemonError
@@ -1049,6 +1085,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    ls_p = daemon_subs.add_parser(
+        "ls",
+        help="列出所有正在运行的 daemon（跨项目）",
+        description=(
+            "扫描全局注册表 ~/.local/state/godot-cli-control/daemons/，"
+            "列出所有探活通过的 daemon。死记录会被自动清理。"
+        ),
+    )
+    _add_output_format_flags(ls_p)
+
     # run：自动启停 + 跑用户脚本
     run_p = subs.add_parser(
         "run",
@@ -1278,6 +1324,8 @@ def main() -> None:
             sys.exit(cmd_daemon_stop(ns))
         if ns.action == "status":
             sys.exit(cmd_daemon_status(ns))
+        if ns.action == "ls":
+            sys.exit(cmd_daemon_ls(ns))
         parser.error(f"unknown daemon action: {ns.action}")
     if ns.cmd == "run":
         sys.exit(cmd_run(ns))
