@@ -976,10 +976,11 @@ def test_run_rpc_separates_local_io_error_from_connection(
     from unittest.mock import AsyncMock, patch
 
     spec = RPC_BY_NAME["screenshot"]
-    # 指向只读目录的子路径：mkdir / write_bytes 必失败
-    bad_path = tmp_path / "ro_dir" / "out.png"
-    (tmp_path / "ro_dir").mkdir()
-    (tmp_path / "ro_dir").chmod(0o400)  # 只读
+    # 父级是个文件（不是目录），mkdir(parents=True, exist_ok=True) 必抛
+    # FileExistsError —— 跨平台可靠（chmod 0o400 在 Windows 上不让目录只读）。
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"")
+    bad_path = blocker / "out.png"
     ns = __import__("argparse").Namespace(output_path=str(bad_path))
 
     mock_client = AsyncMock()
@@ -987,13 +988,10 @@ def test_run_rpc_separates_local_io_error_from_connection(
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
-    try:
-        with patch(
-            "godot_cli_control.cli.GameClient", return_value=mock_client
-        ):
-            rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
-    finally:
-        (tmp_path / "ro_dir").chmod(0o700)  # 让 tmp_path 清理能跑
+    with patch(
+        "godot_cli_control.cli.GameClient", return_value=mock_client
+    ):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
 
     assert rc == 2
     payload = _json.loads(capsys.readouterr().out.strip())
@@ -1081,8 +1079,12 @@ def test_daemon_ls_lists_active_daemon(
     rc = cmd_daemon_ls(argparse.Namespace(output_format=OUTPUT_JSON))
     out = capsys.readouterr().out
     assert rc == 0
-    assert "12345" in out
-    assert str(proj.resolve()) in out
+    # 直接读字段而不是子串匹配 —— Windows 路径含反斜杠，JSON 输出会转义成 \\
+    import json as _json
+    payload = _json.loads(out)
+    daemons = payload["result"]["daemons"]
+    assert any(d["port"] == 12345 for d in daemons)
+    assert any(d["project_root"] == str(proj.resolve()) for d in daemons)
 
 
 def test_daemon_ls_subcommand_parses() -> None:
@@ -1211,7 +1213,9 @@ def test_daemon_stop_subcommand_parses_all_and_project() -> None:
     assert ns.all is True
 
     ns = build_parser().parse_args(["daemon", "stop", "--project", "/tmp/x"])
-    assert str(ns.project) == "/tmp/x"
+    # argparse 用 type=Path，Windows 上 str(WindowsPath("/tmp/x")) == "\\tmp\\x"，
+    # 所以与 Path("/tmp/x") 比较保证跨平台。
+    assert ns.project == Path("/tmp/x")
 
     # mutually exclusive — argparse should refuse both
     import pytest as _pt
