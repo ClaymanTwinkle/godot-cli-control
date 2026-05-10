@@ -1262,3 +1262,20 @@ def test_daemon_start_idle_timeout_default_is_zero() -> None:
     from godot_cli_control.cli import build_parser
     ns = build_parser().parse_args(["daemon", "start"])
     assert ns.idle_timeout == "0"
+
+
+def test_tree_accepts_max_nodes_flag() -> None:
+    from godot_cli_control.cli import build_parser
+
+    parser = build_parser()
+    ns = parser.parse_args(["tree", "3", "--max-nodes", "50"])
+    assert ns.depth == "3"
+    assert ns.max_nodes == 50
+
+
+def test_tree_max_nodes_default_is_200() -> None:
+    from godot_cli_control.cli import build_parser
+
+    parser = build_parser()
+    ns = parser.parse_args(["tree"])
+    assert ns.max_nodes == 200

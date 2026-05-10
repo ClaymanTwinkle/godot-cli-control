@@ -47,9 +47,9 @@ class GameBridge:
 
     # ── 场景树 ──
 
-    def tree(self, depth: int = 3) -> dict:
+    def tree(self, depth: int = 3, max_nodes: int | None = None) -> dict:
         """获取场景树。"""
-        return self._run(self._client.get_scene_tree(depth=depth))
+        return self._run(self._client.get_scene_tree(depth=depth, max_nodes=max_nodes))
 
     def node_exists(self, path: str) -> bool:
         """检查节点是否存在。"""

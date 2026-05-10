@@ -175,19 +175,30 @@ func handle_get_children(params: Dictionary) -> Dictionary:
 
 func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	var max_depth: int = params.get("depth", 5) as int
+	# max_nodes 是软上限：超出立刻停止 _build_tree 递归并把信号透出。
+	# 不传时用硬墙 5000 兼容旧客户端。
+	var max_nodes: int = params.get("max_nodes", _BUILD_TREE_NODE_LIMIT) as int
+	if max_nodes <= 0:
+		max_nodes = _BUILD_TREE_NODE_LIMIT
 	var root: Node = get_tree().current_scene
 	if root == null:
 		root = get_tree().root
 	# counter 用 Array[int] 当 by-ref 计数器：GDScript 没指针/inout，
 	# Array 是引用类型，递归子调用对 counter[0] 的写入对调用方可见。
 	var counter: Array[int] = [0]
-	var tree: Dictionary = _build_tree(root, max_depth, 0, counter)
+	var tree: Dictionary = _build_tree(root, max_depth, 0, counter, max_nodes)
+	var truncated: bool = counter[0] > max_nodes
+	var response: Dictionary = {"tree": tree}
+	if truncated:
+		response["truncated"] = true
+		response["total_nodes"] = counter[0]
+	# 仍然保留硬墙：超 5000 走 1005，避免恶意大场景吃完 outbound buffer。
 	if counter[0] > _BUILD_TREE_NODE_LIMIT:
 		return _err(
 			CliControlErrorCodes.SCENE_TREE_TOO_LARGE,
 			"scene tree too large (>%d nodes); lower 'depth' or query a subtree" % _BUILD_TREE_NODE_LIMIT,
 		)
-	return {"tree": tree}
+	return response
 
 
 func wait_for_node_async(params: Dictionary) -> Dictionary:
@@ -255,9 +266,10 @@ func _has_property(node: Node, property: String) -> bool:
 
 
 ## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_HARD_LIMIT (50) 防止无限递归。
-## counter 是 by-ref 计数器：超过 _BUILD_TREE_NODE_LIMIT 时短路（不再递归子节点），
-## 调用方读 counter[0] > LIMIT 决定是否走 1005 (SCENE_TREE_TOO_LARGE) 错误路径。
-func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[int]) -> Dictionary:
+## counter 是 by-ref 计数器：超过 max_nodes 时短路（不再递归子节点），
+## 调用方读 counter[0] > max_nodes 决定是否附加 truncated 信号，
+## 读 counter[0] > _BUILD_TREE_NODE_LIMIT 决定是否走 1005 (SCENE_TREE_TOO_LARGE) 错误路径。
+func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[int], max_nodes: int) -> Dictionary:
 	counter[0] += 1
 	var entry: Dictionary = {
 		"name": node.name,
@@ -268,13 +280,13 @@ func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[
 		entry["visible"] = (node as CanvasItem).visible
 	if "text" in node:
 		entry["text"] = str(node.get("text"))
-	if counter[0] > _BUILD_TREE_NODE_LIMIT:
-		# 超限：不再下递归，但当前 entry 已计入；调用方一次性走错误返回
+	if counter[0] > max_nodes:
+		# 超软上限：不再下递归，但当前 entry 已计入；调用方附加 truncated 信号
 		return entry
 	var effective_max: int = _BUILD_TREE_HARD_LIMIT if max_depth == 0 else max_depth
 	if current_depth < effective_max:
 		var children: Array[Dictionary] = []
 		for child: Node in node.get_children():
-			children.append(_build_tree(child, effective_max, current_depth + 1, counter))
+			children.append(_build_tree(child, effective_max, current_depth + 1, counter, max_nodes))
 		entry["children"] = children
 	return entry
