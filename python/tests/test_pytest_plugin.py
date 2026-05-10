@@ -274,6 +274,56 @@ def test_bridge_teardown_robust_against_release_all_exception(
     assert "CLOSE_CALLED=[1]" in output, "release_all 抛错后 close 必须仍跑"
 
 
+def test_default_port_is_zero(pytester: pytest.Pytester) -> None:
+    """--godot-cli-port 默认 0 = OS 自动分配，与 daemon start 默认对齐。
+
+    早期版本默认 9877 会让多项目并行测试撞端口，且 9877 不再是 daemon
+    start 默认。fixture 必须放手让 daemon 自己挑。
+    """
+    result = pytester.runpytest("--help")
+    result.stdout.fnmatch_lines(
+        ["*--godot-cli-port*", "*default: 0*"]
+    )
+
+
+def test_godot_daemon_passes_port_zero_when_default(
+    pytester: pytest.Pytester,
+) -> None:
+    """fixture 拿默认值（不传 --godot-cli-port）时 daemon.start(port=0)。"""
+    pytester.makeconftest(
+        """
+        import godot_cli_control.pytest_plugin as plugin
+
+        OBSERVED: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return False
+            def start(self, **kw): OBSERVED.append(kw.get("port"))
+            def stop(self): return 0
+            def current_port(self): return 5555
+
+        class FakeBridge:
+            def __init__(self, port): OBSERVED.append(f"bridge:{port}")
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_sessionfinish(session, exitstatus):
+            assert OBSERVED[0] == 0, f"expected port=0 default, got {OBSERVED}"
+        """
+    )
+    pytester.makepyfile(
+        test_x="""
+        def test_x(godot_daemon, bridge): pass
+        """
+    )
+    result = pytester.runpytest("-v")
+    assert result.ret == 0
+
+
 def test_project_root_option_is_respected(pytester: pytest.Pytester) -> None:
     """--godot-cli-project-root 必须传给 Daemon 构造函数。"""
     pytester.makeconftest(
