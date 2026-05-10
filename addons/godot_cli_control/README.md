@@ -99,7 +99,27 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `combo_cancel()` | `await client.combo_cancel()` |
 | `release_all()` | `await client.release_all()` |
 
-Error codes: `-32600` invalid request, `-32601` unknown method, `-32602` invalid params, `1001` node not found, `1002` property not found, `1003` method not found.
+### Error codes
+
+Three numeric ranges share `error.code`; they never overlap, so a single field is unambiguous.
+
+| Code | Source | Meaning |
+|---|---|---|
+| `1001` | server | Node not found at the given path |
+| `1002` | server | Property not found / shape mismatch |
+| `1003` | server | Method not found / render unavailable |
+| `1004` | server | Combo already in progress (call `combo-cancel` to retry) |
+| `1005` | server | Scene tree too large (lower `depth` or pass `--max-nodes`) |
+| `-32600` | server | Malformed JSON-RPC request |
+| `-32601` | server | Unknown method name |
+| `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist) |
+| `-1001` | client | Connection failure (daemon not running, port wrong, proxy hijacking localhost) |
+| `-1002` | client | Timeout waiting for response |
+| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, …) |
+| `-1004` | client | Local file IO error (e.g. screenshot can't write the destination) |
+| `-1099` | client | Internal CLI bug — please file an issue |
+
+For full retry guidance see the SKILL.md shipped by `godot-cli-control init` (`.claude/skills/godot-cli-control/SKILL.md` in the target project).
 
 ## Activation Modes
 
