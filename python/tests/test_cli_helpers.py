@@ -21,7 +21,9 @@ from godot_cli_control import cli
 
 
 def _ns(**kwargs: Any) -> argparse.Namespace:
-    return argparse.Namespace(**kwargs)
+    defaults = {"max_nodes": 200}
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
 
 
 def _run(coro: Any) -> Any:
@@ -44,14 +46,14 @@ def test_cmd_tree_default_depth_is_3_not_5() -> None:
     client = AsyncMock()
     client.get_scene_tree = AsyncMock(return_value={"name": "root"})
     _run(cli.cmd_tree(client, _ns(depth=None)))
-    client.get_scene_tree.assert_awaited_once_with(depth=3)
+    client.get_scene_tree.assert_awaited_once_with(depth=3, max_nodes=200)
 
 
 def test_cmd_tree_explicit_depth_passed() -> None:
     client = AsyncMock()
     client.get_scene_tree = AsyncMock(return_value={})
     _run(cli.cmd_tree(client, _ns(depth=10)))
-    client.get_scene_tree.assert_awaited_once_with(depth=10)
+    client.get_scene_tree.assert_awaited_once_with(depth=10, max_nodes=200)
 
 
 def test_cmd_press_release() -> None:
