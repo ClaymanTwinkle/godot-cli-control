@@ -76,6 +76,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `1002` | Property not found on the node, or shape mismatch (e.g. `text` on a node that doesn't have it). Don't retry; inspect with `tree`. |
 | `1003` | Method not found, or render unavailable (screenshot before the viewport is ready). |
 | `1004` | Combo already in progress. Call `combo-cancel` (or `release-all`) and re-issue. Safe to retry after that. |
+| `1005` | Scene tree too large to serialize (default safety limit). Pass `--max-nodes` or query a subtree with `children` / `tree <subpath>`. Don't retry as-is. |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 
@@ -294,6 +295,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Daemon won't start** — check `.cli_control/godot_bin` exists and points at a real Godot 4 binary, or `export GODOT_BIN=/path/to/godot`. See `godot-cli-control init -h` for the full lookup chain.
 - **Output flags work in any position** — `--json` / `--text` / `--no-json` are accepted both before and after subcommands as of this fix. `--port N` is still top-level only; pass it before the subcommand.
 - **`combo` rejects everything with `1004`** — a combo is already running. Call `combo-cancel` (or `release-all`) to abort.
+- **`tree` returns `1005 "scene tree too large"`** — your scene has more than 5000 visible nodes (a Grid / spawned-bullets situation). Pass `--max-nodes 200` to cap, or `children <path>` for one specific subtree.
 - **`set` with a string that *looks* like JSON** — value parser parses JSON first. To force a literal `"42"` string, pass `'"42"'`; to set a literal hash sign or array text, JSON-encode it.
 
 ---

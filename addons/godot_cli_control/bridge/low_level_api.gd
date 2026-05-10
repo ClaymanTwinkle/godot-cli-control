@@ -81,7 +81,7 @@ func handle_click(params: Dictionary) -> Dictionary:
 		click_event.pressed = true
 		area.input_event.emit(get_viewport(), click_event, 0)
 		return {"success": true}
-	return _err(-32602, "Node is not clickable: %s" % node.get_class())
+	return _err(CliControlErrorCodes.INVALID_PARAMS, "Node is not clickable: %s" % node.get_class())
 
 
 func handle_get_property(params: Dictionary) -> Dictionary:
@@ -90,9 +90,9 @@ func handle_get_property(params: Dictionary) -> Dictionary:
 		return _node_not_found(params.get("path", "") as String)
 	var property: String = params.get("property", "") as String
 	if property.is_empty():
-		return _err(-32602, "Missing 'property' parameter")
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'property' parameter")
 	if not _has_property(node, property):
-		return _err(1002, "Property not found: %s" % property)
+		return _err(CliControlErrorCodes.PROPERTY_NOT_FOUND, "Property not found: %s" % property)
 	return {"value": node.get(property)}
 
 
@@ -102,14 +102,14 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 		return _node_not_found(params.get("path", "") as String)
 	var property: String = params.get("property", "") as String
 	if property.is_empty():
-		return _err(-32602, "Missing 'property' parameter")
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'property' parameter")
 	# Godot Object.set() 接受 NodePath 形式的子属性（如 "position:x"）。
 	# 精确字符串黑名单会漏掉 "script:source_code" / "texture:resource_path" 这类
 	# 嵌套写入向量 —— 拿 ":" 前的 top-level 名重新过一次黑名单。
 	# 同时整串也走一次（防御深度，万一未来加非冒号语法的反射子路径）。
 	var top_level: String = property.split(":", true, 1)[0]
 	if property in _property_blacklist or top_level in _property_blacklist:
-		return _err(-32602, "Blocked property: %s" % property)
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "Blocked property: %s" % property)
 	var value: Variant = params.get("value", null)
 	node.set(property, value)
 	return {"success": true}
@@ -121,9 +121,9 @@ func handle_call_method(params: Dictionary) -> Dictionary:
 		return _node_not_found(params.get("path", "") as String)
 	var method: String = params.get("method", "") as String
 	if method in _method_blacklist:
-		return _err(-32602, "Blocked method: %s" % method)
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "Blocked method: %s" % method)
 	if not node.has_method(method):
-		return _err(1003, "Method not found: %s" % method)
+		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Method not found: %s" % method)
 	var args: Array = params.get("args", []) as Array
 	# 注意：GDScript 没有 try-catch，callv 参数不匹配会产生引擎错误而非可捕获异常
 	var result: Variant = node.callv(method, args)
@@ -135,7 +135,7 @@ func handle_get_text(params: Dictionary) -> Dictionary:
 	if node == null:
 		return _node_not_found(params.get("path", "") as String)
 	if not "text" in node:
-		return _err(1002, "Node does not have a 'text' property")
+		return _err(CliControlErrorCodes.PROPERTY_NOT_FOUND, "Node does not have a 'text' property")
 	return {"text": str(node.get("text"))}
 
 
@@ -184,7 +184,7 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	var tree: Dictionary = _build_tree(root, max_depth, 0, counter)
 	if counter[0] > _BUILD_TREE_NODE_LIMIT:
 		return _err(
-			1004,
+			CliControlErrorCodes.SCENE_TREE_TOO_LARGE,
 			"scene tree too large (>%d nodes); lower 'depth' or query a subtree" % _BUILD_TREE_NODE_LIMIT,
 		)
 	return {"tree": tree}
@@ -216,7 +216,7 @@ func take_screenshot_async() -> Dictionary:
 		await RenderingServer.frame_post_draw
 	var image: Image = get_viewport().get_texture().get_image()
 	if image == null:
-		return _err(1003, "Screenshot unavailable (viewport texture is null)")
+		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Screenshot unavailable (viewport texture is null)")
 	var png_buffer: PackedByteArray = image.save_png_to_buffer()
 	var base64_str: String = Marshalls.raw_to_base64(png_buffer)
 	return {"image": base64_str}
@@ -225,9 +225,9 @@ func take_screenshot_async() -> Dictionary:
 func wait_game_time_async(params: Dictionary) -> Dictionary:
 	var seconds: float = params.get("seconds", 0.0) as float
 	if seconds < 0.0:
-		return _err(-32602, "seconds must be >= 0")
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "seconds must be >= 0")
 	if seconds > _MAX_WAIT_SECONDS:
-		return _err(-32602, "seconds must be <= %s" % _MAX_WAIT_SECONDS)
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "seconds must be <= %s" % _MAX_WAIT_SECONDS)
 	if seconds == 0.0:
 		return {"success": true}
 	await get_tree().create_timer(seconds).timeout
@@ -240,7 +240,7 @@ func _get_node_or_error(params: Dictionary) -> Node:
 
 
 func _node_not_found(path: String) -> Dictionary:
-	return _err(1001, "Node not found: %s" % path)
+	return _err(CliControlErrorCodes.NODE_NOT_FOUND, "Node not found: %s" % path)
 
 
 func _err(code: int, message: String) -> Dictionary:
@@ -256,7 +256,7 @@ func _has_property(node: Node, property: String) -> bool:
 
 ## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_HARD_LIMIT (50) 防止无限递归。
 ## counter 是 by-ref 计数器：超过 _BUILD_TREE_NODE_LIMIT 时短路（不再递归子节点），
-## 调用方读 counter[0] > LIMIT 决定是否走 1004 错误路径。
+## 调用方读 counter[0] > LIMIT 决定是否走 1005 (SCENE_TREE_TOO_LARGE) 错误路径。
 func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[int]) -> Dictionary:
 	counter[0] += 1
 	var entry: Dictionary = {
