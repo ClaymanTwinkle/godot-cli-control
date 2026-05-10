@@ -1071,13 +1071,19 @@ def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
 
     默认 json 是 0.2.0 起的新行为（向 AI agent 倾斜）。``--no-json`` 是
     ``--text`` 的别名，方便顺手敲。
+
+    所有 ``add_argument`` 均使用 ``default=argparse.SUPPRESS``，使 argparse
+    仅在 flag 被显式传入时才向 namespace 写值，而非用 default 覆盖已有值。
+    真正的全局默认值由顶层 ``parser.set_defaults(output_format=OUTPUT_JSON)``
+    负责注入（见 ``build_parser``），子命令 subparser 直接调用本函数即可，
+    不会产生"子 default 盖父 const"的经典 argparse 陷阱。
     """
     p.add_argument(
         "--json",
         dest="output_format",
         action="store_const",
         const=OUTPUT_JSON,
-        default=OUTPUT_JSON,
+        default=argparse.SUPPRESS,
         help="输出 JSON 信封（默认）",
     )
     p.add_argument(
@@ -1085,6 +1091,7 @@ def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
         dest="output_format",
         action="store_const",
         const=OUTPUT_TEXT,
+        default=argparse.SUPPRESS,
         help="输出旧的人类可读字符串（不再加信封；errors 走 stderr）",
     )
     p.add_argument(
@@ -1092,6 +1099,7 @@ def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
         dest="output_format",
         action="store_const",
         const=OUTPUT_TEXT,
+        default=argparse.SUPPRESS,
         help="--text 别名",
     )
 
@@ -1122,6 +1130,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_output_format_flags(parser)
+    # 全局默认：不传任何 output-format flag 时保持 JSON 输出。
+    # 注意：各 subparser 中也调用 _add_output_format_flags，但均用 SUPPRESS 不写
+    # default，故此处 set_defaults 是唯一的全局 fallback，不会被子命令覆盖。
+    parser.set_defaults(output_format=OUTPUT_JSON)
     subs = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     # daemon 组
@@ -1140,6 +1152,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="启动 Godot daemon 并写入 .cli_control/{godot.pid,port}。",
     )
     _add_daemon_flags(start_p)
+    _add_output_format_flags(start_p)
 
     stop_p = daemon_subs.add_parser(
         "stop",
@@ -1158,8 +1171,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--project", type=Path, default=None,
         help="停止指定项目根的 daemon（绝对/相对路径均可）"
     )
+    _add_output_format_flags(stop_p)
 
-    daemon_subs.add_parser(
+    status_p = daemon_subs.add_parser(
         "status",
         help="查询 daemon 状态",
         description=(
@@ -1169,6 +1183,7 @@ def build_parser() -> argparse.ArgumentParser:
             "默认输出 JSON 信封；加 --text 切回旧的字符串格式。"
         ),
     )
+    _add_output_format_flags(status_p)
 
     ls_p = daemon_subs.add_parser(
         "ls",
@@ -1204,6 +1219,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_p.add_argument("script", help="用户脚本路径，需定义 run(bridge)")
     _add_daemon_flags(run_p)
+    _add_output_format_flags(run_p)
 
     # init：一键接入
     init_p = subs.add_parser(
@@ -1254,6 +1270,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="只写 skill 文件，跳过插件复制 / project.godot patch / godot_bin 检测",
     )
+    _add_output_format_flags(init_p)
 
     # RPC 单发命令
     for spec in RPC_SPECS:
@@ -1277,6 +1294,7 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument(pos.name, **kwargs)
         if spec.extra_args is not None:
             spec.extra_args(sp)
+        _add_output_format_flags(sp)
     return parser
 
 
