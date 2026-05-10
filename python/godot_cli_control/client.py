@@ -238,8 +238,13 @@ class GameClient:
         result = await self.request("screenshot")
         return base64.b64decode(result.get("image", ""))
 
-    async def get_scene_tree(self, depth: int = 5) -> dict:
-        return await self.request("get_scene_tree", {"depth": depth})
+    async def get_scene_tree(
+        self, depth: int = 5, max_nodes: int | None = None
+    ) -> dict:
+        params: dict = {"depth": depth}
+        if max_nodes is not None:
+            params["max_nodes"] = max_nodes
+        return await self.request("get_scene_tree", params)
 
     async def wait_for_node(self, path: str, timeout: float = 5.0) -> bool:
         result = await self.request(

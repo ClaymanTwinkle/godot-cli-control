@@ -416,3 +416,30 @@ async def test_list_input_actions_passes_include_builtin_param() -> None:
                     await client._listen_task
                 except asyncio.CancelledError:
                     pass
+
+
+@pytest.mark.asyncio
+async def test_get_scene_tree_returns_truncate_metadata() -> None:
+    """服务端在节点超限时返回 {tree, truncated, total_nodes}，client 透传。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {
+            "tree": {"name": "root", "type": "Node", "path": "/root", "children": []},
+            "truncated": True,
+            "total_nodes": 6000,
+        }
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.get_scene_tree(depth=3, max_nodes=100)
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["params"] == {"depth": 3, "max_nodes": 100}
+    assert result["truncated"] is True
+    assert result["total_nodes"] == 6000

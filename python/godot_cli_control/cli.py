@@ -181,7 +181,7 @@ async def cmd_screenshot(client: GameClient, ns: argparse.Namespace) -> dict:
 
 async def cmd_tree(client: GameClient, ns: argparse.Namespace) -> dict:
     depth = int(ns.depth) if ns.depth else 3
-    return await client.get_scene_tree(depth=depth)
+    return await client.get_scene_tree(depth=depth, max_nodes=ns.max_nodes)
 
 
 async def cmd_press(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -355,6 +355,24 @@ def _register_combo_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _register_tree_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "depth",
+        nargs="?",
+        default=None,
+        help="遍历深度，默认 3",
+    )
+    p.add_argument(
+        "--max-nodes",
+        type=int,
+        default=200,
+        help=(
+            "节点数软上限（默认 200）。超出时服务端截断子节点并返回 "
+            "{truncated: true, total_nodes: N}，agent 据此决定是否拆分子树。"
+        ),
+    )
+
+
 def _register_actions_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--all",
@@ -407,10 +425,9 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         name="tree",
         handler=cmd_tree,
         description="dump 当前场景树为 JSON。",
-        positionals=(
-            Positional("depth", "?", "遍历深度，默认 3"),
-        ),
+        positionals=(),  # 由 extra_args 注册（depth + --max-nodes）
         example="tree 3",
+        extra_args=_register_tree_args,
         text_formatter=_fmt_tree_text,
     ),
     RpcSpec(

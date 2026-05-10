@@ -106,7 +106,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 - `exists <path>` — boolean existence check (exit-code-as-result)
 - `visible <path>` — boolean visibility check (exit-code-as-result)
 - `children <path> [type-filter]` — direct children
-- `tree [depth]` — full scene tree
+- `tree [depth] [--max-nodes N]` — full scene tree (default `--max-nodes 200`; on overflow, response includes `truncated: true` and `total_nodes: N`)
 - `pressed` — currently held simulated input actions
 - `actions [--all]` — InputMap actions (default filters `ui_*` builtins)
 
@@ -159,6 +159,24 @@ godot-cli-control set /root/Label text '"null"'   # ✓ stores the string "null"
 godot-cli-control set /root/Flag  on   true       # ⚠️ stores boolean true
 godot-cli-control set /root/Flag  on   '"true"'   # ✓ stores the string "true"
 ```
+
+### Tree truncation
+
+`tree` caps output at 200 nodes by default to keep the JSON small enough for an LLM context window. When the cap is hit, the response carries explicit signals so you can decide whether to drill in:
+
+```json
+{"ok": true, "result": {
+  "tree": { "...": "partial subtree" },
+  "truncated": true,
+  "total_nodes": 6000
+}}
+```
+
+Responses are subject to a hard ceiling of 5000 nodes — beyond that you get `1005 "scene tree too large"` and must `--max-nodes` down or query a subtree:
+
+- `tree --max-nodes 50` — quick overview
+- `children /root/Game/Spawner` — drill into one branch
+- `tree 1` — depth-1 only
 
 ### `combo` JSON schema
 
