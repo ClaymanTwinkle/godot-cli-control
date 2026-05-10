@@ -13,7 +13,7 @@
         assert bridge.get_property("/root/Player", "on_floor") is False
 
 CLI 选项：
-  --godot-cli-port            GameBridge 端口（默认 9877）
+  --godot-cli-port            GameBridge 端口（默认 0 = OS 自动分配）
   --godot-cli-no-headless     带窗口跑（默认 headless）
   --godot-cli-project-root    指定 Godot 项目根（默认 pytest rootdir）
 """
@@ -35,8 +35,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--godot-cli-port",
         action="store",
-        default=str(DEFAULT_PORT),
-        help="GameBridge WebSocket port for the godot_daemon fixture (default: 9877).",
+        default="0",  # 0 = OS-assigned，与 daemon start 默认对齐
+        help="GameBridge WebSocket port for the godot_daemon fixture (default: 0 = OS-assigned).",
     )
     group.addoption(
         "--godot-cli-no-headless",
