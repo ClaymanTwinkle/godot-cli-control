@@ -236,6 +236,35 @@ def test_daemon_status_returns_0_when_running(
     assert "running" in out and "4242" in out and "9877" in out
 
 
+class TestOutputFormatFlagsOnSubcommands:
+    """--json / --text 必须能放在子命令前 *和* 后两种位置。
+
+    AI agent 习惯把 flag 写在尾巴；早期 build_parser 只在顶层注册，
+    `click /root/X --json` 会被 argparse 报 unrecognized。
+    """
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["click", "/root/X", "--json"],
+            ["--json", "click", "/root/X"],
+            ["click", "/root/X", "--text"],
+            ["click", "/root/X", "--no-json"],
+            ["exists", "/root/Foo", "--text"],
+            ["tree", "3", "--json"],
+            ["daemon", "status", "--json"],
+            ["daemon", "stop", "--text"],
+            ["daemon", "start", "--headless", "--json"],
+        ],
+    )
+    def test_output_flag_accepted_at_tail(self, argv: list[str]) -> None:
+        from godot_cli_control.cli import build_parser
+
+        parser = build_parser()
+        ns = parser.parse_args(argv)
+        assert ns.output_format in ("json", "text")
+
+
 def test_format_full_help_covers_every_subcommand() -> None:
     """``format_full_help`` 必须遍历到所有顶层子命令 + daemon 三动作。
     SKILL.md 完全依赖这一点 —— 漏一个，agent 那侧的 -h 就要靠 shell 出去查。"""
