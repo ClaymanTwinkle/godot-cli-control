@@ -46,10 +46,10 @@ func is_combo_active() -> bool:
 
 func handle_action_press(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return _err(1004, "combo in progress")
+		return _err(CliControlErrorCodes.COMBO_IN_PROGRESS, "combo in progress")
 	var action: String = params.get("action", "") as String
 	if not InputMap.has_action(action):
-		return _err(1003, "Unknown action: %s" % action)
+		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Unknown action: %s" % action)
 	_do_press(action)
 	_pressed_actions[action] = true
 	return {"success": true}
@@ -57,10 +57,10 @@ func handle_action_press(params: Dictionary) -> Dictionary:
 
 func handle_action_release(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return _err(1004, "combo in progress")
+		return _err(CliControlErrorCodes.COMBO_IN_PROGRESS, "combo in progress")
 	var action: String = params.get("action", "") as String
 	if not InputMap.has_action(action):
-		return _err(1003, "Unknown action: %s" % action)
+		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Unknown action: %s" % action)
 	_do_release(action)
 	_pressed_actions.erase(action)
 	_held_actions.erase(action)
@@ -71,10 +71,10 @@ func handle_action_release(params: Dictionary) -> Dictionary:
 ## 定时器到期后自动释放
 func handle_action_tap(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return _err(1004, "combo in progress")
+		return _err(CliControlErrorCodes.COMBO_IN_PROGRESS, "combo in progress")
 	var action: String = params.get("action", "") as String
 	if not InputMap.has_action(action):
-		return _err(1003, "Unknown action: %s" % action)
+		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Unknown action: %s" % action)
 	var duration: float = params.get("duration", 0.1) as float
 	_do_press(action)
 	_held_actions[action] = duration
@@ -104,10 +104,10 @@ func handle_list_input_actions(params: Dictionary) -> Dictionary:
 
 func handle_hold(params: Dictionary) -> Dictionary:
 	if _combo_active:
-		return _err(1004, "combo in progress")
+		return _err(CliControlErrorCodes.COMBO_IN_PROGRESS, "combo in progress")
 	var action: String = params.get("action", "") as String
 	if not InputMap.has_action(action):
-		return _err(1003, "Unknown action: %s" % action)
+		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Unknown action: %s" % action)
 	var duration: float = params.get("duration", 0.0) as float
 	_do_press(action)
 	_held_actions[action] = duration
@@ -137,7 +137,7 @@ func release_all() -> void:
 func handle_combo(params: Dictionary, request_id: String) -> void:
 	if _combo_active:
 		if _send_response_callback.is_valid():
-			_send_response_callback.call(request_id, _err(1004, "combo in progress"))
+			_send_response_callback.call(request_id, _err(CliControlErrorCodes.COMBO_IN_PROGRESS, "combo in progress"))
 		return
 	var steps: Array = params.get("steps", []) as Array
 	_combo_request_id = request_id
@@ -188,7 +188,7 @@ func _begin_combo_step() -> void:
 	var raw: Variant = _combo_steps[_combo_index]
 	if not raw is Dictionary:
 		_abort_combo_with_error(
-			-32602, "combo step must be object at index %d" % _combo_index
+			CliControlErrorCodes.INVALID_PARAMS, "combo step must be object at index %d" % _combo_index
 		)
 		return
 	var step: Dictionary = raw as Dictionary
@@ -198,7 +198,7 @@ func _begin_combo_step() -> void:
 		var action: String = step["action"] as String
 		if not InputMap.has_action(action):
 			_abort_combo_with_error(
-				1003, "Unknown action at combo step %d: %s" % [_combo_index, action]
+				CliControlErrorCodes.METHOD_NOT_FOUND, "Unknown action at combo step %d: %s" % [_combo_index, action]
 			)
 			return
 		var duration: float = step.get("duration", 0.1) as float
@@ -207,7 +207,7 @@ func _begin_combo_step() -> void:
 		_combo_timer = duration
 	else:
 		_abort_combo_with_error(
-			-32602, "combo step missing 'wait' or 'action' at index %d" % _combo_index
+			CliControlErrorCodes.INVALID_PARAMS, "combo step missing 'wait' or 'action' at index %d" % _combo_index
 		)
 
 
