@@ -46,7 +46,7 @@ class _StubClient:
     async def wait_game_time(self, seconds: float) -> dict:
         return self._record("wait_game_time", (seconds,), {})
 
-    async def get_scene_tree(self, depth: int = 5) -> dict:
+    async def get_scene_tree(self, depth: int = 5, max_nodes: int | None = None) -> dict:
         return self._record("get_scene_tree", (), {"depth": depth})
 
     async def node_exists(self, path: str) -> bool:
