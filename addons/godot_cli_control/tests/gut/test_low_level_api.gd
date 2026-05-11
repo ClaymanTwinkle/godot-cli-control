@@ -7,6 +7,12 @@ extends GutTest
 
 const LowLevelApiScript := preload("res://addons/godot_cli_control/bridge/low_level_api.gd")
 
+# Plane 没有内置 Node 暴露这个属性，用一个 Node 子类持有 `var test_plane: Plane`，
+# `get_property_list()` 会汇报它的声明类型 = TYPE_PLANE，从而走 coerce 分支。
+class _PlaneFixture extends Node:
+	var test_plane: Plane = Plane()
+
+
 var _api: Node
 var _target: Node
 
@@ -285,21 +291,76 @@ func test_set_transform3d_via_array_fails_loud() -> void:
 	assert_eq(node.transform, original)
 
 
-func test_set_quaternion_via_array_fails_loud() -> void:
-	# Node3D 没直接的 Quaternion 属性，但 Camera3D 也没 ——
-	# 走 Skeleton3D 又太重。用 ProjectSettings 注入 OK 但太曲折。
-	# 选 Camera3D.quaternion: Camera3D 继承 Node3D，Node3D 暴露 `quaternion: Quaternion`。
+func test_set_quaternion_via_array_coerces() -> void:
+	# #54 Phase 1：Quaternion(x, y, z, w) 4-float 构造，从 #53 的 fail-loud
+	# 名单提升到 coerce 名单。
 	var node: Node3D = Node3D.new()
 	node.name = "QuatTarget"
 	add_child_autofree(node)
 	var result: Dictionary = _api.handle_set_property({
 		"path": str(node.get_path()),
 		"property": "quaternion",
-		"value": [0.0, 0.0, 0.0, 1.0],
+		"value": [0.0, 0.7071068, 0.0, 0.7071068],  # 绕 Y 轴 90°
+	})
+	assert_does_not_have(result, "error", "Quaternion 应当从 Array 成功 coerce")
+	# 浮点 compare：Quaternion(0, 0.707, 0, 0.707) 期望分量
+	assert_almost_eq(node.quaternion.x, 0.0, 0.0001)
+	assert_almost_eq(node.quaternion.y, 0.7071068, 0.0001)
+	assert_almost_eq(node.quaternion.z, 0.0, 0.0001)
+	assert_almost_eq(node.quaternion.w, 0.7071068, 0.0001)
+
+
+func test_set_plane_via_array_coerces() -> void:
+	# #54 Phase 1：Plane(a, b, c, d) 平面方程，4-float 构造。
+	var fixture: Node = _PlaneFixture.new()
+	fixture.name = "PlaneTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "test_plane",
+		"value": [1.0, 0.0, 0.0, 5.0],  # x = 5 平面
+	})
+	assert_does_not_have(result, "error", "Plane 应当从 Array 成功 coerce")
+	var p: Plane = fixture.test_plane
+	assert_almost_eq(p.normal.x, 1.0, 0.0001)
+	assert_almost_eq(p.normal.y, 0.0, 0.0001)
+	assert_almost_eq(p.normal.z, 0.0, 0.0001)
+	assert_almost_eq(p.d, 5.0, 0.0001)
+
+
+func test_set_plane_wrong_length_returns_invalid_params() -> void:
+	# Plane 期望长度 4，给 3：fail-loud 不能 silent。
+	var fixture: Node = _PlaneFixture.new()
+	fixture.name = "BadLenPlaneTarget"
+	add_child_autofree(fixture)
+	var original: Plane = fixture.test_plane
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "test_plane",
+		"value": [1.0, 0.0, 0.0],
 	})
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602)
-	assert_string_contains(str(result.error.message), "Array coercion not supported")
+	assert_string_contains(str(result.error.message), "Plane")
+	# 没改值
+	assert_eq(fixture.test_plane, original)
+
+
+func test_set_quaternion_non_number_element_returns_invalid_params() -> void:
+	# Quaternion 期望全 numeric，给字符串：fail-loud。
+	var node: Node3D = Node3D.new()
+	node.name = "BadElemQuatTarget"
+	add_child_autofree(node)
+	var original: Quaternion = node.quaternion
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "quaternion",
+		"value": ["a", "b", "c", "d"],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Quaternion")
+	assert_eq(node.quaternion, original)
 
 
 # ── handle_call_method blacklist ──────────────────────────────────
