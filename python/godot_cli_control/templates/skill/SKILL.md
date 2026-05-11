@@ -154,7 +154,24 @@ godot-cli-control set /root/Player  hp       30            # number 30
 godot-cli-control call /root/Game start_game 1 '"easy"'    # int 1, string "easy"
 ```
 
-**Array → Vector / Color / Rect / Plane / Quaternion coercion (≥ 0.2.5):** the server reads the property's declared type and converts a numeric JSON array to the matching Godot variant. So `position '[100, 200]'` → `Vector2(100, 200)`, `zoom '[1.8, 1.8]'` → `Vector2(1.8, 1.8)`, `color '[1, 0, 0, 1]'` → `Color(1,0,0,1)` (3-element arrays mean RGB with `a=1`), `region_rect '[x, y, w, h]'` → `Rect2(x, y, w, h)`, `quaternion '[x, y, z, w]'` → `Quaternion(x, y, z, w)`, `plane '[a, b, c, d]'` → `Plane(a, b, c, d)`. Supported variants: `Vector2/2i/3/3i/4/4i`, `Rect2/2i`, `Color`, `Plane`, `Quaternion`. Wrong length or non-numeric elements fail loud with `-32602 "value type mismatch ..."` instead of silently setting `(0, 0)` like older versions did. Complex variants (`Transform2D/3D`, `Basis`, `AABB`, `Projection`) are **not coerced yet** (issue #54 Phase 2) — passing an array there returns `-32602 "Array coercion not supported ..."`; write them via sub-path form (e.g. `set ... transform:origin '[x, y, z]'`).
+**Array → Variant coercion (≥ 0.2.5):** the server reads the property's declared type and converts a numeric JSON array to the matching Godot variant. Supported variants and their array layouts (matching Godot's internal storage order):
+
+| Variant | Length | Layout |
+|---|---|---|
+| `Vector2 / 2i` | 2 | `[x, y]` |
+| `Vector3 / 3i` | 3 | `[x, y, z]` |
+| `Vector4 / 4i` | 4 | `[x, y, z, w]` |
+| `Rect2 / 2i` | 4 | `[x, y, w, h]` |
+| `Color` | 3 or 4 | `[r, g, b]` (a=1) or `[r, g, b, a]` |
+| `Plane` | 4 | `[normal.x, normal.y, normal.z, d]` |
+| `Quaternion` | 4 | `[x, y, z, w]` |
+| `AABB` | 6 | `[pos.x, pos.y, pos.z, size.x, size.y, size.z]` |
+| `Basis` | 9 | `[x_axis.xyz, y_axis.xyz, z_axis.xyz]` (column-major) |
+| `Transform2D` | 6 | `[x_axis.xy, y_axis.xy, origin.xy]` |
+| `Transform3D` | 12 | `[basis 9 column-major, origin.xyz]` |
+| `Projection` | 16 | `[x_axis.xyzw, y_axis.xyzw, z_axis.xyzw, w_axis.xyzw]` (column-major) |
+
+So `position '[100, 200]'` → `Vector2(100, 200)`, `transform '[1,0,0, 0,1,0, 0,0,1, 10,20,30]'` → `Transform3D(IDENTITY, (10,20,30))`. Wrong length or non-numeric elements fail loud with `-32602 "value type mismatch ..."` instead of silently setting `(0, 0)` like pre-0.2.5 versions did. Sub-path form (`transform:origin '[10, 20, 30]'`) still works for partial writes.
 
 **Footgun**: bare `null` / `true` / `false` / numeric strings parse as JSON literals first, **not** as strings. If you actually mean the string `"null"`, wrap it explicitly:
 

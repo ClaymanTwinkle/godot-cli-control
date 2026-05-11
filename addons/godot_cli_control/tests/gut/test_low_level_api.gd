@@ -7,10 +7,14 @@ extends GutTest
 
 const LowLevelApiScript := preload("res://addons/godot_cli_control/bridge/low_level_api.gd")
 
-# Plane 没有内置 Node 暴露这个属性，用一个 Node 子类持有 `var test_plane: Plane`，
-# `get_property_list()` 会汇报它的声明类型 = TYPE_PLANE，从而走 coerce 分支。
-class _PlaneFixture extends Node:
+# AABB / Plane / Projection 没有内置 Node 暴露这些类型的属性，用 Node 子类持有
+# 带类型声明的 var，`get_property_list()` 会汇报对应 TYPE_*，从而走 coerce 分支。
+# Basis / Transform2D / Transform3D 走 Node3D.basis / Node2D.transform /
+# Node3D.transform 这些内置属性。
+class _CoerceFixture extends Node:
 	var test_plane: Plane = Plane()
+	var test_aabb: AABB = AABB()
+	var test_projection: Projection = Projection()
 
 
 var _api: Node
@@ -271,24 +275,135 @@ func test_set_float_property_unaffected_by_coerce() -> void:
 	assert_almost_eq(node.rotation, 1.5, 0.0001)
 
 
-func test_set_transform3d_via_array_fails_loud() -> void:
-	# 复合 Variant（Transform3D/Quaternion/Basis/...）暂未实现 Array → typed 转换。
-	# 不实现是一回事，让请求 silent fall-through 到 Object.set 重蹈 #52 是另一回事 ——
-	# 这条锁住「未实现 = fail-loud，绝不静默坏值」契约。
+func test_set_transform3d_via_array_coerces() -> void:
+	# #54 Phase 2：Transform3D(basis, origin) 从 12 floats 构造
+	# [basis 9 column-major, origin 3]。
 	var node: Node3D = Node3D.new()
 	node.name = "Transform3DTarget"
 	add_child_autofree(node)
-	var original: Transform3D = node.transform
+	# 单位 Basis + origin (10, 20, 30)
 	var result: Dictionary = _api.handle_set_property({
 		"path": str(node.get_path()),
 		"property": "transform",
-		"value": [1.0, 2.0, 3.0, 4.0],  # 任意 Array：Transform3D 不收 Array
+		"value": [
+			1.0, 0.0, 0.0,   # x_axis
+			0.0, 1.0, 0.0,   # y_axis
+			0.0, 0.0, 1.0,   # z_axis
+			10.0, 20.0, 30.0 # origin
+		],
 	})
-	assert_has(result, "error", "复合 Variant + Array 必须 fail-loud，不能 silent fall-through")
+	assert_does_not_have(result, "error", "Transform3D 应从 12-float Array 成功 coerce")
+	assert_almost_eq(node.transform.basis.x.x, 1.0, 0.0001)
+	assert_almost_eq(node.transform.basis.y.y, 1.0, 0.0001)
+	assert_almost_eq(node.transform.basis.z.z, 1.0, 0.0001)
+	assert_almost_eq(node.transform.origin.x, 10.0, 0.0001)
+	assert_almost_eq(node.transform.origin.y, 20.0, 0.0001)
+	assert_almost_eq(node.transform.origin.z, 30.0, 0.0001)
+
+
+func test_set_aabb_via_array_coerces() -> void:
+	# #54 Phase 2：AABB(position, size) 6 floats: [pos.xyz, size.xyz]
+	var fixture: Node = _CoerceFixture.new()
+	fixture.name = "AABBTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "test_aabb",
+		"value": [1.0, 2.0, 3.0, 10.0, 20.0, 30.0],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(fixture.test_aabb, AABB(Vector3(1.0, 2.0, 3.0), Vector3(10.0, 20.0, 30.0)))
+
+
+func test_set_basis_via_array_coerces() -> void:
+	# #54 Phase 2：Basis(x_axis, y_axis, z_axis) 9 floats column-major
+	var node: Node3D = Node3D.new()
+	node.name = "BasisTarget"
+	add_child_autofree(node)
+	# 不用单位矩阵（默认就是单位），用一个可识别的变换：
+	# x_axis=(2,0,0), y_axis=(0,3,0), z_axis=(0,0,4) → 3 轴各自缩放
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "basis",
+		"value": [2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0],
+	})
+	assert_does_not_have(result, "error")
+	assert_almost_eq(node.basis.x.x, 2.0, 0.0001)
+	assert_almost_eq(node.basis.y.y, 3.0, 0.0001)
+	assert_almost_eq(node.basis.z.z, 4.0, 0.0001)
+
+
+func test_set_transform2d_via_array_coerces() -> void:
+	# #54 Phase 2：Transform2D(x_axis, y_axis, origin) 6 floats
+	var node: Node2D = Node2D.new()
+	node.name = "Transform2DTarget"
+	add_child_autofree(node)
+	# 单位变换 + origin (5, 7)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "transform",
+		"value": [1.0, 0.0, 0.0, 1.0, 5.0, 7.0],
+	})
+	assert_does_not_have(result, "error")
+	assert_almost_eq(node.transform.x.x, 1.0, 0.0001)
+	assert_almost_eq(node.transform.y.y, 1.0, 0.0001)
+	assert_almost_eq(node.transform.origin.x, 5.0, 0.0001)
+	assert_almost_eq(node.transform.origin.y, 7.0, 0.0001)
+
+
+func test_set_projection_via_array_coerces() -> void:
+	# #54 Phase 2：Projection(x, y, z, w) 16 floats column-major（4x4 矩阵）
+	var fixture: Node = _CoerceFixture.new()
+	fixture.name = "ProjTarget"
+	add_child_autofree(fixture)
+	# 单位 Projection（identity 4x4）
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "test_projection",
+		"value": [
+			1.0, 0.0, 0.0, 0.0,
+			0.0, 1.0, 0.0, 0.0,
+			0.0, 0.0, 1.0, 0.0,
+			0.0, 0.0, 0.0, 1.0,
+		],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(fixture.test_projection, Projection.IDENTITY)
+
+
+func test_set_basis_wrong_length_returns_invalid_params() -> void:
+	# Basis 期望 9，给 8：fail-loud。
+	var node: Node3D = Node3D.new()
+	node.name = "BadLenBasisTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "basis",
+		"value": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],  # 8 个
+	})
+	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602)
-	assert_string_contains(str(result.error.message), "Array coercion not supported")
-	# 没改值
-	assert_eq(node.transform, original)
+	assert_string_contains(str(result.error.message), "Basis")
+
+
+func test_set_transform3d_non_number_element_returns_invalid_params() -> void:
+	# Transform3D 期望全 numeric：fail-loud。
+	var node: Node3D = Node3D.new()
+	node.name = "BadElemTransform3DTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "transform",
+		"value": [
+			1.0, 0.0, 0.0,
+			0.0, 1.0, 0.0,
+			0.0, 0.0, "oops",  # 非数字混进 Basis 部分
+			10.0, 20.0, 30.0,
+		],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Transform3D")
 
 
 func test_set_quaternion_via_array_coerces() -> void:
@@ -312,7 +427,7 @@ func test_set_quaternion_via_array_coerces() -> void:
 
 func test_set_plane_via_array_coerces() -> void:
 	# #54 Phase 1：Plane(a, b, c, d) 平面方程，4-float 构造。
-	var fixture: Node = _PlaneFixture.new()
+	var fixture: Node = _CoerceFixture.new()
 	fixture.name = "PlaneTarget"
 	add_child_autofree(fixture)
 	var result: Dictionary = _api.handle_set_property({
@@ -330,7 +445,7 @@ func test_set_plane_via_array_coerces() -> void:
 
 func test_set_plane_wrong_length_returns_invalid_params() -> void:
 	# Plane 期望长度 4，给 3：fail-loud 不能 silent。
-	var fixture: Node = _PlaneFixture.new()
+	var fixture: Node = _CoerceFixture.new()
 	fixture.name = "BadLenPlaneTarget"
 	add_child_autofree(fixture)
 	var original: Plane = fixture.test_plane
