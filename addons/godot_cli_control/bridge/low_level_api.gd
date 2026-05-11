@@ -116,8 +116,91 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	if property in _property_blacklist or top_level in _property_blacklist:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Blocked property: %s" % property)
 	var value: Variant = params.get("value", null)
+	# #52：JSON 只能产 Array/Number/String/Bool/null。Godot Object.set("zoom", [1.8,1.8])
+	# 不会隐式构造 Vector2，会走 zero-init / clamp 到 0.00001 → silent corruption。
+	# 子路径（含 ":"）不查类型，让 Object.set 走 NodePath 子属性原路径（标量 OK）。
+	if value is Array and not ":" in property:
+		var coerced: Dictionary = _coerce_array_to_declared_type(node, top_level, value)
+		if coerced.has("error"):
+			return coerced
+		if coerced.has("value"):
+			value = coerced["value"]
 	node.set(property, value)
 	return {"success": true}
+
+
+## 把 JSON Array 按声明类型转成 Vector2/Vector3/Vector4/Rect2/Color/Plane/Quaternion 等。
+## 节点没声明该属性 / 声明类型不是上述之一：返 {} 表示"沿用原 value"。
+## 转换失败（长度不对 / 元素非数字）：返 {"error": ...} 让调用方 fail-loud。
+## 转换成功：返 {"value": <coerced>}。
+func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) -> Dictionary:
+	var declared_type: int = -1
+	for prop_info: Dictionary in node.get_property_list():
+		if prop_info["name"] == property:
+			declared_type = int(prop_info.get("type", -1))
+			break
+	if declared_type == -1:
+		return {}  # 动态 / 未声明属性，沿用原 value
+	match declared_type:
+		TYPE_VECTOR2:
+			return _coerce_numeric_array(arr, 2, "Vector2", func(v: Array) -> Variant:
+				return Vector2(v[0], v[1]))
+		TYPE_VECTOR2I:
+			return _coerce_numeric_array(arr, 2, "Vector2i", func(v: Array) -> Variant:
+				return Vector2i(int(v[0]), int(v[1])))
+		TYPE_VECTOR3:
+			return _coerce_numeric_array(arr, 3, "Vector3", func(v: Array) -> Variant:
+				return Vector3(v[0], v[1], v[2]))
+		TYPE_VECTOR3I:
+			return _coerce_numeric_array(arr, 3, "Vector3i", func(v: Array) -> Variant:
+				return Vector3i(int(v[0]), int(v[1]), int(v[2])))
+		TYPE_VECTOR4:
+			return _coerce_numeric_array(arr, 4, "Vector4", func(v: Array) -> Variant:
+				return Vector4(v[0], v[1], v[2], v[3]))
+		TYPE_VECTOR4I:
+			return _coerce_numeric_array(arr, 4, "Vector4i", func(v: Array) -> Variant:
+				return Vector4i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
+		TYPE_RECT2:
+			return _coerce_numeric_array(arr, 4, "Rect2", func(v: Array) -> Variant:
+				return Rect2(v[0], v[1], v[2], v[3]))
+		TYPE_RECT2I:
+			return _coerce_numeric_array(arr, 4, "Rect2i", func(v: Array) -> Variant:
+				return Rect2i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
+		TYPE_COLOR:
+			# Color 接受 RGB（3）或 RGBA（4）。
+			if arr.size() == 3:
+				if not _is_all_numeric(arr):
+					return _err(CliControlErrorCodes.INVALID_PARAMS,
+						"value type mismatch for '%s': Color expects numeric array" % property)
+				return {"value": Color(arr[0], arr[1], arr[2])}
+			if arr.size() == 4:
+				if not _is_all_numeric(arr):
+					return _err(CliControlErrorCodes.INVALID_PARAMS,
+						"value type mismatch for '%s': Color expects numeric array" % property)
+				return {"value": Color(arr[0], arr[1], arr[2], arr[3])}
+			return _err(CliControlErrorCodes.INVALID_PARAMS,
+				"value type mismatch for '%s': Color expects [r,g,b] or [r,g,b,a], got length %d"
+					% [property, arr.size()])
+	# 其他声明类型（Array/Dictionary/Object 等）原样透传
+	return {}
+
+
+func _coerce_numeric_array(arr: Array, expected_len: int, type_name: String, ctor: Callable) -> Dictionary:
+	if arr.size() != expected_len:
+		return _err(CliControlErrorCodes.INVALID_PARAMS,
+			"value type mismatch: expected %s as numeric array of length %d, got length %d"
+				% [type_name, expected_len, arr.size()])
+	if not _is_all_numeric(arr):
+		return _err(CliControlErrorCodes.INVALID_PARAMS,
+			"value type mismatch: expected %s as numeric array, got non-numeric element" % type_name)
+	return {"value": ctor.call(arr)}
+
+
+func _is_all_numeric(arr: Array) -> bool:
+	for item: Variant in arr:
+		if not (item is float or item is int):
+			return false
+	return true
 
 
 func handle_call_method(params: Dictionary) -> Dictionary:

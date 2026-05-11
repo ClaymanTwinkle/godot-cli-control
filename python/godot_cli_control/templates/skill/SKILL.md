@@ -87,7 +87,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 |---|---|
 | `-32600` | Malformed request (missing / non-string `method`). Bug in client; should never reach an agent. |
 | `-32601` | Unknown method name. Bug; means client + plugin versions drifted. |
-| `-32602` | Invalid params: missing required field, blocked property/method (security blacklist), out-of-range value, or node-isn't-clickable (e.g. you `click`'d a `Node2D`). Don't retry; the request shape is wrong. |
+| `-32602` | Invalid params: missing required field, blocked property/method (security blacklist), out-of-range value, value-type mismatch on `set` (e.g. `Vector2` property given an array of wrong length / non-numeric elements), or node-isn't-clickable (e.g. you `click`'d a `Node2D`). Don't retry; the request shape is wrong. |
 
 **Client-side (CLI / GameClient) — `-1xxx`:**
 
@@ -147,12 +147,14 @@ Use the regular API (e.g. `set hp` instead of `call set hp`) — the blacklist e
 Each value is parsed as JSON first, falling back to a string if that fails. So:
 
 ```bash
-godot-cli-control set /root/Player position '[100, 200]'   # array
+godot-cli-control set /root/Player position '[100, 200]'   # array → Vector2
 godot-cli-control set /root/Score   text     '"42"'        # explicit string "42"
 godot-cli-control set /root/Score   text     hello         # implicit string "hello"
 godot-cli-control set /root/Player  hp       30            # number 30
 godot-cli-control call /root/Game start_game 1 '"easy"'    # int 1, string "easy"
 ```
+
+**Array → Vector / Color / Rect coercion (≥ 0.2.4):** the server reads the property's declared type and converts a numeric JSON array to the matching Godot variant. So `position '[100, 200]'` → `Vector2(100, 200)`, `zoom '[1.8, 1.8]'` → `Vector2(1.8, 1.8)`, `color '[1, 0, 0, 1]'` → `Color(1,0,0,1)` (3-element arrays mean RGB with `a=1`), `region_rect '[x, y, w, h]'` → `Rect2(x, y, w, h)`. Supported variants: `Vector2/2i/3/3i/4/4i`, `Rect2/2i`, `Color`. Wrong length or non-numeric elements fail loud with `-32602 "value type mismatch ..."` instead of silently setting `(0, 0)` like older versions did.
 
 **Footgun**: bare `null` / `true` / `false` / numeric strings parse as JSON literals first, **not** as strings. If you actually mean the string `"null"`, wrap it explicitly:
 
