@@ -44,6 +44,21 @@
 #### Out of scope (intentional)
 - `run <script.py>` 子命令保留旧的人类可读 stderr 输出。它是交互式脚本宿主，不是 RPC，新的 JSON 信封契约只覆盖 RPC 子命令 + daemon 三命令。
 
+### AI-friendliness review fixes (2026-05-11)
+
+#### Fixed
+- **CLI flag position**: `--json` / `--text` / `--no-json` 现在在 RPC 子命令尾部也接受（之前只能写最前面）。argparse 子 parser 用 `default=argparse.SUPPRESS` + 顶层 `set_defaults` 兜底，避免子 parser 默认值覆盖父 parser 解析结果。
+- **Error code 1004 collision**: `low_level_api.gd` 的 scene tree 超限改用新业务码 `1005 "scene tree too large"`，与 input_simulation `1004 "combo in progress"` 解耦。新增 `error_codes.gd` 集中常量。
+- **pytest fixture default port**: `--godot-cli-port` 默认从 9877 改为 0（OS-assigned），与 `daemon start` 默认对齐；多项目并行测试不再撞端口。
+- **Addon README error-code table**: 之前只列到 1003，补全 1004 / 1005 / 客户端 -1xxx 段。
+
+#### Added
+- `tree --max-nodes <N>`（默认 200）：节点数软上限；超出时响应含 `truncated: true` + `total_nodes`，agent 据此决定分子树。硬墙仍是 5000 节点 → `1005`。
+- `set` / `call --text-value`：禁用 JSON 解析、把 value/args 强制按字符串处理，避开 `null` / `true` / `42` 这类字面量被解析成 Variant 类型的 footgun。
+
+#### Changed
+- **BREAKING (轻微)**：`daemon start` / `run` 默认 headless 行为改为基于 `sys.stdout.isatty()` 自动判定 —— pipe / CI / agent shell 默认 headless；交互终端默认开窗。新增 `--gui` 强制开窗 flag。`--headless` 仍可显式传，覆盖自动判。脚本里依赖 "默认会开窗" 的需要加 `--gui`。
+
 ## [0.1.6] - Unreleased
 
 ### Added
