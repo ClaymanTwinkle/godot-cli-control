@@ -157,7 +157,8 @@ func test_build_tree_short_circuits_above_node_limit() -> void:
 	leaf.name = "Leaf"
 	add_child_autofree(leaf)
 	var counter: Array[int] = [LowLevelApiScript._BUILD_TREE_NODE_LIMIT]
-	var entry: Dictionary = _api._build_tree(leaf, 5, 0, counter)
+	# 第 5 参数 max_nodes = LIMIT（5000）；leaf 计入后 counter == LIMIT+1 > max_nodes，触发短路
+	var entry: Dictionary = _api._build_tree(leaf, 5, 0, counter, LowLevelApiScript._BUILD_TREE_NODE_LIMIT)
 	# leaf 自身被计入 → counter 变成 LIMIT+1
 	assert_eq(int(counter[0]), LowLevelApiScript._BUILD_TREE_NODE_LIMIT + 1)
 	# 超 limit 后立刻 return，不下递归 children
@@ -173,7 +174,8 @@ func test_build_tree_under_limit_includes_children() -> void:
 	c1.name = "C1"
 	parent.add_child(c1)
 	var counter: Array[int] = [0]
-	var entry: Dictionary = _api._build_tree(parent, 5, 0, counter)
+	# 第 5 参数 max_nodes 给硬墙 5000，远超 2 个节点，不会触发软截断
+	var entry: Dictionary = _api._build_tree(parent, 5, 0, counter, LowLevelApiScript._BUILD_TREE_NODE_LIMIT)
 	assert_has(entry, "children")
 	assert_eq((entry.children as Array).size(), 1)
 
