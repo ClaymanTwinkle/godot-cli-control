@@ -3,10 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
-- **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 `Vector2/2i/3/3i/4/4i` / `Rect2/2i` / `Color`（3-element = RGB，`a=1`）。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。子路径形式（如 `position:x 1.8`）的标量赋值保持原路径不变。同样会 silent-corrupt 的复合 Variant（`Transform2D/3D` / `Basis` / `AABB` / `Projection`）暂未实现 Array 转换，但走 fail-loud 分支返 `-32602 "Array coercion not supported ..."`，提示走 `call <node> <setter>` 或子路径形式（如 `transform:origin '[x,y,z]'`）。
+- **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 Variant。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。子路径形式（如 `position:x 1.8`）的标量赋值保持原路径不变。
 
 ### Added
-- **#54 Phase 1：`Plane` / `Quaternion` 也支持 Array → Variant coerce**：4-float 构造（`Plane(a,b,c,d)` / `Quaternion(x,y,z,w)`）从 #53 的 fail-loud 名单提升到 coerce 名单。`set <node> quaternion '[0, 0.707, 0, 0.707]'` 现在直接生效，不必拆 4 次 sub-path。剩余复合 Variant（`Transform2D/3D` / `Basis` / `AABB` / `Projection`）等 #54 Phase 2 敲定 schema 后再做。
+- **#54 全部复合 Variant 都支持 Array → Variant coerce**：从 4-float 简单类型到 16-float 矩阵，全部按 Godot 内部存储顺序的 flat numeric Array 写入。覆盖：`Vector2/2i/3/3i/4/4i`、`Rect2/2i`、`Color`（3-element=RGB / 4-element=RGBA）、`Plane(a,b,c,d)`、`Quaternion(x,y,z,w)`、`AABB(pos 3, size 3)`、`Basis(9 column-major)`、`Transform2D(xaxis 2, yaxis 2, origin 2)`、`Transform3D(basis 9, origin 3)`、`Projection(16 column-major)`。具体 layout 见 SKILL.md / addon README。原来「不支持时 fail-loud」的兜底分支因为已覆盖全部已知 silent-corrupt 类型而移除。
 
 ### AI-friendly CLI 改造（多个 BREAKING change）
 

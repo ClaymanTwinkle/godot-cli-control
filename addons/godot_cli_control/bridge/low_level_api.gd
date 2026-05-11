@@ -129,15 +129,20 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	return {"success": true}
 
 
-## 把 JSON Array 按声明类型转成 Vector2/2i/3/3i/4/4i / Rect2/2i / Color / Plane / Quaternion。
-## 节点没声明该属性 / 声明类型不在「支持转换 + 已知会 silent-corrupt」名单：返 {} 表示"沿用原 value"。
+## 把 JSON Array 按声明类型转成 Variant：Vector2/2i/3/3i/4/4i / Rect2/2i /
+## Color / Plane / Quaternion / AABB / Basis / Transform2D/3D / Projection。
+## 节点没声明该属性 / 声明类型不在支持名单：返 {} 表示"沿用原 value"。
 ## 转换失败（长度不对 / 元素非数字）：返 {"error": ...} 让调用方 fail-loud。
 ## 转换成功：返 {"value": <coerced>}。
-## 已知会 silent-corrupt 但暂未实现转换的复合 Variant（AABB/Basis/Transform2D/
-## Transform3D/Projection）也走 fail-loud 分支，避免重蹈 #52 覆辙。issue #54
-## Phase 2 会逐步实现这些，先要敲定 agent 友好的 Array schema。
 ## *i 变体（Vector2i / Vector3i / Vector4i / Rect2i）允许 float 输入并截断到 int，
 ## 与 GDScript `Vector2i(1.7, 2.3) → (1, 2)` 构造器行为一致。
+##
+## Array schema 约定（issue #54 Phase 2，与 Godot 内部存储顺序一致）：
+##   - AABB        : [pos.x, pos.y, pos.z, size.x, size.y, size.z]                      (6 floats)
+##   - Basis       : [xaxis.x..z, yaxis.x..z, zaxis.x..z]                                (9 floats, column-major)
+##   - Transform2D : [xaxis.x, xaxis.y, yaxis.x, yaxis.y, origin.x, origin.y]            (6 floats)
+##   - Transform3D : [basis 9, origin 3]                                                 (12 floats)
+##   - Projection  : [xaxis.xyzw, yaxis.xyzw, zaxis.xyzw, waxis.xyzw]                    (16 floats, column-major)
 func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) -> Dictionary:
 	var declared_type: int = -1
 	for prop_info: Dictionary in node.get_property_list():
@@ -194,15 +199,41 @@ func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) ->
 			# Quaternion(x, y, z, w) —— 注意 w 在末位，与 Godot ctor 一致。
 			return _coerce_numeric_array(arr, 4, "Quaternion", property, func(v: Array) -> Variant:
 				return Quaternion(v[0], v[1], v[2], v[3]))
-		TYPE_AABB, TYPE_BASIS, TYPE_TRANSFORM2D, TYPE_TRANSFORM3D, TYPE_PROJECTION:
-			# 同 #52 路径：Object.set(prop, Array) 对这些复合 Variant 会 silent-corrupt。
-			# 暂未实现构造转换；显式 fail-loud 比沿用原 value 让 agent 看不见错误更好。
-			# 实现进度见 issue #54 Phase 2（需先敲定 9-float Basis / 12-float Transform3D
-			# 等的 agent 友好 schema）；当前走 `call <node> <setter>` 或拆子路径
-			# （e.g. `transform:origin '[x,y,z]'`）。
-			return _err(CliControlErrorCodes.INVALID_PARAMS,
-				"value type mismatch for '%s': Array coercion not supported for declared type %d; use call_method or sub-path form (e.g. 'transform:origin')"
-					% [property, declared_type])
+		TYPE_AABB:
+			# AABB(position, size) —— 6 floats: [pos.xyz, size.xyz]
+			return _coerce_numeric_array(arr, 6, "AABB", property, func(v: Array) -> Variant:
+				return AABB(Vector3(v[0], v[1], v[2]), Vector3(v[3], v[4], v[5])))
+		TYPE_BASIS:
+			# Basis(x_axis, y_axis, z_axis) —— 9 floats column-major（Godot 内部存储顺序）。
+			return _coerce_numeric_array(arr, 9, "Basis", property, func(v: Array) -> Variant:
+				return Basis(
+					Vector3(v[0], v[1], v[2]),
+					Vector3(v[3], v[4], v[5]),
+					Vector3(v[6], v[7], v[8])))
+		TYPE_TRANSFORM2D:
+			# Transform2D(x_axis, y_axis, origin) —— 6 floats: [xaxis 2, yaxis 2, origin 2]
+			return _coerce_numeric_array(arr, 6, "Transform2D", property, func(v: Array) -> Variant:
+				return Transform2D(
+					Vector2(v[0], v[1]),
+					Vector2(v[2], v[3]),
+					Vector2(v[4], v[5])))
+		TYPE_TRANSFORM3D:
+			# Transform3D(basis, origin) —— 12 floats: [basis 9 column-major, origin 3]
+			return _coerce_numeric_array(arr, 12, "Transform3D", property, func(v: Array) -> Variant:
+				return Transform3D(
+					Basis(
+						Vector3(v[0], v[1], v[2]),
+						Vector3(v[3], v[4], v[5]),
+						Vector3(v[6], v[7], v[8])),
+					Vector3(v[9], v[10], v[11])))
+		TYPE_PROJECTION:
+			# Projection(x, y, z, w) —— 16 floats column-major（4x4 矩阵按列存）。
+			return _coerce_numeric_array(arr, 16, "Projection", property, func(v: Array) -> Variant:
+				return Projection(
+					Vector4(v[0], v[1], v[2], v[3]),
+					Vector4(v[4], v[5], v[6], v[7]),
+					Vector4(v[8], v[9], v[10], v[11]),
+					Vector4(v[12], v[13], v[14], v[15])))
 	# 其他声明类型（基本类型 / Array / Dictionary / Packed*Array 等）原样透传
 	return {}
 
