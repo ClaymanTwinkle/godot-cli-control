@@ -1,6 +1,11 @@
 class_name LowLevelApi
 extends Node
 ## 低层 API：通用节点操作（click、属性、场景树等）
+##
+## 错误码常量来自 res://addons/godot_cli_control/bridge/error_codes.gd
+## （class_name CliControlErrorCodes）。靠 Godot 全局 class 注册解析，无需 preload；
+## 若冷启动或 GUT 跑前遇到 "Class 'CliControlErrorCodes' not found"，先跑一次
+## 完整 import（`godot --editor --quit --path .`）让 .godot/global_script_class_cache.cfg 建立。
 
 const _BUILD_TREE_HARD_LIMIT: int = 50
 # 总节点数上限：宽场景（1000+ 子项的 Grid/Container）会构造极大 JSON，
@@ -187,17 +192,18 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	# Array 是引用类型，递归子调用对 counter[0] 的写入对调用方可见。
 	var counter: Array[int] = [0]
 	var tree: Dictionary = _build_tree(root, max_depth, 0, counter, max_nodes)
-	var truncated: bool = counter[0] > max_nodes
-	var response: Dictionary = {"tree": tree}
-	if truncated:
-		response["truncated"] = true
-		response["total_nodes"] = counter[0]
-	# 仍然保留硬墙：超 5000 走 1005，避免恶意大场景吃完 outbound buffer。
+	# 硬墙优先：超 5000 走 1005，避免恶意大场景吃完 outbound buffer。
+	# 排在软上限前面，使「先组装 partial response 再被 1005 短路」的代码异味消失。
 	if counter[0] > _BUILD_TREE_NODE_LIMIT:
 		return _err(
 			CliControlErrorCodes.SCENE_TREE_TOO_LARGE,
 			"scene tree too large (>%d nodes); lower 'depth' or query a subtree" % _BUILD_TREE_NODE_LIMIT,
 		)
+	# 软上限：硬墙内但超过 max_nodes 时附加 truncated 信号让 agent 决定分子树。
+	var response: Dictionary = {"tree": tree}
+	if counter[0] > max_nodes:
+		response["truncated"] = true
+		response["total_nodes"] = counter[0]
 	return response
 
 

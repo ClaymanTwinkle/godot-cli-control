@@ -1,6 +1,10 @@
 class_name InputSimulationApi
 extends Node
 ## 输入模拟 API：动作级按键、持续控制、组合序列
+##
+## 错误码常量来自 res://addons/godot_cli_control/bridge/error_codes.gd
+## （class_name CliControlErrorCodes）。靠 Godot 全局 class 注册解析；若 GUT
+## 测试跑前遇到 "Class 'CliControlErrorCodes' not found"，先 import 一次。
 
 # 手动按下的动作（无定时器）
 var _pressed_actions: Dictionary = {}

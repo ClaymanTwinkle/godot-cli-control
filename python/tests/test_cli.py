@@ -1353,3 +1353,45 @@ class TestDaemonHeadlessAutodetect:
         parser = build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["daemon", "start", "--headless", "--gui"])
+
+
+def test_run_rpc_tree_truncated_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """e2e：``cmd_tree`` → ``_run_rpc`` 必须把服务端 truncated 信号
+    透传到 stdout JSON envelope 里，agent 才能据此分子树。"""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
+
+    from godot_cli_control.cli import (
+        OUTPUT_JSON,
+        RPC_BY_NAME,
+        _run_rpc,
+    )
+
+    spec = RPC_BY_NAME["tree"]
+    ns = __import__("argparse").Namespace(depth="3", max_nodes=200)
+
+    truncated_payload = {
+        "tree": {"name": "root", "type": "Node", "path": "/root"},
+        "truncated": True,
+        "total_nodes": 6000,
+    }
+    mock_client = AsyncMock()
+    mock_client.get_scene_tree = AsyncMock(return_value=truncated_payload)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "godot_cli_control.cli.GameClient", return_value=mock_client
+    ):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 0
+    envelope = _json.loads(capsys.readouterr().out.strip())
+    assert envelope["ok"] is True
+    assert envelope["result"]["truncated"] is True
+    assert envelope["result"]["total_nodes"] == 6000
+    assert envelope["result"]["tree"]["name"] == "root"
+    # cmd_tree 应当把 ns.max_nodes 透传给 client.get_scene_tree
+    mock_client.get_scene_tree.assert_awaited_once_with(depth=3, max_nodes=200)
