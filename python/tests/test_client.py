@@ -443,3 +443,25 @@ async def test_get_scene_tree_returns_truncate_metadata() -> None:
     assert captured["params"] == {"depth": 3, "max_nodes": 100}
     assert result["truncated"] is True
     assert result["total_nodes"] == 6000
+
+
+@pytest.mark.asyncio
+async def test_get_scene_tree_omits_max_nodes_when_none() -> None:
+    """max_nodes=None 时 RPC params 不应携带该 key，保留旧客户端兼容路径。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {"tree": {"name": "root", "type": "Node", "path": "/root"}}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.get_scene_tree(depth=2)
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["params"] == {"depth": 2}
+    assert "max_nodes" not in captured["params"]

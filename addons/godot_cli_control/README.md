@@ -107,9 +107,10 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 |---|---|---|
 | `1001` | server | Node not found at the given path |
 | `1002` | server | Property not found / shape mismatch |
-| `1003` | server | Method not found / render unavailable |
+| `1003` | server | Method not found on the node (schema error, don't retry) |
 | `1004` | server | Combo already in progress (call `combo-cancel` to retry) |
 | `1005` | server | Scene tree too large (lower `depth` or pass `--max-nodes`) |
+| `1006` | server | Resource transiently unavailable (e.g. screenshot before viewport ready) — safe to retry |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist) |

@@ -11,9 +11,12 @@ extends RefCounted
 
 const NODE_NOT_FOUND: int = 1001
 const PROPERTY_NOT_FOUND: int = 1002       # 也用于 "node has no 'text' property"
-const METHOD_NOT_FOUND: int = 1003         # 也用于 "screenshot unavailable"
+const METHOD_NOT_FOUND: int = 1003
 const COMBO_IN_PROGRESS: int = 1004
 const SCENE_TREE_TOO_LARGE: int = 1005
+# 资源 transient 不可用（screenshot viewport texture null 等）。
+# 与 1003 拆开：1003 是 schema 错（永久），1006 是时机错（短重试可能成功）。
+const RESOURCE_UNAVAILABLE: int = 1006
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600

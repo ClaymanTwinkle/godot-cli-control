@@ -51,6 +51,8 @@
 - **Error code 1004 collision**: `low_level_api.gd` 的 scene tree 超限改用新业务码 `1005 "scene tree too large"`，与 input_simulation `1004 "combo in progress"` 解耦。新增 `error_codes.gd` 集中常量。
 - **pytest fixture default port**: `--godot-cli-port` 默认从 9877 改为 0（OS-assigned），与 `daemon start` 默认对齐；多项目并行测试不再撞端口。
 - **Addon README error-code table**: 之前只列到 1003，补全 1004 / 1005 / 客户端 -1xxx 段。
+- **Scene tree hard limit bypass (DoS fix)**: `handle_get_scene_tree` 入口现在把 `max_nodes` clamp 到硬墙 `_BUILD_TREE_NODE_LIMIT` (5000)。修复前客户端传 `max_nodes=999999` 会让服务端先把整棵超大树构造成 Dictionary 再被 1005 错误丢弃（内存浪费 / OOM 路径）。
+- **Error code 1003 semantic split**: screenshot 在 viewport texture 为 null 时不再借用 `1003 METHOD_NOT_FOUND`，改用新业务码 `1006 RESOURCE_UNAVAILABLE`。1003 现在是纯 schema 错（不应 retry），1006 是 transient 错（短重试可能成功），agent 据此分别处置。
 
 #### Added
 - `tree --max-nodes <N>`（默认 200）：节点数软上限；超出时响应含 `truncated: true` + `total_nodes`，agent 据此决定分子树。硬墙仍是 5000 节点 → `1005`。
