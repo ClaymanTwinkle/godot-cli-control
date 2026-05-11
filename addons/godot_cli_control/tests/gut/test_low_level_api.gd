@@ -115,6 +115,156 @@ func test_set_property_non_blacklisted_nested_still_works() -> void:
 	assert_does_not_have(result, "error")
 
 
+# ── handle_set_property: Array → Vector/Color/Rect type coercion (#52) ─
+#
+# Issue #52: JSON 只能产 Array，但 Godot Object.set("zoom", [1.8,1.8]) 走
+# 隐式构造失败路径 → 值变成 Vector2(0,0) 或被 clamp 到 0.00001，
+# 然而 RPC 返 {success: true}，agent 看不到错误。
+# 服务端必须查声明类型把 Array 转成 Vector2/Vector3/Vector4/Rect2/Color。
+
+func test_set_vector2_via_array_coerces() -> void:
+	var node: Node2D = Node2D.new()
+	node.name = "Vec2Target"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "position",
+		"value": [123.5, -42.0],
+	})
+	assert_does_not_have(result, "error", "set Vector2 via Array 不应返 error")
+	assert_eq(node.position, Vector2(123.5, -42.0), "Vector2 应等于 Array 值，不是 (0,0)")
+
+
+func test_set_vector2_zoom_via_array_coerces() -> void:
+	# issue #52 中的具体场景：Camera2D.zoom 拒收 Vector2(0,0)
+	var cam: Camera2D = Camera2D.new()
+	cam.name = "ZoomTarget"
+	add_child_autofree(cam)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(cam.get_path()),
+		"property": "zoom",
+		"value": [1.8, 1.8],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(cam.zoom, Vector2(1.8, 1.8))
+
+
+func test_set_vector3_via_array_coerces() -> void:
+	var node: Node3D = Node3D.new()
+	node.name = "Vec3Target"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "position",
+		"value": [1.0, 2.0, 3.0],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(node.position, Vector3(1.0, 2.0, 3.0))
+
+
+func test_set_color_via_rgba_array_coerces() -> void:
+	var rect: ColorRect = ColorRect.new()
+	rect.name = "ColorTarget"
+	add_child_autofree(rect)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(rect.get_path()),
+		"property": "color",
+		"value": [1.0, 0.0, 1.0, 1.0],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(rect.color, Color(1.0, 0.0, 1.0, 1.0))
+
+
+func test_set_color_via_rgb_array_coerces() -> void:
+	# 3 元素 RGB（无 alpha）→ Color(r, g, b, 1.0)
+	var rect: ColorRect = ColorRect.new()
+	rect.name = "Color3Target"
+	add_child_autofree(rect)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(rect.get_path()),
+		"property": "color",
+		"value": [0.25, 0.5, 0.75],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(rect.color, Color(0.25, 0.5, 0.75, 1.0))
+
+
+func test_set_rect2_via_array_coerces() -> void:
+	# Sprite2D.region_rect 是 Rect2。Array [x, y, w, h] → Rect2
+	var spr: Sprite2D = Sprite2D.new()
+	spr.name = "RectTarget"
+	add_child_autofree(spr)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(spr.get_path()),
+		"property": "region_rect",
+		"value": [1.0, 2.0, 30.0, 40.0],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(spr.region_rect, Rect2(1.0, 2.0, 30.0, 40.0))
+
+
+func test_set_vector2_wrong_length_returns_invalid_params() -> void:
+	# Array 长度不匹配声明类型：必须 fail-loud，而不是 silent corruption。
+	var node: Node2D = Node2D.new()
+	node.name = "BadLenTarget"
+	add_child_autofree(node)
+	var original: Vector2 = node.position
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "position",
+		"value": [1.0, 2.0, 3.0],  # Vector2 期望长度 2，给了 3
+	})
+	assert_has(result, "error", "长度不匹配必须返 error，不能 silent")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Vector2")
+	# 没改值
+	assert_eq(node.position, original)
+
+
+func test_set_vector2_non_number_element_returns_invalid_params() -> void:
+	# Array 元素不是数字：fail-loud
+	var node: Node2D = Node2D.new()
+	node.name = "BadElemTarget"
+	add_child_autofree(node)
+	var original: Vector2 = node.position
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "position",
+		"value": ["not", "numbers"],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_eq(node.position, original)
+
+
+func test_set_string_property_unaffected_by_coerce() -> void:
+	# 控制组：声明 String 类型的 name 属性走原路径，没回归。
+	var node: Node2D = Node2D.new()
+	node.name = "StrTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "name",
+		"value": "Renamed",
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(str(node.name), "Renamed")
+
+
+func test_set_float_property_unaffected_by_coerce() -> void:
+	# 控制组：声明 float 类型走原路径。
+	var node: Node2D = Node2D.new()
+	node.name = "FloatTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "rotation",
+		"value": 1.5,
+	})
+	assert_does_not_have(result, "error")
+	assert_almost_eq(node.rotation, 1.5, 0.0001)
+
+
 # ── handle_call_method blacklist ──────────────────────────────────
 
 func test_call_method_queue_free_blocked() -> void:

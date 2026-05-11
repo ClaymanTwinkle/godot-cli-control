@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 `Vector2/2i/3/3i/4/4i` / `Rect2/2i` / `Color`（3-element = RGB，`a=1`）。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。子路径形式（如 `position:x 1.8`）的标量赋值保持原路径不变。
+
 ### AI-friendly CLI 改造（多个 BREAKING change）
 
 把 CLI 重定位成 AI agent 的一等接口：默认结构化输出、补齐读 / 写 / 发现的 shell 命令、明确退出码契约。shell-only 的 agent 现在不需要写 Python 脚本就能完成全部操作。
