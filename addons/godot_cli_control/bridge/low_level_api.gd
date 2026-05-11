@@ -129,12 +129,13 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	return {"success": true}
 
 
-## 把 JSON Array 按声明类型转成 Vector2/2i/3/3i/4/4i / Rect2/2i / Color。
+## 把 JSON Array 按声明类型转成 Vector2/2i/3/3i/4/4i / Rect2/2i / Color / Plane / Quaternion。
 ## 节点没声明该属性 / 声明类型不在「支持转换 + 已知会 silent-corrupt」名单：返 {} 表示"沿用原 value"。
 ## 转换失败（长度不对 / 元素非数字）：返 {"error": ...} 让调用方 fail-loud。
 ## 转换成功：返 {"value": <coerced>}。
-## 已知会 silent-corrupt 但暂未实现转换的复合 Variant（Plane/Quaternion/AABB/Basis/
-## Transform2D/Transform3D/Projection）也走 fail-loud 分支，避免重蹈 #52 覆辙。
+## 已知会 silent-corrupt 但暂未实现转换的复合 Variant（AABB/Basis/Transform2D/
+## Transform3D/Projection）也走 fail-loud 分支，避免重蹈 #52 覆辙。issue #54
+## Phase 2 会逐步实现这些，先要敲定 agent 友好的 Array schema。
 ## *i 变体（Vector2i / Vector3i / Vector4i / Rect2i）允许 float 输入并截断到 int，
 ## 与 GDScript `Vector2i(1.7, 2.3) → (1, 2)` 构造器行为一致。
 func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) -> Dictionary:
@@ -185,11 +186,20 @@ func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) ->
 			return _err(CliControlErrorCodes.INVALID_PARAMS,
 				"value type mismatch for '%s': Color expects [r,g,b] or [r,g,b,a], got length %d"
 					% [property, arr.size()])
-		TYPE_PLANE, TYPE_QUATERNION, TYPE_AABB, TYPE_BASIS, \
-		TYPE_TRANSFORM2D, TYPE_TRANSFORM3D, TYPE_PROJECTION:
+		TYPE_PLANE:
+			# Plane(normal_x, normal_y, normal_z, d) —— 平面方程系数。
+			return _coerce_numeric_array(arr, 4, "Plane", property, func(v: Array) -> Variant:
+				return Plane(v[0], v[1], v[2], v[3]))
+		TYPE_QUATERNION:
+			# Quaternion(x, y, z, w) —— 注意 w 在末位，与 Godot ctor 一致。
+			return _coerce_numeric_array(arr, 4, "Quaternion", property, func(v: Array) -> Variant:
+				return Quaternion(v[0], v[1], v[2], v[3]))
+		TYPE_AABB, TYPE_BASIS, TYPE_TRANSFORM2D, TYPE_TRANSFORM3D, TYPE_PROJECTION:
 			# 同 #52 路径：Object.set(prop, Array) 对这些复合 Variant 会 silent-corrupt。
 			# 暂未实现构造转换；显式 fail-loud 比沿用原 value 让 agent 看不见错误更好。
-			# 想写入时走 `call <node> <setter>` 或拆成子路径 (e.g. `transform:origin`)。
+			# 实现进度见 issue #54 Phase 2（需先敲定 9-float Basis / 12-float Transform3D
+			# 等的 agent 友好 schema）；当前走 `call <node> <setter>` 或拆子路径
+			# （e.g. `transform:origin '[x,y,z]'`）。
 			return _err(CliControlErrorCodes.INVALID_PARAMS,
 				"value type mismatch for '%s': Array coercion not supported for declared type %d; use call_method or sub-path form (e.g. 'transform:origin')"
 					% [property, declared_type])
