@@ -1308,3 +1308,48 @@ def test_call_text_value_disables_arg_parse() -> None:
         ["call", "/root/X", "set_label", "true", "42", "--text-value"]
     )
     assert _resolve_args_for_call(ns) == ["true", "42"]
+
+
+class TestDaemonHeadlessAutodetect:
+    def test_default_headless_when_stdout_not_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        ns = type("NS", (), {"headless": False, "gui": False})()
+        assert _resolve_headless(ns) is True
+
+    def test_default_gui_when_stdout_is_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+        ns = type("NS", (), {"headless": False, "gui": False})()
+        assert _resolve_headless(ns) is False
+
+    def test_explicit_headless_wins_over_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+        ns = type("NS", (), {"headless": True, "gui": False})()
+        assert _resolve_headless(ns) is True
+
+    def test_explicit_gui_wins_over_pipe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        ns = type("NS", (), {"headless": False, "gui": True})()
+        assert _resolve_headless(ns) is False
+
+    def test_gui_and_headless_mutually_exclusive(self) -> None:
+        from godot_cli_control.cli import build_parser
+
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["daemon", "start", "--headless", "--gui"])

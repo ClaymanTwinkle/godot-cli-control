@@ -58,6 +58,24 @@ CLIENT_CODE_IO = -1004  # 本地文件 IO 错误（screenshot 写盘等），与
 CLIENT_CODE_INTERNAL = -1099  # 兜底：客户端内部异常（理论上不该到这里，但兜住契约）
 
 
+def _resolve_headless(ns: argparse.Namespace) -> bool:
+    """决定本次 daemon start 是否走 --headless。
+
+    优先级：显式 --headless > 显式 --gui > stdout.isatty() 自动判。
+    isatty=False（pipe / redirect / 非 TTY agent shell）默认 headless；
+    isatty=True（开发者交互终端）默认开窗。
+    """
+    if getattr(ns, "headless", False):
+        return True
+    if getattr(ns, "gui", False):
+        return False
+    try:
+        return not sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        # ValueError: I/O operation on closed file（罕见）
+        return True  # 安全默认
+
+
 # ── RpcSpec：声明一个 RPC 子命令 ──
 
 
@@ -705,7 +723,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         daemon.start(
             record=ns.record,
             movie_path=ns.movie_path,
-            headless=ns.headless,
+            headless=_resolve_headless(ns),
             fps=ns.fps,
             port=ns.port,
             idle_timeout=idle_seconds,
@@ -901,7 +919,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
             daemon.start(
                 record=ns.record,
                 movie_path=ns.movie_path,
-                headless=ns.headless,
+                headless=_resolve_headless(ns),
                 fps=ns.fps,
                 port=ns.port,
                 idle_timeout=idle_seconds,
@@ -1093,10 +1111,16 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
         default=None,
         help="demo 输出路径，默认 .cli_control 下自动命名",
     )
-    p.add_argument(
+    headless_grp = p.add_mutually_exclusive_group()
+    headless_grp.add_argument(
         "--headless",
         action="store_true",
-        help="无窗口模式，CI/无显示器环境用",
+        help="无窗口模式。默认值：stdout 非 TTY 时自动 headless（CI / pipe / agent）。",
+    )
+    headless_grp.add_argument(
+        "--gui",
+        action="store_true",
+        help="强制开窗。覆盖 isatty 自动判（例如 stdout 是 pipe 仍想看到窗口）。",
     )
     p.add_argument("--fps", type=int, default=30, help="录制帧率，默认 30")
     p.add_argument(
