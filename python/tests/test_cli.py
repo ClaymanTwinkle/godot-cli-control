@@ -1279,3 +1279,32 @@ def test_tree_max_nodes_default_is_200() -> None:
     parser = build_parser()
     ns = parser.parse_args(["tree"])
     assert ns.max_nodes == 200
+
+
+def test_set_text_value_disables_json_parse() -> None:
+    """--text-value 让 set 把 value 当字面字符串，不走 JSON-or-string fallback。"""
+    from godot_cli_control.cli import build_parser, _resolve_value_for_set
+
+    parser = build_parser()
+    ns = parser.parse_args(["set", "/root/X", "flag", "true", "--text-value"])
+    assert ns.text_value is True
+    assert _resolve_value_for_set(ns) == "true"
+
+
+def test_set_default_still_json_parses() -> None:
+    from godot_cli_control.cli import build_parser, _resolve_value_for_set
+
+    parser = build_parser()
+    ns = parser.parse_args(["set", "/root/X", "flag", "true"])
+    assert ns.text_value is False
+    assert _resolve_value_for_set(ns) is True
+
+
+def test_call_text_value_disables_arg_parse() -> None:
+    from godot_cli_control.cli import build_parser, _resolve_args_for_call
+
+    parser = build_parser()
+    ns = parser.parse_args(
+        ["call", "/root/X", "set_label", "true", "42", "--text-value"]
+    )
+    assert _resolve_args_for_call(ns) == ["true", "42"]

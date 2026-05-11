@@ -160,6 +160,16 @@ godot-cli-control set /root/Flag  on   true       # ⚠️ stores boolean true
 godot-cli-control set /root/Flag  on   '"true"'   # ✓ stores the string "true"
 ```
 
+**Escape hatch (preferred for LLM prompts):** pass `--text-value` to disable JSON parsing entirely:
+
+```bash
+godot-cli-control set /root/Label text null --text-value     # ✓ stores the string "null"
+godot-cli-control set /root/Flag  on   true --text-value     # ✓ stores the string "true"
+godot-cli-control call /root/Game start 42 easy --text-value # ✓ calls with ("42", "easy") — all strings
+```
+
+Use this when generating commands from a template — it removes the three-quote escaping headache (`'"null"'`).
+
 ### Tree truncation
 
 `tree` caps output at 200 nodes by default to keep the JSON small enough for an LLM context window. When the cap is hit, the response carries explicit signals so you can decide whether to drill in:
