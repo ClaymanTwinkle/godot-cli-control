@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
-- **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 `Vector2/2i/3/3i/4/4i` / `Rect2/2i` / `Color`（3-element = RGB，`a=1`）。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。子路径形式（如 `position:x 1.8`）的标量赋值保持原路径不变。
+- **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 `Vector2/2i/3/3i/4/4i` / `Rect2/2i` / `Color`（3-element = RGB，`a=1`）。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。子路径形式（如 `position:x 1.8`）的标量赋值保持原路径不变。同样会 silent-corrupt 的复合 Variant（`Transform2D/3D` / `Quaternion` / `Basis` / `AABB` / `Plane` / `Projection`）暂未实现 Array 转换，但走 fail-loud 分支返 `-32602 "Array coercion not supported ..."`，提示走 `call <node> <setter>` 或子路径形式（如 `transform:origin '[x,y,z]'`）。
 
 ### AI-friendly CLI 改造（多个 BREAKING change）
 
