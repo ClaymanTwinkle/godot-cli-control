@@ -113,6 +113,20 @@ def _parse_json_arg(raw: str) -> Any:
         return raw
 
 
+def _resolve_value_for_set(ns: argparse.Namespace) -> Any:
+    """根据 --text-value 决定是 JSON-or-string 解析还是直接 string。"""
+    if getattr(ns, "text_value", False):
+        return ns.value
+    return _parse_json_arg(ns.value)
+
+
+def _resolve_args_for_call(ns: argparse.Namespace) -> list:
+    raw_args: list[str] = list(ns.args or [])
+    if getattr(ns, "text_value", False):
+        return list(raw_args)
+    return [_parse_json_arg(a) for a in raw_args]
+
+
 def _preflight_combo(ns: argparse.Namespace) -> None:
     """连 daemon 前用同一份解析逻辑校验 combo 输入；抛 ValueError 即用法错。
 
@@ -222,15 +236,16 @@ async def cmd_get(client: GameClient, ns: argparse.Namespace) -> Any:
 
 
 async def cmd_set(client: GameClient, ns: argparse.Namespace) -> dict:
-    """写节点属性。``value`` 先按 JSON 解析；失败退回字符串字面量。"""
-    value = _parse_json_arg(ns.value)
+    """写节点属性。``value`` 先按 JSON 解析；失败退回字符串字面量。
+    加 ``--text-value`` 跳过 JSON 解析，强制当字符串处理。"""
+    value = _resolve_value_for_set(ns)
     return await client.set_property(ns.node_path, ns.prop, value)
 
 
 async def cmd_call(client: GameClient, ns: argparse.Namespace) -> Any:
-    """调任意节点方法。每个 arg 同样 JSON-or-string 解析。"""
-    raw_args: list[str] = list(ns.args or [])
-    args = [_parse_json_arg(a) for a in raw_args]
+    """调任意节点方法。每个 arg 同样 JSON-or-string 解析。
+    加 ``--text-value`` 跳过 JSON 解析，所有 args 强制当字符串处理。"""
+    args = _resolve_args_for_call(ns)
     return await client.call_method(ns.node_path, ns.method, args)
 
 
@@ -381,6 +396,20 @@ def _register_actions_flag(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _register_set_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("node_path", help="绝对节点路径")
+    p.add_argument("prop", help="属性名")
+    p.add_argument(
+        "value",
+        help="JSON 字面量或字符串。例：'42' / '\"hello\"' / '[10, 20]' / 'hello'",
+    )
+    p.add_argument(
+        "--text-value",
+        action="store_true",
+        help="把 value 当字面字符串，不走 JSON 解析（避开 'null'/'true'/数字 footgun）",
+    )
+
+
 def _register_call_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("node_path", help="绝对节点路径，如 /root/Main")
     p.add_argument("method", help="节点上的方法名")
@@ -388,6 +417,11 @@ def _register_call_args(p: argparse.ArgumentParser) -> None:
         "args",
         nargs="*",
         help="方法参数；每个先按 JSON 解析失败 fallback 字符串",
+    )
+    p.add_argument(
+        "--text-value",
+        action="store_true",
+        help="把所有 args 当字面字符串，不走 JSON 解析",
     )
 
 
@@ -528,17 +562,13 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
         name="set",
         handler=cmd_set,
-        description="写节点属性。value 优先按 JSON 解析（数字/数组/对象），失败退回字符串。",
-        positionals=(
-            Positional("node_path", None, "绝对节点路径"),
-            Positional("prop", None, "属性名"),
-            Positional(
-                "value",
-                None,
-                "JSON 字面量或字符串。例：'42' / '\"hello\"' / '[10, 20]' / 'hello'",
-            ),
+        description=(
+            "写节点属性。value 优先按 JSON 解析（数字/数组/对象），失败退回字符串。"
+            "加 --text-value 强制把 value 当字符串，避开 null/true/false/数字 footgun。"
         ),
+        positionals=(),  # 由 extra_args 注册（node_path + prop + value + --text-value）
         example="set /root/Main/Score text \"42\"",
+        extra_args=_register_set_args,
         text_formatter=lambda r: f"set: {r}",
     ),
     RpcSpec(
