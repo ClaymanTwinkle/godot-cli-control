@@ -71,8 +71,9 @@ def _resolve_headless(ns: argparse.Namespace) -> bool:
         return False
     try:
         return not sys.stdout.isatty()
-    except (AttributeError, ValueError):
-        # ValueError: I/O operation on closed file（罕见）
+    except (OSError, ValueError):
+        # ValueError: I/O operation on closed file
+        # OSError: 底层 fd 失效（罕见，譬如 fd 被 close 但对象未刷新）
         return True  # 安全默认
 
 
@@ -141,7 +142,7 @@ def _resolve_value_for_set(ns: argparse.Namespace) -> Any:
 def _resolve_args_for_call(ns: argparse.Namespace) -> list:
     raw_args: list[str] = list(ns.args or [])
     if getattr(ns, "text_value", False):
-        return list(raw_args)
+        return raw_args
     return [_parse_json_arg(a) for a in raw_args]
 
 

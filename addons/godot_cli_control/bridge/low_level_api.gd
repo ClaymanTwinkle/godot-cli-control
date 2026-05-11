@@ -180,10 +180,14 @@ func handle_get_children(params: Dictionary) -> Dictionary:
 
 func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	var max_depth: int = params.get("depth", 5) as int
-	# max_nodes 是软上限：超出立刻停止 _build_tree 递归并把信号透出。
-	# 不传时用硬墙 5000 兼容旧客户端。
+	# max_nodes 是客户端控制的软上限。**入口处 clamp 到硬墙
+	# _BUILD_TREE_NODE_LIMIT (5000)**：防止恶意 / 失误调用传 max_nodes=999999
+	# 时让 _build_tree 真把整棵超大树构造成 Dictionary 后才被外层错误返回丢弃
+	# （DoS / OOM 路径）。clamp 后 _build_tree 内部的短路单一来源，
+	# 同时承担软上限（agent truncated 信号）与硬墙（防爆 outbound buffer）。
+	# 不传时也用硬墙做默认，兼容旧客户端。
 	var max_nodes: int = params.get("max_nodes", _BUILD_TREE_NODE_LIMIT) as int
-	if max_nodes <= 0:
+	if max_nodes <= 0 or max_nodes > _BUILD_TREE_NODE_LIMIT:
 		max_nodes = _BUILD_TREE_NODE_LIMIT
 	var root: Node = get_tree().current_scene
 	if root == null:
@@ -192,8 +196,10 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	# Array 是引用类型，递归子调用对 counter[0] 的写入对调用方可见。
 	var counter: Array[int] = [0]
 	var tree: Dictionary = _build_tree(root, max_depth, 0, counter, max_nodes)
-	# 硬墙优先：超 5000 走 1005，避免恶意大场景吃完 outbound buffer。
-	# 排在软上限前面，使「先组装 partial response 再被 1005 短路」的代码异味消失。
+	# 触发 1005 的语义：counter 越过硬墙 = 场景大到不该序列化。
+	# 因为 max_nodes 已 clamp 到 ≤ LIMIT，counter 最多比 LIMIT 多 ~1，
+	# 所以这条分支只在 max_nodes==LIMIT（客户端没传或传了 ≥LIMIT）时被触发。
+	# max_nodes < LIMIT 的客户端永远走 truncated 软信号路径，不会撞 1005。
 	if counter[0] > _BUILD_TREE_NODE_LIMIT:
 		return _err(
 			CliControlErrorCodes.SCENE_TREE_TOO_LARGE,
@@ -233,7 +239,8 @@ func take_screenshot_async() -> Dictionary:
 		await RenderingServer.frame_post_draw
 	var image: Image = get_viewport().get_texture().get_image()
 	if image == null:
-		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Screenshot unavailable (viewport texture is null)")
+		# 1006 (transient) ≠ 1003 (schema)：agent 可短重试，等下一帧 viewport 就绪。
+		return _err(CliControlErrorCodes.RESOURCE_UNAVAILABLE, "Screenshot unavailable (viewport texture is null)")
 	var png_buffer: PackedByteArray = image.save_png_to_buffer()
 	var base64_str: String = Marshalls.raw_to_base64(png_buffer)
 	return {"image": base64_str}

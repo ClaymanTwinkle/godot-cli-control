@@ -76,9 +76,10 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 |---|---|
 | `1001` | Node not found at the given path. Most common — usually the agent passed a wrong / not-yet-loaded path. Retry after `wait-node`. |
 | `1002` | Property not found on the node, or shape mismatch (e.g. `text` on a node that doesn't have it). Don't retry; inspect with `tree`. |
-| `1003` | Method not found, or render unavailable (screenshot before the viewport is ready). |
+| `1003` | Method not found on the node. Schema error — don't retry, inspect with `tree`. |
 | `1004` | Combo already in progress. Call `combo-cancel` (or `release-all`) and re-issue. Safe to retry after that. |
 | `1005` | Scene tree too large to serialize (default safety limit). Pass `--max-nodes` or query a subtree with `children` / `tree <subpath>`. Don't retry as-is. |
+| `1006` | Resource transiently unavailable (e.g. screenshot before viewport renders the first frame). Safe to retry after `wait-time 0.05` or similar. |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 

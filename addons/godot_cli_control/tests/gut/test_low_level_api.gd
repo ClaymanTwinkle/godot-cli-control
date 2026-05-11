@@ -180,6 +180,31 @@ func test_build_tree_under_limit_includes_children() -> void:
 	assert_eq((entry.children as Array).size(), 1)
 
 
+func test_handle_get_scene_tree_clamps_oversized_max_nodes() -> void:
+	# P1 回归：恶意/失误客户端传 max_nodes=999999 时，
+	# 入口必须 clamp 到 _BUILD_TREE_NODE_LIMIT，
+	# 否则 _build_tree 会构造完整大字典再被外层 1005 丢弃（DoS 风险）。
+	# 这里 happy path 验证 clamp 不破坏正常调用——简单场景下无 1005 报错、无 truncated 信号。
+	var result: Dictionary = _api.handle_get_scene_tree({
+		"depth": 3,
+		"max_nodes": 999999,
+	})
+	assert_does_not_have(result, "error")
+	assert_has(result, "tree")
+	# 简单场景节点数远小于 LIMIT，clamp 后等价于 max_nodes=LIMIT，不应触发 truncated
+	assert_does_not_have(result, "truncated")
+
+
+func test_handle_get_scene_tree_negative_max_nodes_falls_back_to_limit() -> void:
+	# 客户端传 0 / 负值 → 当作 "用服务端默认"，等价于不传
+	var result: Dictionary = _api.handle_get_scene_tree({
+		"depth": 3,
+		"max_nodes": -5,
+	})
+	assert_does_not_have(result, "error")
+	assert_has(result, "tree")
+
+
 # ── handle_node_exists / handle_get_children ──────────────────────
 
 func test_node_exists_true_for_real_path() -> void:

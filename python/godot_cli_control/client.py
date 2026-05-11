@@ -243,15 +243,9 @@ class GameClient:
     ) -> dict:
         """读取场景树（可选软上限）。
 
-        ``max_nodes`` 行为：
-
-        * ``None``（默认）：不发 ``max_nodes`` 参数；服务端走 5000 硬墙兼容路径，
-          ``truncated`` 字段永不出现。Python API 与早期版本完全兼容。
-        * 正整数 N：服务端在节点数超过 N 时在响应里追加
-          ``{"truncated": true, "total_nodes": M}``。超过 5000 仍走 1005 错误。
-
-        注意：CLI ``tree`` 子命令默认传 ``max_nodes=200``，与本 API 默认 ``None``
-        形成不对称——前者保护 LLM context，后者保留向后兼容。
+        ``max_nodes``：``None`` 走服务端默认（硬墙 5000，无 ``truncated`` 字段）；
+        传正整数 N 时，节点数超 N 时响应附加 ``{"truncated": true, "total_nodes": M}``。
+        服务端会把传入值 clamp 到 5000 上限，超过仍走 1005 错误。
         """
         params: dict = {"depth": depth}
         if max_nodes is not None:
