@@ -47,7 +47,10 @@ class _StubClient:
         return self._record("wait_game_time", (seconds,), {})
 
     async def get_scene_tree(self, depth: int = 5, max_nodes: int | None = None) -> dict:
-        return self._record("get_scene_tree", (), {"depth": depth})
+        kwargs: dict = {"depth": depth}
+        if max_nodes is not None:
+            kwargs["max_nodes"] = max_nodes
+        return self._record("get_scene_tree", (), kwargs)
 
     async def node_exists(self, path: str) -> bool:
         return self._record("node_exists", (path,), {})
@@ -185,6 +188,15 @@ def test_tree_explicit_depth(stub_client: dict) -> None:
     c.returns["get_scene_tree"] = {}
     b.tree(depth=10)
     assert c.calls[-1][2]["depth"] == 10
+    b.close()
+
+
+def test_tree_forwards_max_nodes_to_client(stub_client: dict) -> None:
+    """bridge.tree(max_nodes=N) 必须把 N 透传到 GameClient（防 stub 漏带导致假绿）。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["get_scene_tree"] = {}
+    b.tree(max_nodes=50)
+    assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "max_nodes": 50})
     b.close()
 
 
