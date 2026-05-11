@@ -129,42 +129,46 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	return {"success": true}
 
 
-## 把 JSON Array 按声明类型转成 Vector2/Vector3/Vector4/Rect2/Color/Plane/Quaternion 等。
-## 节点没声明该属性 / 声明类型不是上述之一：返 {} 表示"沿用原 value"。
+## 把 JSON Array 按声明类型转成 Vector2/2i/3/3i/4/4i / Rect2/2i / Color。
+## 节点没声明该属性 / 声明类型不在「支持转换 + 已知会 silent-corrupt」名单：返 {} 表示"沿用原 value"。
 ## 转换失败（长度不对 / 元素非数字）：返 {"error": ...} 让调用方 fail-loud。
 ## 转换成功：返 {"value": <coerced>}。
+## 已知会 silent-corrupt 但暂未实现转换的复合 Variant（Plane/Quaternion/AABB/Basis/
+## Transform2D/Transform3D/Projection）也走 fail-loud 分支，避免重蹈 #52 覆辙。
+## *i 变体（Vector2i / Vector3i / Vector4i / Rect2i）允许 float 输入并截断到 int，
+## 与 GDScript `Vector2i(1.7, 2.3) → (1, 2)` 构造器行为一致。
 func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) -> Dictionary:
 	var declared_type: int = -1
 	for prop_info: Dictionary in node.get_property_list():
 		if prop_info["name"] == property:
-			declared_type = int(prop_info.get("type", -1))
+			declared_type = int(prop_info["type"])
 			break
 	if declared_type == -1:
 		return {}  # 动态 / 未声明属性，沿用原 value
 	match declared_type:
 		TYPE_VECTOR2:
-			return _coerce_numeric_array(arr, 2, "Vector2", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 2, "Vector2", property, func(v: Array) -> Variant:
 				return Vector2(v[0], v[1]))
 		TYPE_VECTOR2I:
-			return _coerce_numeric_array(arr, 2, "Vector2i", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 2, "Vector2i", property, func(v: Array) -> Variant:
 				return Vector2i(int(v[0]), int(v[1])))
 		TYPE_VECTOR3:
-			return _coerce_numeric_array(arr, 3, "Vector3", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 3, "Vector3", property, func(v: Array) -> Variant:
 				return Vector3(v[0], v[1], v[2]))
 		TYPE_VECTOR3I:
-			return _coerce_numeric_array(arr, 3, "Vector3i", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 3, "Vector3i", property, func(v: Array) -> Variant:
 				return Vector3i(int(v[0]), int(v[1]), int(v[2])))
 		TYPE_VECTOR4:
-			return _coerce_numeric_array(arr, 4, "Vector4", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 4, "Vector4", property, func(v: Array) -> Variant:
 				return Vector4(v[0], v[1], v[2], v[3]))
 		TYPE_VECTOR4I:
-			return _coerce_numeric_array(arr, 4, "Vector4i", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 4, "Vector4i", property, func(v: Array) -> Variant:
 				return Vector4i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
 		TYPE_RECT2:
-			return _coerce_numeric_array(arr, 4, "Rect2", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 4, "Rect2", property, func(v: Array) -> Variant:
 				return Rect2(v[0], v[1], v[2], v[3]))
 		TYPE_RECT2I:
-			return _coerce_numeric_array(arr, 4, "Rect2i", func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, 4, "Rect2i", property, func(v: Array) -> Variant:
 				return Rect2i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
 		TYPE_COLOR:
 			# Color 接受 RGB（3）或 RGBA（4）。
@@ -181,18 +185,27 @@ func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) ->
 			return _err(CliControlErrorCodes.INVALID_PARAMS,
 				"value type mismatch for '%s': Color expects [r,g,b] or [r,g,b,a], got length %d"
 					% [property, arr.size()])
-	# 其他声明类型（Array/Dictionary/Object 等）原样透传
+		TYPE_PLANE, TYPE_QUATERNION, TYPE_AABB, TYPE_BASIS, \
+		TYPE_TRANSFORM2D, TYPE_TRANSFORM3D, TYPE_PROJECTION:
+			# 同 #52 路径：Object.set(prop, Array) 对这些复合 Variant 会 silent-corrupt。
+			# 暂未实现构造转换；显式 fail-loud 比沿用原 value 让 agent 看不见错误更好。
+			# 想写入时走 `call <node> <setter>` 或拆成子路径 (e.g. `transform:origin`)。
+			return _err(CliControlErrorCodes.INVALID_PARAMS,
+				"value type mismatch for '%s': Array coercion not supported for declared type %d; use call_method or sub-path form (e.g. 'transform:origin')"
+					% [property, declared_type])
+	# 其他声明类型（基本类型 / Array / Dictionary / Packed*Array 等）原样透传
 	return {}
 
 
-func _coerce_numeric_array(arr: Array, expected_len: int, type_name: String, ctor: Callable) -> Dictionary:
+func _coerce_numeric_array(arr: Array, expected_len: int, type_name: String, property: String, ctor: Callable) -> Dictionary:
 	if arr.size() != expected_len:
 		return _err(CliControlErrorCodes.INVALID_PARAMS,
-			"value type mismatch: expected %s as numeric array of length %d, got length %d"
-				% [type_name, expected_len, arr.size()])
+			"value type mismatch for '%s': expected %s as numeric array of length %d, got length %d"
+				% [property, type_name, expected_len, arr.size()])
 	if not _is_all_numeric(arr):
 		return _err(CliControlErrorCodes.INVALID_PARAMS,
-			"value type mismatch: expected %s as numeric array, got non-numeric element" % type_name)
+			"value type mismatch for '%s': expected %s as numeric array, got non-numeric element"
+				% [property, type_name])
 	return {"value": ctor.call(arr)}
 
 

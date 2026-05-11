@@ -265,6 +265,43 @@ func test_set_float_property_unaffected_by_coerce() -> void:
 	assert_almost_eq(node.rotation, 1.5, 0.0001)
 
 
+func test_set_transform3d_via_array_fails_loud() -> void:
+	# 复合 Variant（Transform3D/Quaternion/Basis/...）暂未实现 Array → typed 转换。
+	# 不实现是一回事，让请求 silent fall-through 到 Object.set 重蹈 #52 是另一回事 ——
+	# 这条锁住「未实现 = fail-loud，绝不静默坏值」契约。
+	var node: Node3D = Node3D.new()
+	node.name = "Transform3DTarget"
+	add_child_autofree(node)
+	var original: Transform3D = node.transform
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "transform",
+		"value": [1.0, 2.0, 3.0, 4.0],  # 任意 Array：Transform3D 不收 Array
+	})
+	assert_has(result, "error", "复合 Variant + Array 必须 fail-loud，不能 silent fall-through")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Array coercion not supported")
+	# 没改值
+	assert_eq(node.transform, original)
+
+
+func test_set_quaternion_via_array_fails_loud() -> void:
+	# Node3D 没直接的 Quaternion 属性，但 Camera3D 也没 ——
+	# 走 Skeleton3D 又太重。用 ProjectSettings 注入 OK 但太曲折。
+	# 选 Camera3D.quaternion: Camera3D 继承 Node3D，Node3D 暴露 `quaternion: Quaternion`。
+	var node: Node3D = Node3D.new()
+	node.name = "QuatTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "quaternion",
+		"value": [0.0, 0.0, 0.0, 1.0],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Array coercion not supported")
+
+
 # ── handle_call_method blacklist ──────────────────────────────────
 
 func test_call_method_queue_free_blocked() -> void:
