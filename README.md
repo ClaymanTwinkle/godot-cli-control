@@ -211,3 +211,4 @@ Issues and PRs welcome. The plugin's GUT unit tests run via `./addons/godot_cli_
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+// Added retry logic
