@@ -465,3 +465,86 @@ async def test_get_scene_tree_omits_max_nodes_when_none() -> None:
         client_mod.GameClient.request = monkeypatch_target
     assert captured["params"] == {"depth": 2}
     assert "max_nodes" not in captured["params"]
+
+
+# ---- issue #45: wait_game_time / combo 不能给 game-time 操作设 wall-time 上限 ----
+#
+# 旧公式 seconds*3+10 假设 wall ≤ 3× game，在 Movie Maker (--write-movie) 模式下
+# 实测 wall ≈ 4-5× game，必假超时（bridge.wait(15) → 55s timeout < 60s+ wall）。
+# 治本：去掉 seconds-scaled wall 上限，固定一个生死线（600s），死连接靠 ws ping/pong。
+
+WAIT_GAME_TIME_CLIENT_TIMEOUT = 600.0
+
+
+@pytest.mark.asyncio
+async def test_wait_game_time_client_timeout_decoupled_from_seconds() -> None:
+    """issue #45: wait_game_time 客户端 timeout 必须与 seconds 解耦（固定 600s 生死线）。
+
+    Movie Maker 模式下 wall/game 比值不可预测，任何 seconds-scaled 公式都会在
+    某个分辨率/fps/盘速组合下踩中。改成固定大值后，死连接由 ws ping/pong 兜底。
+    """
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["timeout"] = timeout
+        return {"success": True}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.wait_game_time(15.0)
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["timeout"] == WAIT_GAME_TIME_CLIENT_TIMEOUT, (
+        f"wait_game_time(15) 应使用固定 {WAIT_GAME_TIME_CLIENT_TIMEOUT}s 生死线，"
+        f"实际 {captured['timeout']}s —— Movie Maker 模式下 seconds-scaled 必假超时"
+    )
+
+
+@pytest.mark.asyncio
+async def test_combo_client_timeout_decoupled_from_steps_total() -> None:
+    """issue #45: combo() 与 wait_game_time 同源问题，client timeout 同样固定。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["timeout"] = timeout
+        return {"success": True}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.combo([{"action": "jump", "duration": 5.0}])
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["timeout"] == WAIT_GAME_TIME_CLIENT_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_connect_locks_ws_ping_keepalive() -> None:
+    """issue #45 治本依赖：去掉 wall 上限后，死连接靠 ws ping/pong 检测。
+
+    显式锁住 ping_interval / ping_timeout（与 websockets 默认对齐），
+    防库升级把默认改了导致死连接卡 600s。
+    """
+    fake_ws = AsyncMock()
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ) as mock_connect:
+        client = GameClient(port=9999)
+        try:
+            await client.connect(retries=1)
+        finally:
+            if client._listen_task:
+                client._listen_task.cancel()
+        _, kwargs = mock_connect.call_args
+        assert kwargs.get("ping_interval") == 20, \
+            "GameClient.connect() must lock ping_interval (ws keepalive)"
+        assert kwargs.get("ping_timeout") == 20, \
+            "GameClient.connect() must lock ping_timeout (ws keepalive)"
