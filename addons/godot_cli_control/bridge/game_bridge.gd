@@ -6,6 +6,11 @@ const DEFAULT_PORT: int = 9877
 const SETTING_AUTO_ENABLE: String = "godot_cli_control/auto_enable_in_debug"
 const SETTING_OUTBOUND_BUFFER_MB: String = "godot_cli_control/outbound_buffer_mb"
 const DEFAULT_OUTBOUND_BUFFER_MB: int = 10
+# 启动 gate：listen 前等 viewport 首帧 ready 的上限帧数。
+# 60fps 下 ~2s；shader 编译 / 大资源加载超过这个就走 fallback —— 仍开端口，
+# 把后续 screenshot 的 transient 兜底交给 take_screenshot_async 的循环。
+# 设计意图见 issue #61：根因消除（H）+ handler 内动态兜底（D）。
+const FIRST_FRAME_READY_MAX_FRAMES: int = 120
 
 var _tcp_server: TCPServer = TCPServer.new()
 var _active_peer: WebSocketPeer = null
@@ -56,6 +61,13 @@ func _ready() -> void:
 		ProjectSettings.get_setting(SETTING_OUTBOUND_BUFFER_MB, DEFAULT_OUTBOUND_BUFFER_MB)
 	)
 	_outbound_buffer_size = max(1, mb) * 1024 * 1024
+	# 启动 gate：等 viewport 首帧 ready 后再开 listen。
+	# 根因：issue #61。screenshot 在「viewport 从未画过一次」时拿到 null
+	# texture → 报 1006 transient；让 client connect 上来这件事本身就承诺
+	# 「至少画过一帧」，把根因消除而不是各 handler 各自打补丁。
+	# 超时不阻塞 listen —— 端口冲突 / 启动诊断信号要保留（_tcp_server.listen
+	# 失败的 printerr 在端口冲突时是用户唯一的 root cause 提示）。
+	await _wait_first_frame_ready()
 	# 启动 TCP 服务器
 	_port = _parse_port_from_args()
 	# 安全：显式绑 127.0.0.1，避免 Godot TCPServer 默认 "*" 暴露到 LAN
@@ -79,6 +91,23 @@ func _ready() -> void:
 		t.timeout.connect(_check_idle)
 		add_child(t)
 		print("GameBridge: idle-timeout %ds enabled" % _idle_timeout_secs)
+
+
+func _wait_first_frame_ready() -> void:
+	# dummy renderer (--headless) 下 RenderingServer.frame_post_draw 永不发射；
+	# 与 take_screenshot_async 用同一套检测，dummy 路径走 process_frame ×2。
+	# 上限 FIRST_FRAME_READY_MAX_FRAMES 后无论 viewport 是否 ready 都返回，
+	# 让 listen 不被 GPU 卡死 / 大场景首帧拖住，避免 daemon 启动绑架到项目复杂度。
+	var dummy: bool = RenderingServer.get_rendering_device() == null
+	if dummy:
+		await get_tree().process_frame
+		await get_tree().process_frame
+		return
+	for _i in FIRST_FRAME_READY_MAX_FRAMES:
+		await RenderingServer.frame_post_draw
+		var image: Image = get_viewport().get_texture().get_image()
+		if image != null:
+			return
 
 
 func _process(_delta: float) -> void:

@@ -93,7 +93,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `1003` | Method not found on the node. Schema error — don't retry, inspect with `tree`. |
 | `1004` | Combo already in progress. Call `combo-cancel` (or `release-all`) and re-issue. Safe to retry after that. |
 | `1005` | Scene tree too large to serialize (default safety limit). Pass `--max-nodes` or query a subtree with `children` / `tree <subpath>`. Don't retry as-is. |
-| `1006` | Resource transiently unavailable (e.g. screenshot before viewport renders the first frame). Safe to retry after `wait-time 0.05` or similar. |
+| `1006` | Resource transiently unavailable (e.g. screenshot during scene transition / window resize). Rare under normal use: GameBridge waits for viewport first-frame before accepting connections, and `screenshot` retries internally up to ~500ms. If you still see this, retry after `wait-time 0.05` or similar. |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 
@@ -367,6 +367,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **`tree` returns `1005 "scene tree too large"`** — your scene has more than 5000 visible nodes (a Grid / spawned-bullets situation). Pass `--max-nodes 200` to cap, or `children <path>` for one specific subtree.
 - **`set` with a string that *looks* like JSON** — value parser parses JSON first. To force a literal `"42"` string, pass `'"42"'`; to set a literal hash sign or array text, JSON-encode it.
 - **`daemon start` opens a window when I expected headless** — your stdout is a TTY (interactive terminal). Pass `--headless` explicitly, or shell out from a context where stdout is piped.
+- **`screenshot` used to fail with `1006` on the first call** — fixed. GameBridge now waits for the viewport's first frame before opening the port, so `connect succeeded` implies `viewport has rendered ≥ once`. The magic `bridge.wait(1.5)` before the first screenshot in older example scripts is no longer needed.
 
 ---
 

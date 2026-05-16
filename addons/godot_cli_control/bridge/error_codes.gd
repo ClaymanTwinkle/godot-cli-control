@@ -16,6 +16,11 @@ const COMBO_IN_PROGRESS: int = 1004
 const SCENE_TREE_TOO_LARGE: int = 1005
 # 资源 transient 不可用（screenshot viewport texture null 等）。
 # 与 1003 拆开：1003 是 schema 错（永久），1006 是时机错（短重试可能成功）。
+# issue #61 落地后语义：GameBridge 启动 gate（H）保证 client 连上时 viewport
+# 至少画过一帧 + take_screenshot_async 内部循环（D）兜底动态 transient，
+# 所以正常用法下 1006 不应触发。但它仍是 last-resort 合法信号 ——
+# client 必须保留对 1006 的处理（不要假设它消失），未来若改为 fail-loud
+# 会让 scene 切换瞬间的截图变成硬错。
 const RESOURCE_UNAVAILABLE: int = 1006
 
 const INVALID_PARAMS: int = -32602

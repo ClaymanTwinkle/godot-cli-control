@@ -694,3 +694,26 @@ func test_node_exists_false_for_missing_path() -> void:
 		"path": "/root/__missing__",
 	})
 	assert_false(result.get("exists"))
+
+
+# ── take_screenshot_async（issue #61 D 部分）──────────────────────
+# GUT 跑在 --headless 下，RenderingServer.get_rendering_device() == null，
+# 走 dummy 推帧路径。这两条测试主要防 await 死锁回归（早期版本一次没等
+# 到 ready 就报 1006，绕过 H 启动 gate 后会再撞）。
+
+func test_screenshot_returns_image_or_1006_under_headless() -> void:
+	# headless 下 viewport texture 可能是 null（dummy 无真实 RenderingDevice）。
+	# 合法结果：要么拿到 base64 image，要么循环跑满后报 1006。
+	# 关键不变量：函数必须返回（不死锁）、不抛、payload 形状正确。
+	var result: Dictionary = await _api.take_screenshot_async()
+	assert_true(result.has("image") or result.has("error"),
+		"take_screenshot_async must return image or error envelope")
+	if result.has("error"):
+		var err: Dictionary = result["error"] as Dictionary
+		assert_eq(int(err.get("code")), 1006,
+			"headless null viewport must report RESOURCE_UNAVAILABLE not other code")
+
+
+func test_screenshot_max_frames_constant_is_positive() -> void:
+	# 防回归：常量被改成 0 或负数会让循环立刻退出 → 等同未修。
+	assert_gt(LowLevelApiScript.SCREENSHOT_MAX_FRAMES, 0)
