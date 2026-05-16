@@ -276,6 +276,17 @@ def test_tap_explicit_duration(stub_client: dict) -> None:
     b.close()
 
 
+def test_action_tap_is_alias_for_tap(stub_client: dict) -> None:
+    """issue #58: bridge.action_tap 必须存在并与 bridge.tap 行为一致，
+    保证 README 表格 + run --help 里"方法名一致"的承诺成立。"""
+    b, c = _make_bridge(stub_client)
+    b.action_tap("attack")
+    assert c.calls[-1] == ("action_tap", ("attack",), {"duration": 0.1})
+    b.action_tap("attack", duration=0.25)
+    assert c.calls[-1] == ("action_tap", ("attack",), {"duration": 0.25})
+    b.close()
+
+
 def test_action_press_release(stub_client: dict) -> None:
     b, c = _make_bridge(stub_client)
     b.action_press("jump")
