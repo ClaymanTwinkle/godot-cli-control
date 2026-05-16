@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT: int = 9877
 
+# 长操作（wait_game_time / combo）的客户端 wall-time 生死线。
+#
+# 这类操作的「完成」是 game-time 维度（Godot 帧数推进），与 wall time 关系不可
+# 预测：Movie Maker (--write-movie) 模式下 wall ≈ 4-5× game，且随分辨率/fps/盘速
+# 漂移。任何 seconds-scaled 公式都会在某个组合下假超时（issue #45）。
+#
+# 改用固定大值后：正常完成时 server 自然回包；server 真死循环时由 600s 兜底
+# （而不是 55s 把还活着的录像炸掉）；死连接由 websockets 库的 ping/pong 心跳
+# 在 ~40s 内独立检测，与本上限无关。
+LONG_OP_CLIENT_TIMEOUT: float = 600.0
+
 
 class RpcError(RuntimeError):
     """Raised when GameBridge returns a JSON-RPC error response.
@@ -100,6 +111,11 @@ class GameClient:
                     f"ws://127.0.0.1:{self._port}",
                     proxy=None,
                     open_timeout=open_timeout,
+                    # 显式锁住 ws 心跳——issue #45 治本依赖：long ops 去掉
+                    # seconds-scaled wall 上限后，死连接靠这层独立检测。
+                    # 与 websockets 当前默认对齐，防库升级悄悄改默认。
+                    ping_interval=20,
+                    ping_timeout=20,
                 )
                 self._listen_task = asyncio.create_task(self._listen())
                 logger.info("Connected to GameBridge on port %d", self._port)
@@ -263,8 +279,9 @@ class GameClient:
     async def wait_game_time(self, seconds: float) -> dict:
         """按 Godot game time 等待 N 秒。
 
-        Movie Maker (--write-movie) 模式下 wall time 比 game time 慢约 2-3×，
-        客户端 timeout 用 seconds * 3 + 10 安全系数，与 combo() 一致。
+        客户端用固定 ``LONG_OP_CLIENT_TIMEOUT`` 生死线（issue #45）：game-time
+        与 wall-time 比值受录像模式 / 分辨率 / 盘速 / fps 影响不可预测，任何
+        seconds-scaled 公式都会在某个组合下假超时。死连接由 ws ping/pong 兜底。
         seconds <= 0 时客户端短路返回，不发 RPC。
         """
         if seconds <= 0:
@@ -272,7 +289,7 @@ class GameClient:
         return await self.request(
             "wait_game_time",
             {"seconds": seconds},
-            timeout=seconds * 3.0 + 10.0,
+            timeout=LONG_OP_CLIENT_TIMEOUT,
         )
 
     # ---- Input simulation API ----
@@ -294,14 +311,10 @@ class GameClient:
         )
 
     async def combo(self, steps: list[dict]) -> dict:
-        total = sum(
-            s.get("duration", 0) or s.get("wait", 0) for s in steps
-        )
-        # movie maker (--write-movie) 模式下 Godot 渲染比实时慢（大分辨率 +
-        # MJPEG 编码开销），客户端墙钟等待需要 3× 安全系数 + 10s base，
-        # 避免 combo 还没在游戏时间跑完就被 TimeoutError 打断。
+        # 客户端用固定 LONG_OP_CLIENT_TIMEOUT 生死线（issue #45）：见
+        # wait_game_time 注释——同样的 game-time / wall-time 不对齐问题。
         return await self.request(
-            "input_combo", {"steps": steps}, timeout=total * 3.0 + 10.0
+            "input_combo", {"steps": steps}, timeout=LONG_OP_CLIENT_TIMEOUT
         )
 
     async def combo_cancel(self) -> dict:
