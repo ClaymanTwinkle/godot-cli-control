@@ -19,6 +19,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from .daemon import find_godot_binary, reimport_project
 
@@ -36,6 +37,9 @@ def run_init(
     write_skills: bool = True,
     skills_only: bool = False,
     clobber_skills: bool = True,
+    *,
+    output_format: str = "text",
+    result: dict[str, Any] | None = None,
 ) -> int:
     """实施接入流程。返回进程 exit code。
 
@@ -46,26 +50,59 @@ def run_init(
     ``clobber_skills=False``：写 skill 时遇到已存在文件就跳过（用户改过
     SKILL.md、希望保留本地版又允许 init 把缺失那条补上时用）。与
     ``write_skills=False`` / ``skills_only=True`` 都兼容。
+
+    ``output_format='json'``：抑制全部人类可读 print；调用方（cli.cmd_init）
+    传入 ``result`` 字典，本函数会回填结构化字段，由 cli 侧封 JSON envelope。
+    ``output_format='text'``（默认）保持旧行为，``result`` 可省略 / 也可传入
+    并被回填，互不冲突。错误路径在 text 模式下打印到 stderr，json 模式下
+    把 message 塞进 ``result['_error_message']`` 供 envelope 取用。
     """
-    if not (project_root / "project.godot").is_file():
-        print(
-            f"错误：{project_root} 下没有 project.godot —— 不像 Godot 项目根。\n"
-            "如果你确实在 Godot 项目内，请用 --path 指向项目根。",
-            file=sys.stderr,
-        )
+    quiet = output_format == "json"
+
+    def _say(msg: str) -> None:
+        if not quiet:
+            print(msg)
+
+    def _warn(msg: str) -> None:
+        # 错误 / 警告：text 模式 stderr 可读；json 模式吞掉，由 envelope 负责。
+        if not quiet:
+            print(msg, file=sys.stderr)
+
+    def _record(**kw: Any) -> None:
+        if result is not None:
+            result.update(kw)
+
+    def _fail(message: str) -> int:
+        _warn(f"错误：{message}")
+        if result is not None:
+            result["_error_message"] = message
         return 1
 
+    _record(
+        project_root=str(project_root),
+        skills_only=skills_only,
+        write_skills=write_skills,
+        plugin_copied=False,
+        plugin_overwritten=False,
+        project_godot_changes=[],
+        godot_bin=None,
+        skills_written=[],
+    )
+
+    if not (project_root / "project.godot").is_file():
+        return _fail(
+            f"{project_root} 下没有 project.godot —— 不像 Godot 项目根。\n"
+            "如果你确实在 Godot 项目内，请用 --path 指向项目根。"
+        )
+
     if not skills_only:
-        # 原 1-4 步整体保持不动，仅缩进到此 if 块下
         plugin_src = locate_plugin_source()
         if plugin_src is None:
-            print(
-                "错误：找不到插件源（addons/godot_cli_control/）。\n"
+            return _fail(
+                "找不到插件源（addons/godot_cli_control/）。\n"
                 "如果是从源码 editable install，请确保仓库布局完整；\n"
-                "如果是从 wheel 安装，包资源可能损坏，请重装。",
-                file=sys.stderr,
+                "如果是从 wheel 安装，包资源可能损坏，请重装。"
             )
-            return 1
 
         addons_dir = project_root / ADDONS_DIRNAME
         plugin_dst = addons_dir / PLUGIN_DIR_NAME
@@ -73,19 +110,22 @@ def run_init(
             if force:
                 shutil.rmtree(plugin_dst)
                 _copy_plugin(plugin_src, plugin_dst)
-                print(f"覆盖：{plugin_dst}")
+                _say(f"覆盖：{plugin_dst}")
+                _record(plugin_copied=True, plugin_overwritten=True)
             else:
-                print(f"已存在：{plugin_dst}（用 --force 覆盖）")
+                _say(f"已存在：{plugin_dst}（用 --force 覆盖）")
         else:
             addons_dir.mkdir(parents=True, exist_ok=True)
             _copy_plugin(plugin_src, plugin_dst)
-            print(f"复制：{plugin_src} → {plugin_dst}")
+            _say(f"复制：{plugin_src} → {plugin_dst}")
+            _record(plugin_copied=True)
 
         patched, changes = _patch_project_godot(project_root / "project.godot")
         if changes:
-            print(f"修改 project.godot：{', '.join(changes)}")
+            _say(f"修改 project.godot：{', '.join(changes)}")
         elif patched:
-            print("project.godot 已配置好（未改动）")
+            _say("project.godot 已配置好（未改动）")
+        _record(project_godot_changes=changes)
 
         godot_bin = find_godot_binary()
         if godot_bin:
@@ -96,19 +136,19 @@ def run_init(
             except OSError:
                 pass
             (control_dir / "godot_bin").write_text(godot_bin + "\n")
-            print(f"检测到 Godot：{godot_bin}（已写入 .cli_control/godot_bin）")
+            _say(f"检测到 Godot：{godot_bin}（已写入 .cli_control/godot_bin）")
+            _record(godot_bin=godot_bin)
             # 无条件重新导入：拷了新 .gd、改了 autoload，cache 必然 stale。
             # 不靠 daemon._ensure_imported 兜底是因为它要等 daemon start 才跑，
             # 用户这时已经看到 parse error；放在 init 里把"setup 完成"打到位，
             # 后续 daemon start 纯起服务、无隐性首次延迟。
             reimport_project(project_root, godot_bin)
         else:
-            print(
+            _warn(
                 "警告：未自动检测到 Godot 二进制。\n"
                 "请 `export GODOT_BIN=/path/to/godot` 或写到 "
                 ".cli_control/godot_bin。\n"
-                "（跳过资源重新导入；首次 daemon start 会兜底重建 cache）",
-                file=sys.stderr,
+                "（跳过资源重新导入；首次 daemon start 会兜底重建 cache）"
             )
 
     if write_skills:
@@ -132,13 +172,14 @@ def run_init(
             force=clobber_skills,
         )
         for p in written:
-            print(f"写入 skill：{p.relative_to(project_root)}")
+            _say(f"写入 skill：{p.relative_to(project_root)}")
+        _record(skills_written=[str(p) for p in written])
 
-    print()
-    print("已就绪。下一步：")
-    print("  godot-cli-control daemon start          # 启动 daemon")
-    print("  godot-cli-control tree 3                # 验证 RPC 通了")
-    print("  godot-cli-control daemon stop           # 停止")
+    _say("")
+    _say("已就绪。下一步：")
+    _say("  godot-cli-control daemon start          # 启动 daemon")
+    _say("  godot-cli-control tree 3                # 验证 RPC 通了")
+    _say("  godot-cli-control daemon stop           # 停止")
     return 0
 
 

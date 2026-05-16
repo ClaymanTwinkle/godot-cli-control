@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 import traceback
@@ -55,6 +56,7 @@ CLIENT_CODE_CONNECTION = -1001
 CLIENT_CODE_TIMEOUT = -1002
 CLIENT_CODE_USAGE = -1003
 CLIENT_CODE_IO = -1004  # 本地文件 IO 错误（screenshot 写盘等），与连接错误分开
+CLIENT_CODE_SCRIPT_ERROR = -1005  # `run <script>` 用户脚本抛出未捕获异常（agent 错的是脚本，不是 CLI 框架）
 CLIENT_CODE_INTERNAL = -1099  # 兜底：客户端内部异常（理论上不该到这里，但兜住契约）
 
 
@@ -898,19 +900,32 @@ def cmd_daemon_ls(ns: argparse.Namespace) -> int:
 
 
 def cmd_run(ns: argparse.Namespace) -> int:
-    """加载用户脚本（要求定义 ``run(bridge)``），自动启停 daemon。"""
+    """加载用户脚本（要求定义 ``run(bridge)``），自动启停 daemon。
+
+    json 模式下：成功 ``{"ok": true, "result": {"exit_code": 0, "script": "..."}}``；
+    各类失败（脚本不存在、daemon 起不来、用户脚本 raise）封 ``{"ok": false, "error": ...}``。
+    text 模式行为不变。
+    """
     from .daemon import Daemon, DaemonError
     from ._duration import parse_duration
 
+    fmt = _output_format(ns)
     script_path = Path(ns.script)
     if not script_path.exists():
-        print(f"错误：找不到脚本: {script_path}", file=sys.stderr)
-        return 1
+        msg = f"找不到脚本: {script_path}"
+        if fmt == OUTPUT_JSON:
+            _emit_error_payload(CLIENT_CODE_USAGE, msg)
+        else:
+            print(f"错误：{msg}", file=sys.stderr)
+        return EXIT_RPC_ERROR
 
     try:
         idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
     except ValueError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        if fmt == OUTPUT_JSON:
+            _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+        else:
+            print(f"错误：{e}", file=sys.stderr)
         return EXIT_USAGE
 
     daemon = Daemon(Path.cwd())
@@ -926,8 +941,11 @@ def cmd_run(ns: argparse.Namespace) -> int:
                 idle_timeout=idle_seconds,
             )
         except DaemonError as e:
-            print(f"错误：{e}", file=sys.stderr)
-            return 1
+            if fmt == OUTPUT_JSON:
+                _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+            else:
+                print(f"错误：{e}", file=sys.stderr)
+            return EXIT_RPC_ERROR
         auto_started = True
 
     port = daemon.current_port() or ns.port
@@ -936,12 +954,14 @@ def cmd_run(ns: argparse.Namespace) -> int:
     # 让下次 daemon start 报「already running」。
     exit_code = 1
     try:
-        exit_code = _exec_user_script(script_path, port)
+        exit_code = _exec_user_script(script_path, port, output_format=fmt)
     finally:
         if auto_started:
             try:
                 stop_rc = daemon.stop()
             except DaemonError as e:
+                # 停 daemon 出错走人类可读 stderr —— envelope 仍由脚本结果主导。
+                # 这一行在 json 模式下也保留 stderr 提示，避免 silent leak。
                 print(f"警告：停止 daemon 失败：{e}", file=sys.stderr)
                 stop_rc = 1
             if exit_code == 0 and stop_rc != 0:
@@ -949,15 +969,44 @@ def cmd_run(ns: argparse.Namespace) -> int:
     return exit_code
 
 
-def _exec_user_script(script_path: Path, port: int) -> int:
-    """加载脚本模块、调用 ``run(bridge)``，捕获错误返回 exit code。"""
+def _exec_user_script(
+    script_path: Path, port: int, *, output_format: str = "text"
+) -> int:
+    """加载脚本模块、调用 ``run(bridge)``，捕获错误返回 exit code。
+
+    json 模式：每个分支负责输出 envelope（成功 ``{exit_code:0, script:...}``、
+    脚本异常 → ``CLIENT_CODE_SCRIPT_ERROR``、连接失败 → ``CLIENT_CODE_CONNECTION``、
+    结构性错误 → ``CLIENT_CODE_USAGE``）。stderr 仍写完整 traceback / 友好提示，
+    保留 human debug 信息。
+    text 模式行为完全不变。
+    """
     import importlib.util
 
     from .bridge import GameBridge
 
+    is_json = output_format == OUTPUT_JSON
+
+    def _emit_usage(message: str) -> None:
+        if is_json:
+            _emit_error_payload(CLIENT_CODE_USAGE, message)
+        else:
+            print(f"错误：{message}", file=sys.stderr)
+
+    def _emit_script_failure(stage: str, exc: BaseException) -> None:
+        # stderr 永远拿到完整 traceback —— human 调试需要堆栈；json envelope
+        # 只放 exception type + last line，避免一行单 message 太长。
+        # 用 print_exception(exc) 而非 print_exc()：本函数可能在 except 块
+        # 之外被调（脚本运行错误为了把 envelope 输出在 redirect_stdout 外
+        # 我们先存 exc 再处理），active exc_info 此时已被清空。
+        print(f"错误：脚本 {script_path} {stage}失败：", file=sys.stderr)
+        traceback.print_exception(exc)
+        if is_json:
+            msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            _emit_error_payload(CLIENT_CODE_SCRIPT_ERROR, f"{stage}失败：{msg}")
+
     spec = importlib.util.spec_from_file_location("user_script", script_path)
     if spec is None or spec.loader is None:
-        print(f"错误：无法加载脚本: {script_path}", file=sys.stderr)
+        _emit_usage(f"无法加载脚本: {script_path}")
         return 1
     module = importlib.util.module_from_spec(spec)
     # 让脚本同目录的辅助模块（``from helpers import foo``）可被解析；
@@ -973,15 +1022,11 @@ def _exec_user_script(script_path: Path, port: int) -> int:
         # 保留完整 traceback —— 用户脚本出错时调试信息比「错误：xxx」一行有用得多。
         try:
             spec.loader.exec_module(module)
-        except Exception:  # noqa: BLE001 - 用户脚本任何异常都要抓
-            print(f"错误：加载脚本 {script_path} 失败：", file=sys.stderr)
-            traceback.print_exc()
+        except Exception as e:  # noqa: BLE001 - 用户脚本任何异常都要抓
+            _emit_script_failure("加载", e)
             return 1
         if not hasattr(module, "run"):
-            print(
-                f"错误：脚本 {script_path} 中缺少 run(bridge) 函数",
-                file=sys.stderr,
-            )
+            _emit_usage(f"脚本 {script_path} 中缺少 run(bridge) 函数")
             return 1
 
         print(f"运行 {script_path}...", file=sys.stderr)
@@ -991,18 +1036,40 @@ def _exec_user_script(script_path: Path, port: int) -> int:
         try:
             bridge = GameBridge(port=port)
         except ConnectionError as e:
+            if is_json:
+                _emit_error_payload(
+                    CLIENT_CODE_CONNECTION,
+                    f"连接 daemon 失败 (port={port}): {e}",
+                )
             print(
                 f"错误：连接 daemon 失败 (port={port}): {e}\n"
                 "提示：先运行 `godot-cli-control daemon start` 或检查端口是否被占用。",
                 file=sys.stderr,
             )
             return 1
-        try:
-            module.run(bridge)
-        except Exception:  # noqa: BLE001
-            print(f"错误：脚本 {script_path} 运行失败：", file=sys.stderr)
-            traceback.print_exc()
+        # 用户脚本里如果 print()，在 json 模式下会污染 envelope 唯一一行 stdout。
+        # 把脚本期间的 stdout 重定向到 stderr：脚本可读输出仍可见，envelope 不破。
+        # 注意：异常处理 / envelope 发布必须在 redirect 上下文 **外** 完成，
+        # 否则 envelope 也会被一起重定向到 stderr —— 之前 first cut 就栽在这里。
+        script_error: BaseException | None = None
+        if is_json:
+            with contextlib.redirect_stdout(sys.stderr):
+                try:
+                    module.run(bridge)
+                except Exception as e:  # noqa: BLE001
+                    script_error = e
+        else:
+            try:
+                module.run(bridge)
+            except Exception as e:  # noqa: BLE001
+                script_error = e
+        if script_error is not None:
+            _emit_script_failure("运行", script_error)
             return 1
+        if is_json:
+            _emit_success_payload(
+                {"exit_code": 0, "script": str(script_path)}
+            )
         return 0
     finally:
         if bridge is not None:
@@ -1017,7 +1084,11 @@ def _exec_user_script(script_path: Path, port: int) -> int:
 def cmd_init(ns: argparse.Namespace) -> int:
     from .init_cmd import run_init
 
-    return run_init(
+    fmt = _output_format(ns)
+    # json 模式下让 run_init 抑制人类可读 print，把结构化字段回填到本地 dict。
+    # text 模式仍走原路径（result=None 等价于不收集）。
+    result: dict[str, Any] | None = {} if fmt == OUTPUT_JSON else None
+    rc = run_init(
         # 保留 .resolve()：run_init 内部用 relative_to(project_root) 打印 skill
         # 路径，相对路径会让 relative_to 在 cwd 不寻常时抛 ValueError。
         project_root=(Path(ns.path).resolve() if ns.path else Path.cwd()),
@@ -1025,7 +1096,16 @@ def cmd_init(ns: argparse.Namespace) -> int:
         write_skills=not ns.no_skills,
         skills_only=ns.skills_only,
         clobber_skills=not ns.skills_no_clobber,
+        output_format=fmt,
+        result=result,
     )
+    if fmt == OUTPUT_JSON and result is not None:
+        if rc == 0:
+            _emit_success_payload(result)
+        else:
+            message = result.pop("_error_message", None) or "init failed"
+            _emit_error_payload(CLIENT_CODE_USAGE, message)
+    return rc
 
 
 # ── 输出信封 ──

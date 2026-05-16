@@ -357,6 +357,197 @@ def test_new_rpc_subcommands_parse(
         )
 
 
+# ── run / _exec_user_script JSON envelope（issue #50）──
+
+
+def test_exec_user_script_json_success_emits_envelope(
+    tmp_path: Path, stub_bridge: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """成功跑完 → stdout 一行 ``{"ok": true, "result": {"exit_code": 0, ...}}``。"""
+    import json as _json
+
+    from godot_cli_control.cli import _exec_user_script
+
+    script = tmp_path / "user_script.py"
+    _write(script, "def run(bridge):\n    pass\n")
+
+    rc = _exec_user_script(script, port=9999, output_format="json")
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is True
+    assert payload["result"]["exit_code"] == 0
+    assert payload["result"]["script"] == str(script)
+
+
+def test_exec_user_script_json_redirects_script_stdout_to_stderr(
+    tmp_path: Path, stub_bridge: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """用户脚本里 print() 在 json 模式下必须走 stderr —— 否则会把 envelope 撕成两行。"""
+    import json as _json
+
+    from godot_cli_control.cli import _exec_user_script
+
+    script = tmp_path / "user_script.py"
+    _write(
+        script,
+        "def run(bridge):\n"
+        "    print('LEAK_TO_STDOUT_IF_BROKEN')\n",
+    )
+
+    rc = _exec_user_script(script, port=9999, output_format="json")
+    captured = capsys.readouterr()
+    assert rc == 0
+    out_lines = [l for l in captured.out.splitlines() if l.strip()]
+    assert len(out_lines) == 1, f"stdout 不是单行 envelope：{captured.out!r}"
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is True
+    # 脚本的 print 必须能在 stderr 看到，便于人 debug
+    assert "LEAK_TO_STDOUT_IF_BROKEN" in captured.err
+
+
+def test_exec_user_script_json_error_on_runtime_exception(
+    tmp_path: Path, stub_bridge: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """脚本 raise → stdout 一行 error envelope（CLIENT_CODE_SCRIPT_ERROR = -1005）；
+    完整 traceback 仍在 stderr。"""
+    import json as _json
+
+    from godot_cli_control.cli import _exec_user_script
+
+    script = tmp_path / "user_script.py"
+    _write(
+        script,
+        "def run(bridge):\n"
+        "    raise RuntimeError('boom from user script')\n",
+    )
+
+    rc = _exec_user_script(script, port=9999, output_format="json")
+    captured = capsys.readouterr()
+    assert rc == 1
+    out_lines = [l for l in captured.out.splitlines() if l.strip()]
+    assert len(out_lines) == 1
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1005
+    assert "RuntimeError" in payload["error"]["message"]
+    assert "boom from user script" in payload["error"]["message"]
+    # 完整 traceback 仍留在 stderr 给人看
+    assert "Traceback" in captured.err
+    assert "RuntimeError: boom from user script" in captured.err
+
+
+def test_exec_user_script_json_error_on_missing_run(
+    tmp_path: Path, stub_bridge: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """缺 run() → ``-1003`` (CLIENT_CODE_USAGE) envelope。"""
+    import json as _json
+
+    from godot_cli_control.cli import _exec_user_script
+
+    script = tmp_path / "user_script.py"
+    _write(script, "x = 1\n")
+
+    rc = _exec_user_script(script, port=9999, output_format="json")
+    out = capsys.readouterr().out.strip()
+    assert rc == 1
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "run(bridge)" in payload["error"]["message"]
+
+
+def test_exec_user_script_json_error_on_connection_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon 没起 → ``-1001`` (CLIENT_CODE_CONNECTION) envelope。"""
+    import json as _json
+
+    def _raise_conn(*_: Any, **__: Any) -> None:
+        raise ConnectionError("Failed to connect after 1 attempts")
+
+    import godot_cli_control.bridge as bridge_mod
+
+    monkeypatch.setattr(bridge_mod, "GameBridge", _raise_conn)
+
+    script = tmp_path / "user_script.py"
+    _write(script, "def run(bridge):\n    pass\n")
+
+    from godot_cli_control.cli import _exec_user_script
+
+    rc = _exec_user_script(script, port=9999, output_format="json")
+    captured = capsys.readouterr()
+    out = captured.out.strip()
+    assert rc == 1
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1001
+    assert "9999" in payload["error"]["message"]
+    # 友好提示仍留在 stderr
+    assert "daemon start" in captured.err
+
+
+def test_cmd_run_emits_envelope_when_script_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``godot-cli-control run nonexistent.py --json`` → 单行 error envelope。"""
+    import argparse
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_run
+
+    ns = argparse.Namespace(
+        script=str(tmp_path / "does-not-exist.py"),
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    out = capsys.readouterr().out.strip()
+    assert rc == 1
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "does-not-exist.py" in payload["error"]["message"]
+
+
+def test_cmd_run_emits_envelope_on_idle_timeout_parse_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--idle-timeout xyz`` 解析失败 → envelope (code -1003) + exit 64。"""
+    import argparse
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, cmd_run
+
+    script = tmp_path / "s.py"
+    script.write_text("def run(bridge): pass\n", encoding="utf-8")
+    ns = argparse.Namespace(
+        script=str(script),
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="totally-not-a-duration",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    out = capsys.readouterr().out.strip()
+    assert rc == EXIT_USAGE
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
 def test_screenshot_now_requires_path() -> None:
     """0.2.0 BREAKING：screenshot 不再支持省略 output_path（旧版本会喷 base64 到
     stdout，把 LLM 上下文撑爆）。argparse 必须直接拒绝。"""
