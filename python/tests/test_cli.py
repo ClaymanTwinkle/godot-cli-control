@@ -1733,6 +1733,191 @@ class TestDaemonHeadlessAutodetect:
         with pytest.raises(SystemExit):
             parser.parse_args(["daemon", "start", "--headless", "--gui"])
 
+    def test_force_gui_hint_flips_pipe_to_gui(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """脚本含 screenshot 时 cmd_run 传 force_gui_hint=True，
+        非 TTY 默认从 headless 翻成 GUI（issue #65）。"""
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        ns = type("NS", (), {"headless": False, "gui": False})()
+        assert _resolve_headless(ns, force_gui_hint=True) is False
+
+    def test_explicit_headless_still_wins_over_force_gui_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """用户显式 --headless 永远赢 —— 即使脚本含 screenshot，
+        用户也可能就是想跑 headless（CI 不需要截图的子集等）。"""
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        ns = type("NS", (), {"headless": True, "gui": False})()
+        assert _resolve_headless(ns, force_gui_hint=True) is True
+
+
+class TestScriptLikelyUsesScreenshot:
+    def test_detects_method_call(self, tmp_path: Path) -> None:
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        script = tmp_path / "s.py"
+        script.write_text(
+            "def run(bridge):\n    bridge.screenshot('/tmp/x.png')\n",
+            encoding="utf-8",
+        )
+        assert _script_likely_uses_screenshot(script) is True
+
+    def test_no_match_when_script_clean(self, tmp_path: Path) -> None:
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        script = tmp_path / "s.py"
+        script.write_text("def run(bridge):\n    bridge.click('/root/A')\n", "utf-8")
+        assert _script_likely_uses_screenshot(script) is False
+
+    def test_missing_file_returns_false_not_raises(self, tmp_path: Path) -> None:
+        """读不到不抛 —— 让 cmd_run 走原 isatty 默认，"脚本不存在"
+        由后续 script_path.exists() 检查统一报错。"""
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        assert _script_likely_uses_screenshot(tmp_path / "missing.py") is False
+
+
+class TestCmdRunGuiAutoDetect:
+    """issue #65：cli run 静态检测脚本含 screenshot 时，非 TTY 也强制开窗。"""
+
+    @staticmethod
+    def _mock_run_pipeline(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> dict[str, Any]:
+        """拦截 daemon.start / is_running / current_port / stop +
+        _exec_user_script，让 cmd_run 跑完整路径但不真起进程。
+        返回 dict 记录 daemon.start kwargs，测试断言用。"""
+        import godot_cli_control.cli as cli_mod
+        import godot_cli_control.daemon as daemon_mod
+
+        captured: dict[str, Any] = {}
+
+        def _is_running(self: Any) -> bool:
+            return False
+
+        def _start(self: Any, **kw: Any) -> None:
+            captured["start_kwargs"] = kw
+
+        def _current_port(self: Any) -> int:
+            return 12345
+
+        def _stop(self: Any) -> int:
+            return 0
+
+        monkeypatch.setattr(daemon_mod.Daemon, "is_running", _is_running)
+        monkeypatch.setattr(daemon_mod.Daemon, "start", _start)
+        monkeypatch.setattr(daemon_mod.Daemon, "current_port", _current_port)
+        monkeypatch.setattr(daemon_mod.Daemon, "stop", _stop)
+        monkeypatch.setattr(
+            cli_mod,
+            "_exec_user_script",
+            lambda *a, **kw: 0,
+        )
+        # 非 TTY ── 模拟 subagent / pipe / CI
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        return captured
+
+    def test_script_with_screenshot_forces_gui_under_pipe(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import argparse
+
+        from godot_cli_control.cli import OUTPUT_JSON, cmd_run
+
+        captured = self._mock_run_pipeline(monkeypatch)
+        script = tmp_path / "s.py"
+        script.write_text(
+            "def run(bridge):\n    bridge.screenshot('/tmp/x.png')\n",
+            encoding="utf-8",
+        )
+        ns = argparse.Namespace(
+            script=str(script),
+            record=False,
+            movie_path=None,
+            headless=False,
+            gui=False,
+            no_gui_auto=False,
+            fps=30,
+            port=0,
+            idle_timeout="0",
+            output_format=OUTPUT_JSON,
+        )
+        rc = cmd_run(ns)
+        assert rc == 0
+        # 非 TTY 默认 headless=True，但脚本含 screenshot → 翻转到 False
+        assert captured["start_kwargs"]["headless"] is False
+
+    def test_no_gui_auto_disables_detection(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import argparse
+
+        from godot_cli_control.cli import OUTPUT_JSON, cmd_run
+
+        captured = self._mock_run_pipeline(monkeypatch)
+        script = tmp_path / "s.py"
+        script.write_text(
+            "def run(bridge):\n    bridge.screenshot('/tmp/x.png')\n",
+            encoding="utf-8",
+        )
+        ns = argparse.Namespace(
+            script=str(script),
+            record=False,
+            movie_path=None,
+            headless=False,
+            gui=False,
+            no_gui_auto=True,  # ← opt-out
+            fps=30,
+            port=0,
+            idle_timeout="0",
+            output_format=OUTPUT_JSON,
+        )
+        rc = cmd_run(ns)
+        assert rc == 0
+        # opt-out → 回到 isatty 默认（非 TTY = headless）
+        assert captured["start_kwargs"]["headless"] is True
+
+    def test_script_without_screenshot_keeps_headless_default(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import argparse
+
+        from godot_cli_control.cli import OUTPUT_JSON, cmd_run
+
+        captured = self._mock_run_pipeline(monkeypatch)
+        script = tmp_path / "s.py"
+        script.write_text(
+            "def run(bridge):\n    bridge.click('/root/A')\n",
+            encoding="utf-8",
+        )
+        ns = argparse.Namespace(
+            script=str(script),
+            record=False,
+            movie_path=None,
+            headless=False,
+            gui=False,
+            no_gui_auto=False,
+            fps=30,
+            port=0,
+            idle_timeout="0",
+            output_format=OUTPUT_JSON,
+        )
+        rc = cmd_run(ns)
+        assert rc == 0
+        # 脚本无 screenshot → 不触发翻转，按 isatty=False 走 headless
+        assert captured["start_kwargs"]["headless"] is True
+
 
 def test_run_rpc_tree_truncated_envelope(
     capsys: pytest.CaptureFixture[str],
