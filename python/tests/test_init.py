@@ -387,18 +387,22 @@ def test_run_init_json_mode_suppresses_human_prints_and_collects_result(
 def test_run_init_json_mode_records_error_message_on_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """json 模式 + 非 Godot 目录：rc=1，``result['_error_message']`` 必须有值，
-    且不许往 stderr 喷（envelope 是唯一通道）。"""
-    from godot_cli_control.init_cmd import run_init
+    """json 模式 + 非 Godot 目录：rc=1，``result[INIT_RESULT_ERROR_KEY]`` 必须有值，
+    且不许往 stderr 喷"错误：..."字符串（envelope 是唯一通道）。"""
+    from godot_cli_control.init_cmd import INIT_RESULT_ERROR_KEY, run_init
 
     result: dict[str, object] = {}
     rc = run_init(tmp_path, output_format="json", result=result)
     captured = capsys.readouterr()
 
     assert rc == 1
+    # stdout 必须完全干净——envelope 由 cli 侧封；
+    # stderr 不能含项目自定义"错误："标签或 Python traceback
+    # （第三方 import warning 之类无害噪声仍允许，避免断言过紧）。
     assert captured.out == ""
-    assert captured.err == ""
-    assert "project.godot" in result["_error_message"]
+    assert "错误：" not in captured.err
+    assert "Traceback" not in captured.err
+    assert "project.godot" in result[INIT_RESULT_ERROR_KEY]
 
 
 def test_cmd_init_emits_success_envelope_in_json_mode(
