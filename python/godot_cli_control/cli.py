@@ -905,79 +905,153 @@ def cmd_run(ns: argparse.Namespace) -> int:
     json 模式下：成功 ``{"ok": true, "result": {"exit_code": 0, "script": "..."}}``；
     各类失败（脚本不存在、daemon 起不来、用户脚本 raise）封 ``{"ok": false, "error": ...}``。
     text 模式行为不变。
+
+    退出码：
+      0  脚本成功（且 daemon stop 成功）
+      1  脚本运行失败（RPC 错语义；envelope `ok=false` 时也走这里）
+      2  基础设施 / 用法错（脚本路径不存在、daemon 起不来、idle_timeout 之外的解析）
+      64 argparse 用法错（idle_timeout 解析失败等"明显参数写错"）
     """
     from .daemon import Daemon, DaemonError
     from ._duration import parse_duration
 
     fmt = _output_format(ns)
-    script_path = Path(ns.script)
-    if not script_path.exists():
-        msg = f"找不到脚本: {script_path}"
-        if fmt == OUTPUT_JSON:
-            _emit_error_payload(CLIENT_CODE_USAGE, msg)
-        else:
-            print(f"错误：{msg}", file=sys.stderr)
-        return EXIT_RPC_ERROR
 
+    # 顶层 try 兜底：cmd_run 内部任何未捕获异常（daemon.is_running 抛 OSError、
+    # _exec_user_script importlib 边界 raise 等）都要落 envelope。和 _run_rpc 的
+    # 兜底语义对齐，保 CLAUDE.md 契约 1（任何异常都必须落进信封）。
     try:
-        idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
-    except ValueError as e:
-        if fmt == OUTPUT_JSON:
-            _emit_error_payload(CLIENT_CODE_USAGE, str(e))
-        else:
-            print(f"错误：{e}", file=sys.stderr)
-        return EXIT_USAGE
+        script_path = Path(ns.script)
+        if not script_path.exists():
+            # 用户传错路径属于"用法错" → EXIT_INFRA_ERROR(2)，
+            # 与 CLAUDE.md 契约 3 对齐，亦与 cmd_daemon_start 错误码一致。
+            msg = f"找不到脚本: {script_path}"
+            if fmt == OUTPUT_JSON:
+                _emit_error_payload(CLIENT_CODE_USAGE, msg)
+            else:
+                print(f"错误：{msg}", file=sys.stderr)
+            return EXIT_INFRA_ERROR
 
-    daemon = Daemon(Path.cwd())
-    auto_started = False
-    if not daemon.is_running():
         try:
-            daemon.start(
-                record=ns.record,
-                movie_path=ns.movie_path,
-                headless=_resolve_headless(ns),
-                fps=ns.fps,
-                port=ns.port,
-                idle_timeout=idle_seconds,
-            )
-        except DaemonError as e:
+            idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
+        except ValueError as e:
             if fmt == OUTPUT_JSON:
                 _emit_error_payload(CLIENT_CODE_USAGE, str(e))
             else:
                 print(f"错误：{e}", file=sys.stderr)
-            return EXIT_RPC_ERROR
-        auto_started = True
+            return EXIT_USAGE
 
-    port = daemon.current_port() or ns.port
-    # try/finally 保护：_exec_user_script 内部抛非 catch 异常（GameBridge
-    # 连接失败、importlib 边界错误等）时仍要停 daemon，避免 Godot 进程泄漏
-    # 让下次 daemon start 报「already running」。
-    exit_code = 1
-    try:
-        exit_code = _exec_user_script(script_path, port, output_format=fmt)
-    finally:
-        if auto_started:
+        daemon = Daemon(Path.cwd())
+        auto_started = False
+        if not daemon.is_running():
             try:
-                stop_rc = daemon.stop()
+                daemon.start(
+                    record=ns.record,
+                    movie_path=ns.movie_path,
+                    headless=_resolve_headless(ns),
+                    fps=ns.fps,
+                    port=ns.port,
+                    idle_timeout=idle_seconds,
+                )
             except DaemonError as e:
-                # 停 daemon 出错走人类可读 stderr —— envelope 仍由脚本结果主导。
-                # 这一行在 json 模式下也保留 stderr 提示，避免 silent leak。
-                print(f"警告：停止 daemon 失败：{e}", file=sys.stderr)
-                stop_rc = 1
-            if exit_code == 0 and stop_rc != 0:
-                exit_code = stop_rc
-    return exit_code
+                # daemon 起不来是基础设施错（端口冲突、godot bin 不可执行等），
+                # 走 EXIT_INFRA_ERROR(2) 与 cmd_daemon_start(line 734) 一致。
+                if fmt == OUTPUT_JSON:
+                    _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+                else:
+                    print(f"错误：{e}", file=sys.stderr)
+                return EXIT_INFRA_ERROR
+            auto_started = True
+
+        port = daemon.current_port() or ns.port
+        # try/finally 保护：_exec_user_script 内部抛非 catch 异常（GameBridge
+        # 连接失败、importlib 边界错误等）时仍要停 daemon，避免 Godot 进程泄漏
+        # 让下次 daemon start 报「already running」。
+        exit_code = 1
+        # json + 脚本成功时由本函数 emit envelope（这样可以塞
+        # daemon_stop_warning，让 envelope 与 exit code 在「脚本 OK + daemon
+        # stop 失败」组合下一致）。脚本失败时仍由 _exec_user_script 直接 emit
+        # error envelope（脚本错是主因，daemon stop 的次要状态不应覆盖它）。
+        success_payload: dict[str, Any] | None = (
+            {} if fmt == OUTPUT_JSON else None
+        )
+        try:
+            exit_code = _exec_user_script(
+                script_path,
+                port,
+                output_format=fmt,
+                success_payload_out=success_payload,
+            )
+        finally:
+            stop_warning: str | None = None
+            if auto_started:
+                try:
+                    stop_rc = daemon.stop()
+                except DaemonError as e:
+                    # 停 daemon 出错走人类可读 stderr —— envelope 仍由脚本结果主导。
+                    # 这一行在 json 模式下也保留 stderr 提示，避免 silent leak。
+                    print(f"警告：停止 daemon 失败：{e}", file=sys.stderr)
+                    stop_rc = 1
+                    stop_warning = f"daemon stop raised: {e}"
+                else:
+                    if stop_rc != 0:
+                        # rc 0 / 2 由 Daemon.stop 定义：2 = ffmpeg transcode 失败
+                        # 但进程已停。让 envelope 携带这一信号，给 agent retry 提示。
+                        stop_warning = f"daemon stop rc={stop_rc}"
+                if exit_code == 0 and stop_rc != 0:
+                    exit_code = stop_rc
+            if (
+                fmt == OUTPUT_JSON
+                and success_payload is not None
+                and success_payload  # 仅在 _exec_user_script 已成功回填字段时 emit
+            ):
+                if stop_warning is not None:
+                    success_payload["daemon_stop_warning"] = stop_warning
+                _emit_success_payload(success_payload)
+        return exit_code
+    except Exception as e:  # noqa: BLE001
+        # 与 _run_rpc 的 except Exception 兜底对齐：traceback 走 stderr 帮人
+        # debug，envelope 给 agent 一个 CLIENT_CODE_INTERNAL 解释失败原因。
+        traceback.print_exc(file=sys.stderr)
+        if fmt == OUTPUT_JSON:
+            _emit_error_payload(
+                CLIENT_CODE_INTERNAL, f"{type(e).__name__}: {e}"
+            )
+        else:
+            print(f"错误：内部异常 {type(e).__name__}: {e}", file=sys.stderr)
+        return EXIT_INFRA_ERROR
 
 
 def _exec_user_script(
-    script_path: Path, port: int, *, output_format: str = "text"
+    script_path: Path,
+    port: int,
+    *,
+    output_format: str = "text",
+    success_payload_out: dict[str, Any] | None = None,
 ) -> int:
     """加载脚本模块、调用 ``run(bridge)``，捕获错误返回 exit code。
 
-    json 模式：每个分支负责输出 envelope（成功 ``{exit_code:0, script:...}``、
-    脚本异常 → ``CLIENT_CODE_SCRIPT_ERROR``、连接失败 → ``CLIENT_CODE_CONNECTION``、
-    结构性错误 → ``CLIENT_CODE_USAGE``）。stderr 仍写完整 traceback / 友好提示，
-    保留 human debug 信息。
+    json 模式：每个分支负责输出 envelope。
+      - 成功 → ``{exit_code:0, script:...}``
+      - ``spec_from_file_location`` 返回 None / 缺 ``run(bridge)`` → ``CLIENT_CODE_USAGE``
+      - 用户脚本"加载阶段"（``exec_module`` 时顶层 raise，含 ImportError /
+        SyntaxError / 顶层赋值出错）→ ``CLIENT_CODE_SCRIPT_ERROR``
+      - 用户脚本"运行阶段"（``run(bridge)`` 内 raise）→ ``CLIENT_CODE_SCRIPT_ERROR``
+      - GameBridge 连接失败 → ``CLIENT_CODE_CONNECTION``
+
+    stderr 仍写完整 traceback / 友好提示，保留 human debug 信息。json 模式
+    下用户脚本期间的 stdout（含 ``exec_module`` 跑顶层语句、``run(bridge)``
+    内部）被整体 redirect 到 stderr，envelope 永远是单行 stdout——单纯包
+    ``module.run`` 不够，因为顶层 ``print()`` 在 import 时就会输出，于是
+    覆盖范围拉到 ``exec_module`` 起。
+
+    ``success_payload_out``：调用方（cmd_run）若需要在 success envelope 里
+    附加 daemon stop 警告等额外字段、由调用方自己 emit，可传入一个空 dict；
+    本函数仅回填 ``exit_code`` / ``script`` 不 emit success envelope。
+    传 None（默认）保留旧行为：success 时 _exec_user_script 直接 emit
+    envelope（error envelope 永远由本函数 emit，外层不接管，避免脚本失败
+    走顶层兜底误判为框架内部 bug）。
+
     text 模式行为完全不变。
     """
     import importlib.util
@@ -995,14 +1069,20 @@ def _exec_user_script(
     def _emit_script_failure(stage: str, exc: BaseException) -> None:
         # stderr 永远拿到完整 traceback —— human 调试需要堆栈；json envelope
         # 只放 exception type + last line，避免一行单 message 太长。
-        # 用 print_exception(exc) 而非 print_exc()：本函数可能在 except 块
-        # 之外被调（脚本运行错误为了把 envelope 输出在 redirect_stdout 外
-        # 我们先存 exc 再处理），active exc_info 此时已被清空。
+        # 用 print_exception(exc) 而非 print_exc()：本函数总是在 except 块
+        # 外被调（exception 先存进本地变量、退出 redirect 上下文后才处理），
+        # active exc_info 此时已被清空。
         print(f"错误：脚本 {script_path} {stage}失败：", file=sys.stderr)
         traceback.print_exception(exc)
         if is_json:
-            msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-            _emit_error_payload(CLIENT_CODE_SCRIPT_ERROR, f"{stage}失败：{msg}")
+            msg = (
+                f"{type(exc).__name__}: {exc}"
+                if str(exc)
+                else type(exc).__name__
+            )
+            _emit_error_payload(
+                CLIENT_CODE_SCRIPT_ERROR, f"脚本 {stage}失败：{msg}"
+            )
 
     spec = importlib.util.spec_from_file_location("user_script", script_path)
     if spec is None or spec.loader is None:
@@ -1018,58 +1098,83 @@ def _exec_user_script(
     sys.path.insert(0, inserted_path)
     sys.modules["user_script"] = module
     bridge: GameBridge | None = None
+    # json 模式下整段"用户代码执行"包在 redirect_stdout 内：从 exec_module
+    # 跑脚本顶层（用户可能 ``print("Loading…")``）到 ``module.run(bridge)``
+    # 内部 print 一律走 stderr，envelope 唯一占用 stdout 单行。异常先存进
+    # 本地变量、出 redirect 上下文后再 emit envelope —— 在 redirect 内 emit
+    # 会把 envelope 也写到 stderr。
+    # text 模式用 nullcontext 不绕路、零开销。
+    stdout_redirect: contextlib.AbstractContextManager[Any] = (
+        contextlib.redirect_stdout(sys.stderr)
+        if is_json
+        else contextlib.nullcontext()
+    )
     try:
-        # 保留完整 traceback —— 用户脚本出错时调试信息比「错误：xxx」一行有用得多。
-        try:
-            spec.loader.exec_module(module)
-        except Exception as e:  # noqa: BLE001 - 用户脚本任何异常都要抓
-            _emit_script_failure("加载", e)
+        load_error: BaseException | None = None
+        run_error: BaseException | None = None
+        missing_run = False
+        connection_error: ConnectionError | None = None
+        ran = False
+
+        with stdout_redirect:
+            try:
+                spec.loader.exec_module(module)
+            except Exception as e:  # noqa: BLE001 - 用户脚本任何异常都要抓
+                load_error = e
+            else:
+                if not hasattr(module, "run"):
+                    missing_run = True
+                else:
+                    # GameBridge.__init__ 在连接 daemon 失败时抛 ConnectionError；
+                    # 不友好地走默认 traceback 路径会让用户以为是脚本出错。
+                    # 单独捕获给一行可读信息（daemon 没起、端口写错、防火墙
+                    # 拦截 等）。"运行 ..." 这条状态行写 stderr，redirect 影响
+                    # 不到（contextlib.redirect_stdout 只覆盖 sys.stdout）。
+                    print(f"运行 {script_path}...", file=sys.stderr)
+                    try:
+                        bridge = GameBridge(port=port)
+                    except ConnectionError as e:
+                        connection_error = e
+                    else:
+                        try:
+                            module.run(bridge)
+                            ran = True
+                        except Exception as e:  # noqa: BLE001
+                            run_error = e
+
+        if load_error is not None:
+            _emit_script_failure("加载", load_error)
             return 1
-        if not hasattr(module, "run"):
+        if missing_run:
             _emit_usage(f"脚本 {script_path} 中缺少 run(bridge) 函数")
             return 1
-
-        print(f"运行 {script_path}...", file=sys.stderr)
-        # GameBridge.__init__ 在连接 daemon 失败时抛 ConnectionError；不友好地
-        # 走 cmd_run 默认 traceback 路径会让用户以为是脚本出错。单独捕获给
-        # 一行可读信息（daemon 没起、端口写错、防火墙拦截 等）。
-        try:
-            bridge = GameBridge(port=port)
-        except ConnectionError as e:
+        if connection_error is not None:
             if is_json:
                 _emit_error_payload(
                     CLIENT_CODE_CONNECTION,
-                    f"连接 daemon 失败 (port={port}): {e}",
+                    f"连接 daemon 失败 (port={port}): {connection_error}",
                 )
             print(
-                f"错误：连接 daemon 失败 (port={port}): {e}\n"
+                f"错误：连接 daemon 失败 (port={port}): {connection_error}\n"
                 "提示：先运行 `godot-cli-control daemon start` 或检查端口是否被占用。",
                 file=sys.stderr,
             )
             return 1
-        # 用户脚本里如果 print()，在 json 模式下会污染 envelope 唯一一行 stdout。
-        # 把脚本期间的 stdout 重定向到 stderr：脚本可读输出仍可见，envelope 不破。
-        # 注意：异常处理 / envelope 发布必须在 redirect 上下文 **外** 完成，
-        # 否则 envelope 也会被一起重定向到 stderr —— 之前 first cut 就栽在这里。
-        script_error: BaseException | None = None
-        if is_json:
-            with contextlib.redirect_stdout(sys.stderr):
-                try:
-                    module.run(bridge)
-                except Exception as e:  # noqa: BLE001
-                    script_error = e
-        else:
-            try:
-                module.run(bridge)
-            except Exception as e:  # noqa: BLE001
-                script_error = e
-        if script_error is not None:
-            _emit_script_failure("运行", script_error)
+        if run_error is not None:
+            _emit_script_failure("运行", run_error)
+            return 1
+        if not ran:
+            # 理论上不可达：上面四种 error 状态都已 return。兜底 envelope 保契约。
+            _emit_usage("脚本未执行（内部状态异常）")
             return 1
         if is_json:
-            _emit_success_payload(
-                {"exit_code": 0, "script": str(script_path)}
-            )
+            success_payload = {"exit_code": 0, "script": str(script_path)}
+            if success_payload_out is not None:
+                # 让 cmd_run 在 finally 拿到 daemon stop 结果后统一 emit，
+                # 这样 envelope 才能携带 daemon_stop_warning，与 exit code 对齐。
+                success_payload_out.update(success_payload)
+            else:
+                _emit_success_payload(success_payload)
         return 0
     finally:
         if bridge is not None:
@@ -1082,28 +1187,43 @@ def _exec_user_script(
 
 
 def cmd_init(ns: argparse.Namespace) -> int:
-    from .init_cmd import run_init
+    from .init_cmd import INIT_RESULT_ERROR_KEY, run_init
 
     fmt = _output_format(ns)
     # json 模式下让 run_init 抑制人类可读 print，把结构化字段回填到本地 dict。
     # text 模式仍走原路径（result=None 等价于不收集）。
     result: dict[str, Any] | None = {} if fmt == OUTPUT_JSON else None
-    rc = run_init(
-        # 保留 .resolve()：run_init 内部用 relative_to(project_root) 打印 skill
-        # 路径，相对路径会让 relative_to 在 cwd 不寻常时抛 ValueError。
-        project_root=(Path(ns.path).resolve() if ns.path else Path.cwd()),
-        force=ns.force,
-        write_skills=not ns.no_skills,
-        skills_only=ns.skills_only,
-        clobber_skills=not ns.skills_no_clobber,
-        output_format=fmt,
-        result=result,
-    )
+
+    # 顶层 try 兜底：run_init 内部任何未捕获异常（shutil.copytree、
+    # reimport_project 抛 OSError / subprocess 边界异常等）都要落 envelope。
+    # 和 _run_rpc 的兜底语义对齐，保 CLAUDE.md 契约 1。
+    try:
+        rc = run_init(
+            # 保留 .resolve()：run_init 内部用 relative_to(project_root) 打印
+            # skill 路径，相对路径会让 relative_to 在 cwd 不寻常时抛 ValueError。
+            project_root=(Path(ns.path).resolve() if ns.path else Path.cwd()),
+            force=ns.force,
+            write_skills=not ns.no_skills,
+            skills_only=ns.skills_only,
+            clobber_skills=not ns.skills_no_clobber,
+            output_format=fmt,
+            result=result,
+        )
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc(file=sys.stderr)
+        if fmt == OUTPUT_JSON:
+            _emit_error_payload(
+                CLIENT_CODE_INTERNAL, f"{type(e).__name__}: {e}"
+            )
+        else:
+            print(f"错误：内部异常 {type(e).__name__}: {e}", file=sys.stderr)
+        return EXIT_INFRA_ERROR
+
     if fmt == OUTPUT_JSON and result is not None:
         if rc == 0:
             _emit_success_payload(result)
         else:
-            message = result.pop("_error_message", None) or "init failed"
+            message = result.pop(INIT_RESULT_ERROR_KEY, None) or "init failed"
             _emit_error_payload(CLIENT_CODE_USAGE, message)
     return rc
 

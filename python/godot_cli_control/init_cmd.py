@@ -30,6 +30,12 @@ AUTOLOAD_KEY = "GameBridgeNode"
 AUTOLOAD_VALUE = '"*res://addons/godot_cli_control/bridge/game_bridge.gd"'
 PLUGIN_CFG_PATH = "res://addons/godot_cli_control/plugin.cfg"
 
+# `run_init` 在 ``output_format='json'`` 模式下用此 key 把"预期错误"
+# 的可读 message 回填到调用方传入的 ``result`` dict，由 ``cli.cmd_init``
+# 取出来塞 JSON envelope。dunder 前缀显式声明"带外通道、非业务字段"，
+# 避免与未来真实业务字段（如 `__init__` 之类）冲突。
+INIT_RESULT_ERROR_KEY = "__init_error_message__"
+
 
 def run_init(
     project_root: Path,
@@ -55,7 +61,7 @@ def run_init(
     传入 ``result`` 字典，本函数会回填结构化字段，由 cli 侧封 JSON envelope。
     ``output_format='text'``（默认）保持旧行为，``result`` 可省略 / 也可传入
     并被回填，互不冲突。错误路径在 text 模式下打印到 stderr，json 模式下
-    把 message 塞进 ``result['_error_message']`` 供 envelope 取用。
+    把 message 塞进 ``result[INIT_RESULT_ERROR_KEY]`` 供 envelope 取用。
     """
     quiet = output_format == "json"
 
@@ -75,7 +81,7 @@ def run_init(
     def _fail(message: str) -> int:
         _warn(f"错误：{message}")
         if result is not None:
-            result["_error_message"] = message
+            result[INIT_RESULT_ERROR_KEY] = message
         return 1
 
     _record(

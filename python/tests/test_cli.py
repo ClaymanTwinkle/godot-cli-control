@@ -492,11 +492,12 @@ def test_exec_user_script_json_error_on_connection_failure(
 def test_cmd_run_emits_envelope_when_script_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``godot-cli-control run nonexistent.py --json`` → 单行 error envelope。"""
+    """``godot-cli-control run nonexistent.py --json`` → 单行 error envelope +
+    EXIT_INFRA_ERROR(2)。用户传错路径按 CLAUDE.md 契约 3 归入"用法错=2"。"""
     import argparse
     import json as _json
 
-    from godot_cli_control.cli import OUTPUT_JSON, cmd_run
+    from godot_cli_control.cli import EXIT_INFRA_ERROR, OUTPUT_JSON, cmd_run
 
     ns = argparse.Namespace(
         script=str(tmp_path / "does-not-exist.py"),
@@ -511,7 +512,7 @@ def test_cmd_run_emits_envelope_when_script_missing(
     )
     rc = cmd_run(ns)
     out = capsys.readouterr().out.strip()
-    assert rc == 1
+    assert rc == EXIT_INFRA_ERROR
     payload = _json.loads(out)
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003
@@ -546,6 +547,193 @@ def test_cmd_run_emits_envelope_on_idle_timeout_parse_error(
     payload = _json.loads(out)
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003
+
+
+def test_exec_user_script_json_top_level_print_does_not_leak(
+    tmp_path: Path, stub_bridge: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """用户脚本"顶层"（exec_module 阶段）print() 在 json 模式也必须走 stderr。
+    redirect_stdout 范围若只包 module.run、不包 exec_module，顶层 print 会
+    污染 envelope 单行契约——review P1 焦点。"""
+    import json as _json
+
+    from godot_cli_control.cli import _exec_user_script
+
+    script = tmp_path / "user_script.py"
+    _write(
+        script,
+        # 顶层 + run 都打——任一漏出 stdout 都会让 JSON 解析崩
+        "print('TOP_LEVEL_LEAK')\n"
+        "def run(bridge):\n"
+        "    print('RUN_LEAK')\n",
+    )
+
+    rc = _exec_user_script(script, port=9999, output_format="json")
+    captured = capsys.readouterr()
+    assert rc == 0
+    out_lines = [l for l in captured.out.splitlines() if l.strip()]
+    assert len(out_lines) == 1, (
+        f"stdout 不是单行 envelope（顶层 print 漏了？）：{captured.out!r}"
+    )
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is True
+    assert payload["result"]["exit_code"] == 0
+    # 两条 print 都应该在 stderr 仍能看到，便于 human debug
+    assert "TOP_LEVEL_LEAK" in captured.err
+    assert "RUN_LEAK" in captured.err
+
+
+def test_exec_user_script_json_error_on_top_level_exception(
+    tmp_path: Path, stub_bridge: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """脚本顶层 raise（exec_module 阶段）也走 CLIENT_CODE_SCRIPT_ERROR；
+    完整 traceback 仍在 stderr。"""
+    import json as _json
+
+    from godot_cli_control.cli import _exec_user_script
+
+    script = tmp_path / "user_script.py"
+    _write(
+        script,
+        "raise ImportError('cannot find frobnicator')\n"
+        "def run(bridge): pass\n",
+    )
+
+    rc = _exec_user_script(script, port=9999, output_format="json")
+    captured = capsys.readouterr()
+    out = captured.out.strip()
+    assert rc == 1
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1005
+    assert "加载" in payload["error"]["message"]
+    assert "ImportError" in payload["error"]["message"]
+    assert "Traceback" in captured.err
+
+
+def test_cmd_run_emits_envelope_on_daemon_start_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon.start raise DaemonError → envelope + EXIT_INFRA_ERROR(2)。
+    遗漏过的 review P2 #4 case：单测之前只覆盖了"脚本不存在""idle 解析失败"。"""
+    import argparse
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_INFRA_ERROR, OUTPUT_JSON, cmd_run
+
+    def _fake_is_running(self: Any) -> bool:
+        return False
+
+    def _fake_start(self: Any, **__: Any) -> None:
+        raise daemon_mod.DaemonError("port already bound")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", _fake_is_running)
+    monkeypatch.setattr(daemon_mod.Daemon, "start", _fake_start)
+
+    script = tmp_path / "s.py"
+    _write(script, "def run(bridge): pass\n")
+    ns = argparse.Namespace(
+        script=str(script),
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    out = capsys.readouterr().out.strip()
+    assert rc == EXIT_INFRA_ERROR
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "port already bound" in payload["error"]["message"]
+
+
+def test_cmd_run_catches_unexpected_exception_into_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """cmd_run 顶层未捕获异常必须落 envelope（CLIENT_CODE_INTERNAL = -1099）+
+    EXIT_INFRA_ERROR(2)。CLAUDE.md 契约 1 ──"任何异常都必须落进信封"。"""
+    import argparse
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_INFRA_ERROR, OUTPUT_JSON, cmd_run
+
+    def _kaboom(self: Any) -> bool:
+        # daemon.is_running 抛了不应抛的 OSError —— 模拟 race / FS 损坏
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", _kaboom)
+
+    script = tmp_path / "s.py"
+    _write(script, "def run(bridge): pass\n")
+    ns = argparse.Namespace(
+        script=str(script),
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    captured = capsys.readouterr()
+    out = captured.out.strip()
+    assert rc == EXIT_INFRA_ERROR
+    # envelope 是唯一 stdout，traceback 走 stderr
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1099
+    assert "OSError" in payload["error"]["message"]
+    assert "disk on fire" in payload["error"]["message"]
+    assert "Traceback" in captured.err
+
+
+def test_cmd_init_catches_unexpected_exception_into_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """cmd_init 顶层未捕获异常也落 envelope。模拟 run_init 内部 raise
+    非预期异常（例如 reimport_project 抛 OSError）。"""
+    import argparse
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_INFRA_ERROR, OUTPUT_JSON, cmd_init
+
+    def _boom(*_: Any, **__: Any) -> int:
+        raise OSError("permission denied on addons/")
+
+    monkeypatch.setattr("godot_cli_control.init_cmd.run_init", _boom)
+
+    ns = argparse.Namespace(
+        path=str(tmp_path),
+        force=False,
+        no_skills=False,
+        skills_only=False,
+        skills_no_clobber=False,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_init(ns)
+    captured = capsys.readouterr()
+    out = captured.out.strip()
+    assert rc == EXIT_INFRA_ERROR
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1099
+    assert "OSError" in payload["error"]["message"]
+    assert "Traceback" in captured.err
 
 
 def test_screenshot_now_requires_path() -> None:
