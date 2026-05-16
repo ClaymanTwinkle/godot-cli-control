@@ -64,7 +64,21 @@ $ godot-cli-control click /root/DoesNotExist
 
 $ godot-cli-control --text exists /root/Main
 true
+
+$ godot-cli-control init
+{"ok": true, "result": {"project_root": "/path/to/proj", "plugin_copied": true, "plugin_overwritten": false, "project_godot_changes": ["autoload/GameBridgeNode", "editor_plugins/enabled"], "godot_bin": "/usr/bin/godot", "skills_written": [".../SKILL.md", ".../SKILL.md"], "skills_only": false, "write_skills": true}}
+
+$ godot-cli-control run my_script.py
+{"ok": true, "result": {"exit_code": 0, "script": "my_script.py"}}
+
+$ godot-cli-control run broken.py
+{"ok": false, "error": {"code": -1005, "message": "运行失败：RuntimeError: assertion failed"}}
 ```
+
+Both `init` and `run` honour the same envelope. In `run --json` mode the
+user script's `print()` output is redirected to stderr so the envelope stays
+on a single stdout line — anything your script writes is still visible in
+the terminal, just not in the parseable payload.
 
 ## Error code reference
 
@@ -97,6 +111,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `-1002` | Timeout waiting for a response. Daemon may be hung mid-frame; check Godot stderr. |
 | `-1003` | Usage error (e.g. `combo` got no steps, malformed `--steps-json`, `combo -` from a TTY). Fix the invocation. |
 | `-1004` | Local file IO error (e.g. `screenshot` can't write the destination — bad path, no write permission). **Not** a daemon problem. |
+| `-1005` | `run <script>` user script raised an uncaught exception. The error message has the exception type + last-line summary; full traceback is on stderr. Fix the script, not the CLI. |
 | `-1099` | Internal client error (unforeseen exception). Bug in this CLI; please file an issue. Stderr has the full traceback. |
 
 Server vs client ranges never overlap, so a single `code` field is unambiguous.

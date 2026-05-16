@@ -348,3 +348,120 @@ def test_init_skills_no_clobber_preserves_existing(tmp_path: Path) -> None:
     assert "USER_CUSTOM_KEEP_ME" not in (
         proj / CODEX_REL
     ).read_text(encoding="utf-8")
+
+
+# ── run_init JSON 输出契约（issue #50）──
+
+
+def test_run_init_json_mode_suppresses_human_prints_and_collects_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``output_format='json'``：stdout 必须完全干净（envelope 由 cli 侧封），
+    结构化字段全部回填到 ``result`` dict。"""
+    from godot_cli_control.init_cmd import run_init
+
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    proj = _make_min_godot_project(tmp_path)
+
+    result: dict[str, object] = {}
+    rc = run_init(proj, output_format="json", result=result)
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    # json 模式下 run_init 自身不能往 stdout 写任何东西 —— cli.cmd_init 才负责输出 envelope
+    assert captured.out == ""
+    # 结构化字段 cli 侧拿来塞 envelope
+    assert result["project_root"] == str(proj)
+    assert result["plugin_copied"] is True
+    assert result["plugin_overwritten"] is False
+    assert "autoload/GameBridgeNode" in result["project_godot_changes"]
+    assert result["godot_bin"] is None
+    assert len(result["skills_written"]) == 2
+
+
+def test_run_init_json_mode_records_error_message_on_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """json 模式 + 非 Godot 目录：rc=1，``result['_error_message']`` 必须有值，
+    且不许往 stderr 喷（envelope 是唯一通道）。"""
+    from godot_cli_control.init_cmd import run_init
+
+    result: dict[str, object] = {}
+    rc = run_init(tmp_path, output_format="json", result=result)
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert captured.out == ""
+    assert captured.err == ""
+    assert "project.godot" in result["_error_message"]
+
+
+def test_cmd_init_emits_success_envelope_in_json_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """端到端：``godot-cli-control init --json`` 在快乐路径必须输出单行 envelope。"""
+    import argparse
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_init
+
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    proj = _make_min_godot_project(tmp_path)
+
+    ns = argparse.Namespace(
+        path=str(proj),
+        force=False,
+        no_skills=False,
+        skills_only=False,
+        skills_no_clobber=False,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_init(ns)
+    out = capsys.readouterr().out.strip()
+
+    assert rc == 0
+    # 单行 JSON envelope —— AI agent 的契约根基
+    assert out.count("\n") == 0
+    payload = _json.loads(out)
+    assert payload["ok"] is True
+    result = payload["result"]
+    assert result["plugin_copied"] is True
+    assert isinstance(result["project_godot_changes"], list)
+    assert result["skills_only"] is False
+
+
+def test_cmd_init_emits_error_envelope_on_non_godot_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """非 Godot 项目目录 + ``--json`` → 单行 error envelope，stdout 不含人类字串。"""
+    import argparse
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_init
+
+    ns = argparse.Namespace(
+        path=str(tmp_path),
+        force=False,
+        no_skills=False,
+        skills_only=False,
+        skills_no_clobber=False,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_init(ns)
+    out = capsys.readouterr().out.strip()
+
+    assert rc == 1
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003  # CLIENT_CODE_USAGE
+    assert "project.godot" in payload["error"]["message"]

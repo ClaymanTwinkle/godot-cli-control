@@ -118,6 +118,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `-1002` | client | Timeout waiting for response |
 | `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, …) |
 | `-1004` | client | Local file IO error (e.g. screenshot can't write the destination) |
+| `-1005` | client | `run <script>` user script raised an uncaught exception — fix the script |
 | `-1099` | client | Internal CLI bug — please file an issue |
 
 For full retry guidance see the SKILL.md shipped by `godot-cli-control init` (`.claude/skills/godot-cli-control/SKILL.md` in the target project).
