@@ -154,7 +154,7 @@ godot-cli-control set /root/Player  hp       30            # number 30
 godot-cli-control call /root/Game start_game 1 '"easy"'    # int 1, string "easy"
 ```
 
-**Array → Variant coercion (≥ 0.2.5):** the server reads the property's declared type and converts a numeric JSON array to the matching Godot variant. Supported variants and their array layouts (matching Godot's internal storage order):
+**Array → Variant coercion (≥ 0.2.5):** the server reads the property's declared type and converts a numeric JSON array to the matching Godot variant. Layout is **axis-vector order** for matrix-like types: each row in the table below is one axis (3 or 4 floats), and the array is just those axes concatenated — `v[0..N-1]` = the first axis, then the next axis, etc.
 
 | Variant | Length | Layout |
 |---|---|---|
@@ -163,15 +163,19 @@ godot-cli-control call /root/Game start_game 1 '"easy"'    # int 1, string "easy
 | `Vector4 / 4i` | 4 | `[x, y, z, w]` |
 | `Rect2 / 2i` | 4 | `[x, y, w, h]` |
 | `Color` | 3 or 4 | `[r, g, b]` (a=1) or `[r, g, b, a]` |
-| `Plane` | 4 | `[normal.x, normal.y, normal.z, d]` |
-| `Quaternion` | 4 | `[x, y, z, w]` |
+| `Plane` | 4 | `[normal.x, normal.y, normal.z, d]` ¹ |
+| `Quaternion` | 4 | `[x, y, z, w]` ¹ |
 | `AABB` | 6 | `[pos.x, pos.y, pos.z, size.x, size.y, size.z]` |
-| `Basis` | 9 | `[x_axis.xyz, y_axis.xyz, z_axis.xyz]` (column-major) |
+| `Basis` | 9 | `[x_axis.xyz, y_axis.xyz, z_axis.xyz]` |
 | `Transform2D` | 6 | `[x_axis.xy, y_axis.xy, origin.xy]` |
-| `Transform3D` | 12 | `[basis 9 column-major, origin.xyz]` |
-| `Projection` | 16 | `[x_axis.xyzw, y_axis.xyzw, z_axis.xyzw, w_axis.xyzw]` (column-major) |
+| `Transform3D` | 12 | `[basis 9 axis-vector, origin.xyz]` |
+| `Projection` | 16 | `[x_axis.xyzw, y_axis.xyzw, z_axis.xyzw, w_axis.xyzw]` |
 
-So `position '[100, 200]'` → `Vector2(100, 200)`, `transform '[1,0,0, 0,1,0, 0,0,1, 10,20,30]'` → `Transform3D(IDENTITY, (10,20,30))`. Wrong length or non-numeric elements fail loud with `-32602 "value type mismatch ..."` instead of silently setting `(0, 0)` like pre-0.2.5 versions did. Sub-path form (`transform:origin '[10, 20, 30]'`) still works for partial writes.
+¹ `Plane.normal` and `Quaternion` are **not auto-normalized** — pass unit vectors if you need correct rotation/distance semantics. (`Quaternion(0,1,0,1)` is accepted as-is but rotates wrong.)
+
+So `position '[100, 200]'` → `Vector2(100, 200)`, `transform '[1,0,0, 0,1,0, 0,0,1, 10,20,30]'` → `Transform3D(IDENTITY, (10,20,30))`. Wrong length or non-numeric elements fail loud with `-32602 "value type mismatch ..."` instead of silently setting `(0, 0)` like pre-0.2.5 versions did.
+
+**Sub-path + Array also fails loud.** `set <node> transform:origin '[10, 20, 30]'` is rejected with `-32602 "sub-path + Array is not supported"`: Godot's `Object.set("transform:origin", Array)` silently drops the Array (origin stays at `(0,0,0)`) — same footgun class as #52, so the server pre-empts it. Sub-paths are scalar-only (`set <node> position:x 1.8`); to write a whole compound Variant use the top-level Array form above.
 
 **Footgun**: bare `null` / `true` / `false` / numeric strings parse as JSON literals first, **not** as strings. If you actually mean the string `"null"`, wrap it explicitly:
 

@@ -42,6 +42,23 @@ const _PROPERTY_BLACKLIST: PackedStringArray = [
 var _property_blacklist: PackedStringArray = _PROPERTY_BLACKLIST.duplicate()
 var _method_blacklist: PackedStringArray = _METHOD_BLACKLIST.duplicate()
 
+# 防御性白名单：声明类型在这里 = Object.set(prop, Array) 不会 silent-corrupt，原 Array
+# 可以直接透传。除此之外的「未在 _coerce_array_to_declared_type 实现 coerce」的复合
+# Variant 必须 fail-loud，避免未来 Godot 新增 Variant 时重蹈 #52 silent-corruption。
+# 入选标准：
+#   - 基本类型：Object.set 会拒收 Array（写入失败而非 silent-corrupt）
+#   - 集合 / Packed* Array：本就接受 Array 输入（容器拷贝）
+# 新增条目时先验证 Object.set(prop, Array) 真的安全，再加进来。
+const _ARRAY_PASSTHROUGH_SAFE_TYPES: Array[int] = [
+	TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING,
+	TYPE_STRING_NAME, TYPE_NODE_PATH, TYPE_RID, TYPE_OBJECT, TYPE_CALLABLE, TYPE_SIGNAL,
+	TYPE_DICTIONARY, TYPE_ARRAY,
+	TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY,
+	TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_STRING_ARRAY,
+	TYPE_PACKED_VECTOR2_ARRAY, TYPE_PACKED_VECTOR3_ARRAY, TYPE_PACKED_COLOR_ARRAY,
+	TYPE_PACKED_VECTOR4_ARRAY,
+]
+
 
 func _ready() -> void:
 	_property_blacklist = _merge_extra(_property_blacklist, SETTING_PROPERTY_BLACKLIST_EXTRA)
@@ -108,41 +125,58 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	var property: String = params.get("property", "") as String
 	if property.is_empty():
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'property' parameter")
-	# Godot Object.set() 接受 NodePath 形式的子属性（如 "position:x"）。
-	# 精确字符串黑名单会漏掉 "script:source_code" / "texture:resource_path" 这类
-	# 嵌套写入向量 —— 拿 ":" 前的 top-level 名重新过一次黑名单。
-	# 同时整串也走一次（防御深度，万一未来加非冒号语法的反射子路径）。
-	var top_level: String = property.split(":", true, 1)[0]
+	# Godot Object.set() **不接受** sub-path（"position:x"），它当作字面属性名查找会失败。
+	# sub-path 必须走 Object.set_indexed(NodePath, value)。精确字符串黑名单还需要拿 ":"
+	# 前的 top-level 名重新过一次，否则 "script:source_code" / "texture:resource_path"
+	# 这类嵌套写入会绕开 blacklist；整串也走一次（防御深度，万一未来加非冒号反射子路径）。
+	var is_sub_path: bool = ":" in property
+	var top_level: String = property.split(":", true, 1)[0] if is_sub_path else property
 	if property in _property_blacklist or top_level in _property_blacklist:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Blocked property: %s" % property)
 	var value: Variant = params.get("value", null)
 	# #52：JSON 只能产 Array/Number/String/Bool/null。Godot Object.set("zoom", [1.8,1.8])
 	# 不会隐式构造 Vector2，会走 zero-init / clamp 到 0.00001 → silent corruption。
-	# 子路径（含 ":"）不查类型，让 Object.set 走 NodePath 子属性原路径（标量 OK）。
-	if value is Array and not ":" in property:
+	if value is Array:
+		if is_sub_path:
+			# set_indexed("transform:origin", Array) 同样不会把 Array 隐式构造成 Vector3
+			# 写进 leaf —— silent-corrupt。比起重蹈 #52 覆辙，主动 fail-loud：要写整个复合
+			# Variant 请用 top-level 形式（`set <node> transform '[basis 9, origin 3]'`，
+			# #54 已覆盖所有复合 Variant 的 Array 写入）。sub-path 仅适合标量赋值
+			# （`position:x 1.8`）。
+			return _err(CliControlErrorCodes.INVALID_PARAMS,
+				"value type mismatch for '%s': sub-path + Array is not supported (Godot silently drops the value). Use top-level form `set <node> %s '[...]'` instead, or write a scalar via sub-path."
+					% [property, top_level])
 		var coerced: Dictionary = _coerce_array_to_declared_type(node, top_level, value)
 		if coerced.has("error"):
 			return coerced
 		if coerced.has("value"):
 			value = coerced["value"]
-	node.set(property, value)
+	if is_sub_path:
+		# sub-path 必须用 set_indexed；node.set() 把整串当字面属性名找不到会 no-op 但返 success。
+		node.set_indexed(NodePath(property), value)
+	else:
+		node.set(property, value)
 	return {"success": true}
 
 
 ## 把 JSON Array 按声明类型转成 Variant：Vector2/2i/3/3i/4/4i / Rect2/2i /
 ## Color / Plane / Quaternion / AABB / Basis / Transform2D/3D / Projection。
-## 节点没声明该属性 / 声明类型不在支持名单：返 {} 表示"沿用原 value"。
+## 节点没声明该属性：返 {} 表示"沿用原 value"。
+## 声明类型在 match 之外且 ∉ _ARRAY_PASSTHROUGH_SAFE_TYPES：返 {"error": ...} fail-loud，
+##   防御未来 Godot 加新 compound Variant 时 silent-corrupt 回归（详见 fallback 注释）。
+## 声明类型在 _ARRAY_PASSTHROUGH_SAFE_TYPES（基本类型 / 集合 / Packed*）：返 {} 沿用原 value。
 ## 转换失败（长度不对 / 元素非数字）：返 {"error": ...} 让调用方 fail-loud。
 ## 转换成功：返 {"value": <coerced>}。
 ## *i 变体（Vector2i / Vector3i / Vector4i / Rect2i）允许 float 输入并截断到 int，
 ## 与 GDScript `Vector2i(1.7, 2.3) → (1, 2)` 构造器行为一致。
 ##
-## Array schema 约定（issue #54 Phase 2，与 Godot 内部存储顺序一致）：
+## Array schema 约定（issue #54，按 axis-vector 顺序——每 N 个元素 = 一个 Vector 轴）：
 ##   - AABB        : [pos.x, pos.y, pos.z, size.x, size.y, size.z]                      (6 floats)
-##   - Basis       : [xaxis.x..z, yaxis.x..z, zaxis.x..z]                                (9 floats, column-major)
+##   - Basis       : [xaxis.x..z, yaxis.x..z, zaxis.x..z]                                (9 floats)
 ##   - Transform2D : [xaxis.x, xaxis.y, yaxis.x, yaxis.y, origin.x, origin.y]            (6 floats)
-##   - Transform3D : [basis 9, origin 3]                                                 (12 floats)
-##   - Projection  : [xaxis.xyzw, yaxis.xyzw, zaxis.xyzw, waxis.xyzw]                    (16 floats, column-major)
+##   - Transform3D : [basis 9 axis-vector, origin.xyz]                                   (12 floats)
+##   - Projection  : [xaxis.xyzw, yaxis.xyzw, zaxis.xyzw, waxis.xyzw]                    (16 floats)
+## Quaternion / Plane 的 normal 不会自动归一化 —— 调用方传非单位向量后果自负。
 func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) -> Dictionary:
 	var declared_type: int = -1
 	for prop_info: Dictionary in node.get_property_list():
@@ -153,73 +187,68 @@ func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) ->
 		return {}  # 动态 / 未声明属性，沿用原 value
 	match declared_type:
 		TYPE_VECTOR2:
-			return _coerce_numeric_array(arr, 2, "Vector2", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [2], "Vector2", property, func(v: Array) -> Variant:
 				return Vector2(v[0], v[1]))
 		TYPE_VECTOR2I:
-			return _coerce_numeric_array(arr, 2, "Vector2i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [2], "Vector2i", property, func(v: Array) -> Variant:
 				return Vector2i(int(v[0]), int(v[1])))
 		TYPE_VECTOR3:
-			return _coerce_numeric_array(arr, 3, "Vector3", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [3], "Vector3", property, func(v: Array) -> Variant:
 				return Vector3(v[0], v[1], v[2]))
 		TYPE_VECTOR3I:
-			return _coerce_numeric_array(arr, 3, "Vector3i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [3], "Vector3i", property, func(v: Array) -> Variant:
 				return Vector3i(int(v[0]), int(v[1]), int(v[2])))
 		TYPE_VECTOR4:
-			return _coerce_numeric_array(arr, 4, "Vector4", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Vector4", property, func(v: Array) -> Variant:
 				return Vector4(v[0], v[1], v[2], v[3]))
 		TYPE_VECTOR4I:
-			return _coerce_numeric_array(arr, 4, "Vector4i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Vector4i", property, func(v: Array) -> Variant:
 				return Vector4i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
 		TYPE_RECT2:
-			return _coerce_numeric_array(arr, 4, "Rect2", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Rect2", property, func(v: Array) -> Variant:
 				return Rect2(v[0], v[1], v[2], v[3]))
 		TYPE_RECT2I:
-			return _coerce_numeric_array(arr, 4, "Rect2i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Rect2i", property, func(v: Array) -> Variant:
 				return Rect2i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
 		TYPE_COLOR:
-			# Color 接受 RGB（3）或 RGBA（4）。
-			if arr.size() == 3:
-				if not _is_all_numeric(arr):
-					return _err(CliControlErrorCodes.INVALID_PARAMS,
-						"value type mismatch for '%s': Color expects numeric array" % property)
-				return {"value": Color(arr[0], arr[1], arr[2])}
-			if arr.size() == 4:
-				if not _is_all_numeric(arr):
-					return _err(CliControlErrorCodes.INVALID_PARAMS,
-						"value type mismatch for '%s': Color expects numeric array" % property)
-				return {"value": Color(arr[0], arr[1], arr[2], arr[3])}
-			return _err(CliControlErrorCodes.INVALID_PARAMS,
-				"value type mismatch for '%s': Color expects [r,g,b] or [r,g,b,a], got length %d"
-					% [property, arr.size()])
+			# Color 接受 RGB（3）或 RGBA（4）。3-element 时 a 默认 1。
+			return _coerce_numeric_array(arr, [3, 4], "Color", property, func(v: Array) -> Variant:
+				if v.size() == 3:
+					return Color(v[0], v[1], v[2])
+				return Color(v[0], v[1], v[2], v[3]))
 		TYPE_PLANE:
 			# Plane(normal_x, normal_y, normal_z, d) —— 平面方程系数。
-			return _coerce_numeric_array(arr, 4, "Plane", property, func(v: Array) -> Variant:
+			# 注意：normal 不会自动归一化；非单位 normal 会让距离 / 投影计算失真。
+			return _coerce_numeric_array(arr, [4], "Plane", property, func(v: Array) -> Variant:
 				return Plane(v[0], v[1], v[2], v[3]))
 		TYPE_QUATERNION:
 			# Quaternion(x, y, z, w) —— 注意 w 在末位，与 Godot ctor 一致。
-			return _coerce_numeric_array(arr, 4, "Quaternion", property, func(v: Array) -> Variant:
+			# 注意：不会自动归一化；非单位四元数会让旋转 / slerp 失真。
+			return _coerce_numeric_array(arr, [4], "Quaternion", property, func(v: Array) -> Variant:
 				return Quaternion(v[0], v[1], v[2], v[3]))
 		TYPE_AABB:
 			# AABB(position, size) —— 6 floats: [pos.xyz, size.xyz]
-			return _coerce_numeric_array(arr, 6, "AABB", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [6], "AABB", property, func(v: Array) -> Variant:
 				return AABB(Vector3(v[0], v[1], v[2]), Vector3(v[3], v[4], v[5])))
 		TYPE_BASIS:
-			# Basis(x_axis, y_axis, z_axis) —— 9 floats column-major（Godot 内部存储顺序）。
-			return _coerce_numeric_array(arr, 9, "Basis", property, func(v: Array) -> Variant:
+			# Basis(x_axis, y_axis, z_axis) —— 9 floats axis-vector 顺序：
+			# v[0..2]=x_axis、v[3..5]=y_axis、v[6..8]=z_axis（每 3 个 = 一个 Basis 轴）。
+			return _coerce_numeric_array(arr, [9], "Basis", property, func(v: Array) -> Variant:
 				return Basis(
 					Vector3(v[0], v[1], v[2]),
 					Vector3(v[3], v[4], v[5]),
 					Vector3(v[6], v[7], v[8])))
 		TYPE_TRANSFORM2D:
-			# Transform2D(x_axis, y_axis, origin) —— 6 floats: [xaxis 2, yaxis 2, origin 2]
-			return _coerce_numeric_array(arr, 6, "Transform2D", property, func(v: Array) -> Variant:
+			# Transform2D(x_axis, y_axis, origin) —— 6 floats axis-vector 顺序：
+			# v[0..1]=x_axis、v[2..3]=y_axis、v[4..5]=origin。
+			return _coerce_numeric_array(arr, [6], "Transform2D", property, func(v: Array) -> Variant:
 				return Transform2D(
 					Vector2(v[0], v[1]),
 					Vector2(v[2], v[3]),
 					Vector2(v[4], v[5])))
 		TYPE_TRANSFORM3D:
-			# Transform3D(basis, origin) —— 12 floats: [basis 9 column-major, origin 3]
-			return _coerce_numeric_array(arr, 12, "Transform3D", property, func(v: Array) -> Variant:
+			# Transform3D(basis, origin) —— 12 floats: [basis 9 axis-vector 顺序, origin 3]
+			return _coerce_numeric_array(arr, [12], "Transform3D", property, func(v: Array) -> Variant:
 				return Transform3D(
 					Basis(
 						Vector3(v[0], v[1], v[2]),
@@ -227,27 +256,46 @@ func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) ->
 						Vector3(v[6], v[7], v[8])),
 					Vector3(v[9], v[10], v[11])))
 		TYPE_PROJECTION:
-			# Projection(x, y, z, w) —— 16 floats column-major（4x4 矩阵按列存）。
-			return _coerce_numeric_array(arr, 16, "Projection", property, func(v: Array) -> Variant:
+			# Projection(x, y, z, w) —— 16 floats axis-vector 顺序：每 4 个 = 一个 Vector4 轴。
+			return _coerce_numeric_array(arr, [16], "Projection", property, func(v: Array) -> Variant:
 				return Projection(
 					Vector4(v[0], v[1], v[2], v[3]),
 					Vector4(v[4], v[5], v[6], v[7]),
 					Vector4(v[8], v[9], v[10], v[11]),
 					Vector4(v[12], v[13], v[14], v[15])))
-	# 其他声明类型（基本类型 / Array / Dictionary / Packed*Array 等）原样透传
-	return {}
+	# 防御性 fallback：声明类型不是上面的"复合 Variant"也不在已知 passthrough-safe
+	# 名单里时，主动 fail-loud。目的是防止未来 Godot 加新 compound Variant（且
+	# Object.set 同样 silent-corrupt-on-Array）时重蹈 #52。
+	# passthrough-safe = 基本类型 / Object / 集合 / Packed*Array —— 它们要么 Godot
+	# Object.set 自己拒收 Array（写入失败但不 silent），要么本就接受 Array 输入。
+	if declared_type in _ARRAY_PASSTHROUGH_SAFE_TYPES:
+		return {}
+	return _err(CliControlErrorCodes.INVALID_PARAMS,
+		"value type mismatch for '%s': Array coercion not implemented for declared type %d. If this is a known-safe passthrough, add it to _ARRAY_PASSTHROUGH_SAFE_TYPES; otherwise add a coerce branch."
+			% [property, declared_type])
 
 
-func _coerce_numeric_array(arr: Array, expected_len: int, type_name: String, property: String, ctor: Callable) -> Dictionary:
-	if arr.size() != expected_len:
+## 校验 Array 长度 / 元素全为数字，OK 则调 ctor 构造目标 Variant。
+## `expected_lens` 是允许长度列表（Color 接 [3, 4]，其他类型固定一个长度）。
+func _coerce_numeric_array(arr: Array, expected_lens: Array[int], type_name: String, property: String, ctor: Callable) -> Dictionary:
+	if not arr.size() in expected_lens:
 		return _err(CliControlErrorCodes.INVALID_PARAMS,
-			"value type mismatch for '%s': expected %s as numeric array of length %d, got length %d"
-				% [property, type_name, expected_len, arr.size()])
+			"value type mismatch for '%s': expected %s as numeric array of length %s, got length %d"
+				% [property, type_name, _format_length_list(expected_lens), arr.size()])
 	if not _is_all_numeric(arr):
 		return _err(CliControlErrorCodes.INVALID_PARAMS,
 			"value type mismatch for '%s': expected %s as numeric array, got non-numeric element"
 				% [property, type_name])
 	return {"value": ctor.call(arr)}
+
+
+func _format_length_list(lens: Array[int]) -> String:
+	if lens.size() == 1:
+		return str(lens[0])
+	var parts: PackedStringArray = []
+	for n in lens:
+		parts.append(str(n))
+	return "[%s]" % " or ".join(parts)
 
 
 func _is_all_numeric(arr: Array) -> bool:
