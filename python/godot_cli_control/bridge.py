@@ -84,12 +84,7 @@ class GameBridge:
         self._run(self._client.action_tap(action, duration))
 
     def action_tap(self, action: str, duration: float = 0.1) -> None:
-        """``tap`` 的别名 —— 与 ``GameClient.action_tap`` 命名对齐。
-
-        Why: bridge 的方法名整体跟 client 对齐（``action_press`` / ``action_release`` / ``hold`` 都同名），
-        唯独 tap 历史上被改名，导致 README 表格 + ``run --help`` 里"方法名一致"的承诺被打脸（issue #58）。
-        ``tap`` 保留供已有脚本继续用。
-        """
+        """``tap`` 的别名，与 ``GameClient.action_tap`` 同名对齐（issue #58）。"""
         self.tap(action, duration)
 
     def action_press(self, action: str) -> None:
