@@ -15,6 +15,11 @@ class _CoerceFixture extends Node:
 	var test_plane: Plane = Plane()
 	var test_aabb: AABB = AABB()
 	var test_projection: Projection = Projection()
+	# 用于「passthrough-safe 名单」验证：TYPE_ARRAY 不应 fail-loud。
+	var test_array: Array = []
+	# 用于「未在白名单 / 未在 coerce 名单」验证：自定义 Resource 类型属性
+	# 声明类型 = TYPE_OBJECT，passthrough-safe（Object.set 拒收 Array 而非 silent-corrupt）。
+	var test_object: Object = null
 
 
 var _api: Node
@@ -277,28 +282,28 @@ func test_set_float_property_unaffected_by_coerce() -> void:
 
 func test_set_transform3d_via_array_coerces() -> void:
 	# #54 Phase 2：Transform3D(basis, origin) 从 12 floats 构造
-	# [basis 9 column-major, origin 3]。
+	# [axis-major: x_axis 3, y_axis 3, z_axis 3, origin 3]。
+	# 用非对称非单位 basis：单位矩阵 / 对角矩阵都无法验证 v[0..2] 真的是 x_axis
+	# 还是被错存成 row 0；非对称值（每个 axis 三分量都不同）才能锁住 schema。
 	var node: Node3D = Node3D.new()
 	node.name = "Transform3DTarget"
 	add_child_autofree(node)
-	# 单位 Basis + origin (10, 20, 30)
 	var result: Dictionary = _api.handle_set_property({
 		"path": str(node.get_path()),
 		"property": "transform",
 		"value": [
-			1.0, 0.0, 0.0,   # x_axis
-			0.0, 1.0, 0.0,   # y_axis
-			0.0, 0.0, 1.0,   # z_axis
-			10.0, 20.0, 30.0 # origin
+			1.0,  2.0,  3.0,   # x_axis
+			4.0,  5.0,  6.0,   # y_axis
+			7.0,  8.0,  9.0,   # z_axis
+			10.0, 20.0, 30.0,  # origin
 		],
 	})
 	assert_does_not_have(result, "error", "Transform3D 应从 12-float Array 成功 coerce")
-	assert_almost_eq(node.transform.basis.x.x, 1.0, 0.0001)
-	assert_almost_eq(node.transform.basis.y.y, 1.0, 0.0001)
-	assert_almost_eq(node.transform.basis.z.z, 1.0, 0.0001)
-	assert_almost_eq(node.transform.origin.x, 10.0, 0.0001)
-	assert_almost_eq(node.transform.origin.y, 20.0, 0.0001)
-	assert_almost_eq(node.transform.origin.z, 30.0, 0.0001)
+	# 锁 schema：v[0..2] = x_axis、v[3..5] = y_axis、v[6..8] = z_axis、v[9..11] = origin
+	assert_eq(node.transform.basis.x, Vector3(1.0, 2.0, 3.0), "x_axis = v[0..2]")
+	assert_eq(node.transform.basis.y, Vector3(4.0, 5.0, 6.0), "y_axis = v[3..5]")
+	assert_eq(node.transform.basis.z, Vector3(7.0, 8.0, 9.0), "z_axis = v[6..8]")
+	assert_eq(node.transform.origin, Vector3(10.0, 20.0, 30.0))
 
 
 func test_set_aabb_via_array_coerces() -> void:
@@ -316,59 +321,64 @@ func test_set_aabb_via_array_coerces() -> void:
 
 
 func test_set_basis_via_array_coerces() -> void:
-	# #54 Phase 2：Basis(x_axis, y_axis, z_axis) 9 floats column-major
+	# #54 Phase 2：Basis(x_axis, y_axis, z_axis) 9 floats axis-major
+	# v[0..2] = x_axis、v[3..5] = y_axis、v[6..8] = z_axis。
+	# **不用对角值**：对角 / 对称矩阵在 axis-major 和 row-major 下数值相同，
+	# 测不出 schema 实现错。用每个轴 3 分量都不同的非对称值。
 	var node: Node3D = Node3D.new()
 	node.name = "BasisTarget"
 	add_child_autofree(node)
-	# 不用单位矩阵（默认就是单位），用一个可识别的变换：
-	# x_axis=(2,0,0), y_axis=(0,3,0), z_axis=(0,0,4) → 3 轴各自缩放
 	var result: Dictionary = _api.handle_set_property({
 		"path": str(node.get_path()),
 		"property": "basis",
-		"value": [2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0],
+		"value": [1.0, 2.0, 3.0,   4.0, 5.0, 6.0,   7.0, 8.0, 9.0],
 	})
 	assert_does_not_have(result, "error")
-	assert_almost_eq(node.basis.x.x, 2.0, 0.0001)
-	assert_almost_eq(node.basis.y.y, 3.0, 0.0001)
-	assert_almost_eq(node.basis.z.z, 4.0, 0.0001)
+	assert_eq(node.basis.x, Vector3(1.0, 2.0, 3.0), "x_axis = v[0..2]")
+	assert_eq(node.basis.y, Vector3(4.0, 5.0, 6.0), "y_axis = v[3..5]")
+	assert_eq(node.basis.z, Vector3(7.0, 8.0, 9.0), "z_axis = v[6..8]")
 
 
 func test_set_transform2d_via_array_coerces() -> void:
 	# #54 Phase 2：Transform2D(x_axis, y_axis, origin) 6 floats
+	# v[0..1] = x_axis、v[2..3] = y_axis、v[4..5] = origin。
+	# 用非对称非单位值锁 schema：单位 xaxis/yaxis 测不出 ctor 顺序写反。
 	var node: Node2D = Node2D.new()
 	node.name = "Transform2DTarget"
 	add_child_autofree(node)
-	# 单位变换 + origin (5, 7)
 	var result: Dictionary = _api.handle_set_property({
 		"path": str(node.get_path()),
 		"property": "transform",
-		"value": [1.0, 0.0, 0.0, 1.0, 5.0, 7.0],
+		"value": [1.0, 2.0,   3.0, 4.0,   5.0, 7.0],
 	})
 	assert_does_not_have(result, "error")
-	assert_almost_eq(node.transform.x.x, 1.0, 0.0001)
-	assert_almost_eq(node.transform.y.y, 1.0, 0.0001)
-	assert_almost_eq(node.transform.origin.x, 5.0, 0.0001)
-	assert_almost_eq(node.transform.origin.y, 7.0, 0.0001)
+	assert_eq(node.transform.x, Vector2(1.0, 2.0), "x_axis = v[0..1]")
+	assert_eq(node.transform.y, Vector2(3.0, 4.0), "y_axis = v[2..3]")
+	assert_eq(node.transform.origin, Vector2(5.0, 7.0))
 
 
 func test_set_projection_via_array_coerces() -> void:
-	# #54 Phase 2：Projection(x, y, z, w) 16 floats column-major（4x4 矩阵）
+	# #54 Phase 2：Projection(x, y, z, w) 16 floats axis-major（4 个 Vector4 axis）
+	# v[0..3] = x_axis、v[4..7] = y_axis、v[8..11] = z_axis、v[12..15] = w_axis。
+	# 用非对称非单位值锁 schema：identity 矩阵在 axis-major 和 row-major 下数值相同。
 	var fixture: Node = _CoerceFixture.new()
 	fixture.name = "ProjTarget"
 	add_child_autofree(fixture)
-	# 单位 Projection（identity 4x4）
 	var result: Dictionary = _api.handle_set_property({
 		"path": str(fixture.get_path()),
 		"property": "test_projection",
 		"value": [
-			1.0, 0.0, 0.0, 0.0,
-			0.0, 1.0, 0.0, 0.0,
-			0.0, 0.0, 1.0, 0.0,
-			0.0, 0.0, 0.0, 1.0,
+			1.0,  2.0,  3.0,  4.0,    # x_axis
+			5.0,  6.0,  7.0,  8.0,    # y_axis
+			9.0,  10.0, 11.0, 12.0,   # z_axis
+			13.0, 14.0, 15.0, 16.0,   # w_axis
 		],
 	})
 	assert_does_not_have(result, "error")
-	assert_eq(fixture.test_projection, Projection.IDENTITY)
+	assert_eq(fixture.test_projection.x, Vector4(1.0, 2.0, 3.0, 4.0), "x_axis = v[0..3]")
+	assert_eq(fixture.test_projection.y, Vector4(5.0, 6.0, 7.0, 8.0), "y_axis = v[4..7]")
+	assert_eq(fixture.test_projection.z, Vector4(9.0, 10.0, 11.0, 12.0), "z_axis = v[8..11]")
+	assert_eq(fixture.test_projection.w, Vector4(13.0, 14.0, 15.0, 16.0), "w_axis = v[12..15]")
 
 
 func test_set_basis_wrong_length_returns_invalid_params() -> void:
@@ -404,6 +414,108 @@ func test_set_transform3d_non_number_element_returns_invalid_params() -> void:
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602)
 	assert_string_contains(str(result.error.message), "Transform3D")
+
+
+func test_set_aabb_wrong_length_returns_invalid_params() -> void:
+	# AABB 期望 6，给 5：fail-loud。
+	var fixture: Node = _CoerceFixture.new()
+	fixture.name = "BadLenAABBTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "test_aabb",
+		"value": [1.0, 2.0, 3.0, 10.0, 20.0],  # 5 个
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "AABB")
+
+
+func test_set_transform2d_wrong_length_returns_invalid_params() -> void:
+	# Transform2D 期望 6，给 4：fail-loud。
+	var node: Node2D = Node2D.new()
+	node.name = "BadLenTransform2DTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "transform",
+		"value": [1.0, 0.0, 0.0, 1.0],  # 4 个
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Transform2D")
+
+
+func test_set_subpath_array_fails_loud() -> void:
+	# Godot 的 Object.set("transform:origin", Array) 会 silent-corrupt：Vector3 leaf 不会
+	# 从 Array 隐式构造，origin 仍是 (0,0,0) 但 RPC 返 success（#52 同源 footgun）。
+	# 比起静默坏掉，handle_set_property 直接 fail-loud，让 agent 改用 top-level Array
+	# 形式（`set <node> transform '[...]'`，#54 已覆盖所有复合 Variant 的整体写入）。
+	# sub-path 仅用于标量赋值（`position:x 1.8`），不收 Array。
+	var node: Node3D = Node3D.new()
+	node.name = "SubpathArrayTarget"
+	add_child_autofree(node)
+	var original: Transform3D = node.transform
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "transform:origin",
+		"value": [10.0, 20.0, 30.0],
+	})
+	assert_has(result, "error", "sub-path + Array 必须 fail-loud，不能 silent fall-through")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "sub-path")
+	# 原值未被改动
+	assert_eq(node.transform, original)
+
+
+func test_set_array_declared_passthrough_does_not_fail_loud() -> void:
+	# TYPE_ARRAY 在 _ARRAY_PASSTHROUGH_SAFE_TYPES 名单里：Array 直接透传给
+	# Object.set 是合法的（属性本身就是 Array）。验证防御性 fallback 不会
+	# 误伤这类合法 passthrough。
+	var fixture: Node = _CoerceFixture.new()
+	fixture.name = "ArrayPassthroughTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "test_array",
+		"value": [1, "two", 3.0],
+	})
+	assert_does_not_have(result, "error", "TYPE_ARRAY 属性写 Array 不能 fail-loud")
+	assert_eq(fixture.test_array, [1, "two", 3.0])
+
+
+func test_set_subpath_scalar_still_works() -> void:
+	# 控制组：sub-path + 标量（不是 Array）必须沿用原路径。fail-loud 只针对 Array。
+	var node: Node2D = Node2D.new()
+	node.name = "SubpathScalarTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "position:x",
+		"value": 42.5,
+	})
+	assert_does_not_have(result, "error", "sub-path + 标量必须 OK")
+	assert_eq(node.position.x, 42.5)
+
+
+func test_set_projection_non_number_element_returns_invalid_params() -> void:
+	# Projection 期望全 numeric：fail-loud。
+	var fixture: Node = _CoerceFixture.new()
+	fixture.name = "BadElemProjTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "test_projection",
+		"value": [
+			1.0, 0.0, 0.0, 0.0,
+			0.0, 1.0, 0.0, 0.0,
+			0.0, 0.0, 1.0, 0.0,
+			0.0, 0.0, 0.0, "nope",  # 非数字
+		],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Projection")
 
 
 func test_set_quaternion_via_array_coerces() -> void:

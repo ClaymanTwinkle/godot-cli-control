@@ -3,10 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
-- **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 Variant。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。子路径形式（如 `position:x 1.8`）的标量赋值保持原路径不变。
+- **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 Variant。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。
+- **sub-path 标量赋值现在真的会写入**：之前 `set <node> position:x 1.8` 调的是 `Object.set("position:x", 1.8)`，Godot 4 的 `Object.set` 把整串当字面属性名找不到就 silent no-op（依旧返 `{success: true}` 但 `position.x` 不变）。改用 `Object.set_indexed(NodePath, value)` 才会按 sub-path 写入。是 #54 review 阶段被新加的 `test_set_subpath_scalar_still_works` 捕获的隐藏 silent-fail。
 
 ### Added
-- **#54 全部复合 Variant 都支持 Array → Variant coerce**：从 4-float 简单类型到 16-float 矩阵，全部按 Godot 内部存储顺序的 flat numeric Array 写入。覆盖：`Vector2/2i/3/3i/4/4i`、`Rect2/2i`、`Color`（3-element=RGB / 4-element=RGBA）、`Plane(a,b,c,d)`、`Quaternion(x,y,z,w)`、`AABB(pos 3, size 3)`、`Basis(9 column-major)`、`Transform2D(xaxis 2, yaxis 2, origin 2)`、`Transform3D(basis 9, origin 3)`、`Projection(16 column-major)`。具体 layout 见 SKILL.md / addon README。原来「不支持时 fail-loud」的兜底分支因为已覆盖全部已知 silent-corrupt 类型而移除。
+- **#54 全部复合 Variant 都支持 Array → Variant coerce**：从 4-float 简单类型到 16-float 矩阵，全部按 axis-vector 顺序的 flat numeric Array 写入（每 N 元素 = 一个 Vector 轴）。覆盖：`Vector2/2i/3/3i/4/4i`、`Rect2/2i`、`Color`（3-element=RGB / 4-element=RGBA）、`Plane(a,b,c,d)`、`Quaternion(x,y,z,w)`、`AABB(pos 3, size 3)`、`Basis(9 axis-vector)`、`Transform2D(xaxis 2, yaxis 2, origin 2)`、`Transform3D(basis 9, origin 3)`、`Projection(16 axis-vector)`。具体 layout 见 SKILL.md。`Plane.normal` 和 `Quaternion` 不会自动归一化（与 Godot ctor 一致）。
+- **#54 防御性 fallback**：未在 coerce 名单也不在 `_ARRAY_PASSTHROUGH_SAFE_TYPES`（基本类型 / Object / 集合 / Packed*Array）白名单的声明类型 + Array 输入会 fail-loud，避免未来 Godot 加新 compound Variant 时 silent-corrupt 回归。
+- **#54 sub-path + Array 现在 fail-loud**：`set <node> transform:origin '[10, 20, 30]'` 在 Godot 里会 silent-corrupt（Vector3 leaf 不会从 Array 隐式构造，origin 仍是 (0,0,0)），server 现在主动返 `-32602 "sub-path + Array is not supported"` 提示走 top-level 形式（如 `set <node> transform '[basis 9, origin 3]'`）。sub-path 标量赋值（`position:x 1.8`）不变。
 
 ### AI-friendly CLI 改造（多个 BREAKING change）
 
