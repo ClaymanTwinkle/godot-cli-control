@@ -14,6 +14,10 @@ const _BUILD_TREE_HARD_LIMIT: int = 50
 const _BUILD_TREE_NODE_LIMIT: int = 5000
 # wait_game_time_async 防呆上限：防止误传 1e9 之类的数值挂死 session
 const _MAX_WAIT_SECONDS: float = 3600.0
+# take_screenshot_async 循环上限：常态下 GameBridge 启动 gate 已保证 viewport
+# ready（issue #61 H 部分），这个循环只兜动态 transient（scene transition、
+# 窗口 resize 一瞬）。30 帧 ~500ms @ 60fps，超时报 1006 给 client 兜底。
+const SCREENSHOT_MAX_FRAMES: int = 30
 
 # ProjectSettings 路径：第三方项目通过这两条额外补 ban 自家属性 / 方法。
 # 合并到内置黑名单（去重，不能减只能加 —— 不开放 unban 是为了防止误删安全网）。
@@ -416,13 +420,25 @@ func take_screenshot_async() -> Dictionary:
 	# dummy renderer (--headless) 下 RenderingServer.frame_post_draw 永不发射，
 	# await 会永久挂死。RenderingServer.get_rendering_device() 在 dummy driver
 	# 下返回 null，用它检测后改走 process_frame 推进路径。
-	if RenderingServer.get_rendering_device() == null:
-		# dummy 路径：连续推 2 帧，让 viewport 跑一次完整 update
-		await get_tree().process_frame
-		await get_tree().process_frame
-	else:
-		await RenderingServer.frame_post_draw
-	var image: Image = get_viewport().get_texture().get_image()
+	# windowed 下循环等到 ready 是 issue #61 的 D 部分：兜底动态 transient
+	# （scene 切换 / 窗口 resize 一瞬）。常态下 GameBridge._wait_first_frame_ready
+	# 已经保证 client 连上 = viewport 至少画过一帧（H），所以通常第一次就拿到 image。
+	# SCREENSHOT_MAX_FRAMES 后仍 null 才报 1006 —— 1006 是 last-resort 兜底，
+	# 仍是合法 transient（client 仍应处理）。
+	# dummy 路径只试一次：headless 下 viewport texture 永远拿不到 image（无真 GPU），
+	# 循环 N 次只会让 Godot 内部 "Parameter t is null" push_error 噪音放大 N 倍。
+	var dummy: bool = RenderingServer.get_rendering_device() == null
+	var max_iters: int = 1 if dummy else SCREENSHOT_MAX_FRAMES
+	var image: Image = null
+	for _i in max_iters:
+		if dummy:
+			await get_tree().process_frame
+			await get_tree().process_frame
+		else:
+			await RenderingServer.frame_post_draw
+		image = get_viewport().get_texture().get_image()
+		if image != null:
+			break
 	if image == null:
 		# 1006 (transient) ≠ 1003 (schema)：agent 可短重试，等下一帧 viewport 就绪。
 		return _err(CliControlErrorCodes.RESOURCE_UNAVAILABLE, "Screenshot unavailable (viewport texture is null)")

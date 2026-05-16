@@ -405,3 +405,26 @@ func test_check_idle_resets_activity_when_busy() -> void:
 	_bridge._check_idle()
 	var now: int = Time.get_ticks_msec()
 	assert_almost_eq(_bridge._last_activity_ms, now, 200, "busy 时 _check_idle 必须把活动戳推到 ~now")
+
+
+# ── 启动 gate (issue #61 H 部分) ─────────────────────────────────
+# GUT 跑 --headless → RenderingServer.get_rendering_device() == null → dummy 路径。
+# 真 windowed 路径无法在 GUT 内测（要真 GPU），靠 e2e 覆盖。
+
+func test_wait_first_frame_ready_returns_under_headless() -> void:
+	# 关键防回归：dummy 路径不能 await frame_post_draw（永不发射 → 死锁）。
+	# 用 process_frame 推两帧应在毫秒级返回，否则函数被误改成走 windowed 分支。
+	# 必须 add_child 进 tree，否则 await get_tree().process_frame 拿不到 tree。
+	if _bridge.is_inside_tree():
+		_bridge.get_parent().remove_child(_bridge)
+	add_child_autofree(_bridge)
+	var t0: int = Time.get_ticks_msec()
+	await _bridge._wait_first_frame_ready()
+	var elapsed_ms: int = Time.get_ticks_msec() - t0
+	# 2s 余量，正常应在 < 100ms 返回
+	assert_lt(elapsed_ms, 2000, "_wait_first_frame_ready 在 headless 下必须秒返不死锁")
+
+
+func test_first_frame_ready_max_frames_constant_is_positive() -> void:
+	# 防回归：常量被改成 0 或负数会让循环立刻退出 → 启动 gate 失效。
+	assert_gt(GameBridgeScript.FIRST_FRAME_READY_MAX_FRAMES, 0)
