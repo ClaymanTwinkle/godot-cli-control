@@ -21,8 +21,7 @@
 2. **错误码三段制，不允许撞码**
    - 服务端（GDScript LowLevelApi）：正整数 `1xxx`（业务）+ `-32xxx`（JSON-RPC 标准）
    - 客户端（Python CLI）：`-1xxx`
-   - 三段互不重叠，单 `code` 字段无歧义。新增码前先查 `SKILL.md` 错误码表 + `low_level_api.gd` 常量。
-   - **现在已知 1004 在「combo 进行中」与「scene tree too large」两处冲突**——见下方"已知遗留 issue"。新加业务码请避开这个坑。
+   - 三段互不重叠，单 `code` 字段无歧义。新增码前先查 `SKILL.md` 错误码表 + `addons/godot_cli_control/bridge/error_codes.gd`（业务码集中常量）。
 
 3. **退出码语义化**
    - 0 = 成功 / 布尔 true / 节点存在 / wait 命中
@@ -86,4 +85,4 @@ release.sh                  # 发版脚本
 
 ## 已知遗留 issue（PR 路过时顺手修）
 
-*（截至 2026-05-11，AI 友好性 review 列出的 7 项已全部 land。下次 review 发现新坑请补到这里。）*
+*（截至 2026-05-16，AI 友好性 review 列出的 7 项 + SKILL/-h vs 代码对齐 review（退出码 3、daemon ls / stop --all / status stopped 字段、1003 含 InputMap action、wait-time 0..3600、ffmpeg 失败传染、screenshot retry 帧数等）已全部 land。下次 review 发现新坑请补到这里。）*

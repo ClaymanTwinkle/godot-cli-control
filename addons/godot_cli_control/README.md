@@ -93,11 +93,12 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `action_press(action)` | `await client.action_press("jump")` |
 | `action_release(action)` | `await client.action_release("jump")` |
 | `action_tap(action, duration)` | `await client.action_tap("attack", 0.1)` |
-| `input_get_pressed` (raw RPC) | `await client.request("input_get_pressed")` |
 | `hold(action, duration)` | `await client.hold("run", 1.5)` |
 | `combo(steps)` | `await client.combo([{"action": "jump", "duration": 0.1}])` |
 | `combo_cancel()` | `await client.combo_cancel()` |
 | `release_all()` | `await client.release_all()` |
+| `get_pressed()` | `await client.get_pressed()` |
+| `list_input_actions(include_builtin=False)` | `await client.list_input_actions()` |
 
 ### Error codes
 

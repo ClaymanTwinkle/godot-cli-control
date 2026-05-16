@@ -670,7 +670,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         handler=cmd_wait_time,
         description="按 game time 等待 N 秒（在 --write-movie 模式下与录像帧对齐）。",
         positionals=(
-            Positional("seconds", None, "等待秒数（>0）"),
+            Positional("seconds", None, "等待秒数（服务端范围 0 ≤ seconds ≤ 3600；client 在 ≤0 时短路返回成功）"),
         ),
         example="wait-time 0.5",
         text_formatter=_fmt_wait_time_text,

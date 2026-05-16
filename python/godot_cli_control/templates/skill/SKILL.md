@@ -42,7 +42,8 @@ godot-cli-control daemon stop
 |---|---|
 | 0 | Success (or, for `exists` / `visible` / `wait-node`, the boolean was true / found) |
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`=timeout, `daemon status`=stopped |
-| 2 | Connection / IO / usage error (daemon not running, malformed `combo` input, etc.) |
+| 2 | Connection / IO / usage error (daemon not running, malformed `combo` input, script path not found). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
+| 3 | `daemon stop --all` partial failure: at least one daemon in the registry failed to stop. Per-record `rc` is in the JSON `result.stopped[]`. |
 | 64 | Argparse usage error |
 
 Shell-`if` works:
@@ -52,6 +53,22 @@ if godot-cli-control exists /root/Main/Boss; then
   godot-cli-control click /root/Main/Boss
 fi
 ```
+
+## Daemon management
+
+```bash
+godot-cli-control daemon start             # boot daemon for cwd project
+godot-cli-control daemon status            # exit 0 = running, 1 = stopped
+godot-cli-control daemon stop              # stop cwd-project daemon (rc 0; rc 2 = ffmpeg transcode failed)
+godot-cli-control daemon stop --project /path/to/other/godot/project
+godot-cli-control daemon stop --all        # stop every registered daemon; exit 3 if any failed
+godot-cli-control daemon ls                # list all running daemons (cross-project, walks the registry)
+```
+
+- **`daemon status` payload when running**: `{"state": "running", "pid": N, "port": M}`.
+- **`daemon status` payload when stopped**: `{"state": "stopped"}`. If the previous launch wrote `.cli_control/godot.log` or recorded an exit code, the envelope also includes `"last_log": "<path>"` and/or `"last_exit_code": <int>` — use these to diagnose why the daemon died without manually grepping under `.cli_control/`.
+- **`daemon ls` payload**: `{"daemons": [{"project_root", "pid", "port", "started_at", "godot_bin", "log_path"}, ...]}`. Dead records (PID gone) are auto-pruned on each call, so this is the canonical list of *actually-alive* daemons across all projects on the machine.
+- **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-project stop result; the top-level `rc` is the aggregate exit code.
 
 ## JSON envelope examples
 
@@ -90,10 +107,10 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 |---|---|
 | `1001` | Node not found at the given path. Most common — usually the agent passed a wrong / not-yet-loaded path. Retry after `wait-node`. |
 | `1002` | Property not found on the node, or shape mismatch (e.g. `text` on a node that doesn't have it). Don't retry; inspect with `tree`. |
-| `1003` | Method not found on the node. Schema error — don't retry, inspect with `tree`. |
+| `1003` | Method not found on the node, **or** unknown InputMap action passed to `press`/`release`/`tap`/`hold`/`combo` (`"Unknown action: <name>"`). Schema error — don't retry. For node methods inspect with `tree`; for missing actions run `actions` (or `actions --all`). |
 | `1004` | Combo already in progress. Call `combo-cancel` (or `release-all`) and re-issue. Safe to retry after that. |
 | `1005` | Scene tree too large to serialize (default safety limit). Pass `--max-nodes` or query a subtree with `children` / `tree <subpath>`. Don't retry as-is. |
-| `1006` | Resource transiently unavailable (e.g. screenshot during scene transition / window resize). Rare under normal use: GameBridge waits for viewport first-frame before accepting connections, and `screenshot` retries internally up to ~500ms. If you still see this, retry after `wait-time 0.05` or similar. |
+| `1006` | Resource transiently unavailable (e.g. screenshot during scene transition / window resize). Rare under normal use: GameBridge waits for viewport first-frame before accepting connections, and `screenshot` retries internally up to ~30 frames (~500ms at 60 fps, ~1s at 30 fps, longer when `--write-movie` lowers the fixed fps). If you still see this, retry after `wait-time 0.05` or similar. |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 
@@ -143,7 +160,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 
 **Wait:**
 - `wait-node <path> [timeout]` — block until node appears (exit 0=found, 1=timeout)
-- `wait-time <seconds>` — wait N in-game seconds (matters for `--write-movie`)
+- `wait-time <seconds>` — wait N in-game seconds (matters for `--write-movie`). Server bounds: `0 ≤ seconds ≤ 3600`; passing out-of-range gets `-32602 "seconds must be ..."`. Client short-circuits `seconds <= 0` without an RPC.
 
 **Render:**
 - `screenshot <path>` — write PNG (path is **required** as of 0.2.0)
@@ -190,7 +207,7 @@ godot-cli-control call /root/Game start_game 1 '"easy"'    # int 1, string "easy
 
 So `position '[100, 200]'` → `Vector2(100, 200)`, `transform '[1,0,0, 0,1,0, 0,0,1, 10,20,30]'` → `Transform3D(IDENTITY, (10,20,30))`. Wrong length or non-numeric elements fail loud with `-32602 "value type mismatch ..."` instead of silently setting `(0, 0)` like pre-0.2.5 versions did.
 
-**Sub-path + Array also fails loud.** `set <node> transform:origin '[10, 20, 30]'` is rejected with `-32602 "sub-path + Array is not supported"`: Godot's `Object.set("transform:origin", Array)` silently drops the Array (origin stays at `(0,0,0)`) — same footgun class as #52, so the server pre-empts it. Sub-paths are scalar-only (`set <node> position:x 1.8`); to write a whole compound Variant use the top-level Array form above.
+**Sub-path + Array also fails loud.** `set <node> transform:origin '[10, 20, 30]'` is rejected with `-32602 "sub-path + Array is not supported"`: Godot's `Object.set("transform:origin", Array)` silently drops the Array (origin stays at `(0,0,0)`) — same class of footgun as the strict Variant checks above, so the server pre-empts it. Sub-paths are scalar-only (`set <node> position:x 1.8`); to write a whole compound Variant use the top-level Array form above.
 
 **Footgun**: bare `null` / `true` / `false` / numeric strings parse as JSON literals first, **not** as strings. If you actually mean the string `"null"`, wrap it explicitly:
 
@@ -294,7 +311,7 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | `await client.is_visible(path)` | `visible <path>` |
 | `await client.get_children(path)` | `children <path>` |
 | `await client.screenshot()` | `screenshot <path>` |
-| `await client.get_scene_tree(depth)` | `tree [depth]` |
+| `await client.get_scene_tree(depth, max_nodes=None)` | `tree [depth] [--max-nodes N]` |
 | `await client.wait_for_node(path, timeout)` | `wait-node <path> [timeout]` |
 | `await client.wait_game_time(seconds)` | `wait-time <seconds>` |
 | `await client.action_press(action)` | `press <action>` |
@@ -320,6 +337,12 @@ def run(bridge):
 ```
 
 `bridge` is a synchronous wrapper around `GameClient` — same method names, no `await`. Sibling-imports work (the script's directory is on `sys.path`).
+
+**Exit code (when `run` started the daemon itself):**
+- `0` — script succeeded and daemon stopped cleanly.
+- `1` — script raised (envelope carries `code: -1005` with the exception summary; full traceback on stderr).
+- `2` — script-path / daemon-start failed, **or** the script succeeded but the auto-`daemon stop` afterwards hit an ffmpeg transcode failure (success envelope still emits, with `daemon_stop_warning` populated; raw `.avi` is preserved).
+- `64` — argparse usage error (e.g. malformed `--idle-timeout`).
 
 ## pytest plugin (preferred for end-to-end test suites)
 
