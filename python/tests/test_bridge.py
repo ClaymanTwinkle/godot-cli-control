@@ -173,6 +173,15 @@ def test_wait_uses_game_time_not_wall_time(stub_client: dict) -> None:
     b.close()
 
 
+def test_wait_game_time_is_alias_for_wait(stub_client: dict) -> None:
+    """issue #60: bridge.wait_game_time 必须存在并与 bridge.wait 行为一致。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["wait_game_time"] = {"success": True}
+    b.wait_game_time(1.25)
+    assert c.calls[-1] == ("wait_game_time", (1.25,), {})
+    b.close()
+
+
 def test_tree_default_depth_3_not_client_default_5(stub_client: dict) -> None:
     """bridge.tree() 默认 depth=3，比 client 默认 5 浅，避免大场景树阻塞。"""
     b, c = _make_bridge(stub_client)
@@ -197,6 +206,19 @@ def test_tree_forwards_max_nodes_to_client(stub_client: dict) -> None:
     c.returns["get_scene_tree"] = {}
     b.tree(max_nodes=50)
     assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "max_nodes": 50})
+    b.close()
+
+
+def test_get_scene_tree_is_alias_for_tree(stub_client: dict) -> None:
+    """issue #60: bridge.get_scene_tree 必须存在并与 bridge.tree 行为一致，
+    包括默认 depth=3（比 client 默认 5 浅）+ max_nodes 透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["get_scene_tree"] = {"name": "root"}
+    result = b.get_scene_tree()
+    assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3})
+    assert result == {"name": "root"}
+    b.get_scene_tree(depth=7, max_nodes=99)
+    assert c.calls[-1] == ("get_scene_tree", (), {"depth": 7, "max_nodes": 99})
     b.close()
 
 
