@@ -114,8 +114,8 @@ class GameClient:
                     # 显式锁住 ws 心跳——issue #45 治本依赖：long ops 去掉
                     # seconds-scaled wall 上限后，死连接靠这层独立检测。
                     # 与 websockets 当前默认对齐，防库升级悄悄改默认。
-                    ping_interval=20,
-                    ping_timeout=20,
+                    ping_interval=20,  # 每 20s 无流量发一次 ping
+                    ping_timeout=20,   # pong 20s 未回 → 关连接（≈40s 内可发现死链）
                 )
                 self._listen_task = asyncio.create_task(self._listen())
                 logger.info("Connected to GameBridge on port %d", self._port)

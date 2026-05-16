@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import websockets
 
-from godot_cli_control.client import GameClient
+from godot_cli_control.client import LONG_OP_CLIENT_TIMEOUT, GameClient
 
 
 # ---- Test 1: proxy=None 显式传给 websockets.connect ----
@@ -471,58 +471,57 @@ async def test_get_scene_tree_omits_max_nodes_when_none() -> None:
 #
 # 旧公式 seconds*3+10 假设 wall ≤ 3× game，在 Movie Maker (--write-movie) 模式下
 # 实测 wall ≈ 4-5× game，必假超时（bridge.wait(15) → 55s timeout < 60s+ wall）。
-# 治本：去掉 seconds-scaled wall 上限，固定一个生死线（600s），死连接靠 ws ping/pong。
-
-WAIT_GAME_TIME_CLIENT_TIMEOUT = 600.0
+# 治本：去掉 seconds-scaled wall 上限，固定一个生死线，死连接靠 ws ping/pong。
+#
+# 测试用「两次差距大的 seconds 拿到同一 timeout」直接证明 decoupling，
+# 比单点等值断言更稳——后者跟「巧合 == 常量」的假阳性形态无法区分。
 
 
 @pytest.mark.asyncio
 async def test_wait_game_time_client_timeout_decoupled_from_seconds() -> None:
-    """issue #45: wait_game_time 客户端 timeout 必须与 seconds 解耦（固定 600s 生死线）。
-
-    Movie Maker 模式下 wall/game 比值不可预测，任何 seconds-scaled 公式都会在
-    某个分辨率/fps/盘速组合下踩中。改成固定大值后，死连接由 ws ping/pong 兜底。
-    """
+    """issue #45: wait_game_time 客户端 timeout 必须与 seconds 解耦。"""
     import godot_cli_control.client as client_mod
 
-    captured: dict = {}
+    captured: list = []
 
     async def fake_request(self, method, params=None, timeout=30.0):
-        captured["timeout"] = timeout
+        captured.append(timeout)
         return {"success": True}
 
     client = client_mod.GameClient(port=1)
     monkeypatch_target = client_mod.GameClient.request
     client_mod.GameClient.request = fake_request  # type: ignore
     try:
-        await client.wait_game_time(15.0)
+        await client.wait_game_time(1.0)
+        await client.wait_game_time(120.0)
     finally:
         client_mod.GameClient.request = monkeypatch_target
-    assert captured["timeout"] == WAIT_GAME_TIME_CLIENT_TIMEOUT, (
-        f"wait_game_time(15) 应使用固定 {WAIT_GAME_TIME_CLIENT_TIMEOUT}s 生死线，"
-        f"实际 {captured['timeout']}s —— Movie Maker 模式下 seconds-scaled 必假超时"
+    assert captured == [LONG_OP_CLIENT_TIMEOUT, LONG_OP_CLIENT_TIMEOUT], (
+        f"wait_game_time 应固定使用 {LONG_OP_CLIENT_TIMEOUT}s 生死线、与 seconds 无关，"
+        f"实际 {captured}"
     )
 
 
 @pytest.mark.asyncio
 async def test_combo_client_timeout_decoupled_from_steps_total() -> None:
-    """issue #45: combo() 与 wait_game_time 同源问题，client timeout 同样固定。"""
+    """issue #45: combo() 与 wait_game_time 同源问题，client timeout 同样与 total 解耦。"""
     import godot_cli_control.client as client_mod
 
-    captured: dict = {}
+    captured: list = []
 
     async def fake_request(self, method, params=None, timeout=30.0):
-        captured["timeout"] = timeout
+        captured.append(timeout)
         return {"success": True}
 
     client = client_mod.GameClient(port=1)
     monkeypatch_target = client_mod.GameClient.request
     client_mod.GameClient.request = fake_request  # type: ignore
     try:
-        await client.combo([{"action": "jump", "duration": 5.0}])
+        await client.combo([{"action": "x", "duration": 0.5}])
+        await client.combo([{"action": "x", "duration": 60.0}])
     finally:
         client_mod.GameClient.request = monkeypatch_target
-    assert captured["timeout"] == WAIT_GAME_TIME_CLIENT_TIMEOUT
+    assert captured == [LONG_OP_CLIENT_TIMEOUT, LONG_OP_CLIENT_TIMEOUT]
 
 
 @pytest.mark.asyncio
