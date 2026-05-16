@@ -45,11 +45,19 @@ class GameBridge:
         """
         self._run(self._client.wait_game_time(seconds))
 
+    def wait_game_time(self, seconds: float) -> None:
+        """``wait`` 的别名，与 ``GameClient.wait_game_time`` 同名对齐（issue #60）。"""
+        self.wait(seconds)
+
     # ── 场景树 ──
 
     def tree(self, depth: int = 3, max_nodes: int | None = None) -> dict:
         """获取场景树。"""
         return self._run(self._client.get_scene_tree(depth=depth, max_nodes=max_nodes))
+
+    def get_scene_tree(self, depth: int = 3, max_nodes: int | None = None) -> dict:
+        """``tree`` 的别名，与 ``GameClient.get_scene_tree`` 同名对齐（issue #60）。"""
+        return self.tree(depth=depth, max_nodes=max_nodes)
 
     def node_exists(self, path: str) -> bool:
         """检查节点是否存在。"""
