@@ -120,7 +120,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 |---|---|
 | `-32600` | Malformed request (missing / non-string `method`). Bug in client; should never reach an agent. |
 | `-32601` | Unknown method name. Bug; means client + plugin versions drifted. |
-| `-32602` | Invalid params: missing required field, blocked property/method (security blacklist), out-of-range value, value-type mismatch on `set` (e.g. `Vector2` property given an array of wrong length / non-numeric elements), or node-isn't-clickable (e.g. you `click`'d a `Node2D`). Don't retry; the request shape is wrong. |
+| `-32602` | Invalid params: missing required field, blocked property/method (security blacklist), out-of-range value, value-type mismatch on `set` (e.g. `Vector2` property given an array of wrong length / non-numeric elements), node-isn't-clickable (e.g. you `click`'d a `Node2D`), or `hold` given `duration ≤ 0` (use `press` for an indefinite hold). Don't retry; the request shape is wrong. |
 
 **Client-side (CLI / GameClient) — `-1xxx`:**
 
@@ -155,7 +155,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 **Input simulation:**
 - `press <action>` / `release <action>` — sticky press
 - `tap <action> [duration]` — press → wait → release
-- `hold <action> <duration>` — auto-release after N seconds
+- `hold <action> <duration>` — auto-release after N seconds (`duration` must be `> 0`; for an indefinite hold use `press`)
 - `combo --steps-json '[...]'` (or `combo file.json` / `combo -` for stdin) — sequence
 - `combo-cancel` — abort running combo
 - `release-all` — release everything
@@ -389,6 +389,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Daemon won't start** — check `.cli_control/godot_bin` exists and points at a real Godot 4 binary, or `export GODOT_BIN=/path/to/godot`. See `godot-cli-control init -h` for the full lookup chain.
 - **Output flags work in any position** — `--json` / `--text` / `--no-json` are accepted both before and after subcommands as of this fix. `--port N` is still top-level only; pass it before the subcommand.
 - **`combo` rejects everything with `1004`** — a combo is already running. Call `combo-cancel` (or `release-all`) to abort.
+- **`hold` / `press` persist after the command returns** — by design. Each CLI command is its own short-lived connection that closes *cleanly*, and a clean close does **not** release inputs. `hold <action> <dur>` auto-releases after `<dur>` seconds (its timer keeps running in the daemon); a sticky `press <action>` stays held until you call `release <action>` / `release-all` (or the daemon's idle-timeout shuts it down). If a character looks stuck moving, you probably left a `press` dangling — run `release-all`. (An *abnormal* drop — your client crashing or being killed mid-session — does trigger a safety `release-all`, so stuck keys can't outlive a dead client.)
 - **`tree` returns `1005 "scene tree too large"`** — your scene has more than 5000 visible nodes (a Grid / spawned-bullets situation). Pass `--max-nodes 200` to cap, or `children <path>` for one specific subtree.
 - **`set` with a string that *looks* like JSON** — value parser parses JSON first. To force a literal `"42"` string, pass `'"42"'`; to set a literal hash sign or array text, JSON-encode it.
 - **`daemon start` opens a window when I expected headless** — your stdout is a TTY (interactive terminal). Pass `--headless` explicitly, or shell out from a context where stdout is piped.

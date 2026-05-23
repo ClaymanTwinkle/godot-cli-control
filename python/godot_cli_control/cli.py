@@ -175,6 +175,22 @@ def _resolve_args_for_call(ns: argparse.Namespace) -> list:
     return [_parse_json_arg(a) for a in raw_args]
 
 
+def _preflight_hold(ns: argparse.Namespace) -> None:
+    """连 daemon 前校验 hold 的 duration：必须是 > 0 的数字。
+
+    duration <= 0 会让动作下一帧就释放（只生效一帧），是无意义用法；
+    要无限按住应该用 ``press``。preflight 拦住，避免 agent 干等连接重试。
+    """
+    try:
+        duration = float(ns.duration)
+    except (TypeError, ValueError):
+        raise ValueError(f"hold: duration 必须是数字，收到 {ns.duration!r}")
+    if duration <= 0:
+        raise ValueError(
+            f"hold: duration 必须 > 0（秒），收到 {duration}；要无限按住请用 `press`"
+        )
+
+
 def _preflight_combo(ns: argparse.Namespace) -> None:
     """连 daemon 前用同一份解析逻辑校验 combo 输入；抛 ValueError 即用法错。
 
@@ -549,9 +565,10 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         description="按住动作指定时长（秒），到点自动释放。",
         positionals=(
             Positional("action", None, "InputMap 动作名"),
-            Positional("duration", None, "按住时长（秒）"),
+            Positional("duration", None, "按住时长（秒，必须 > 0）"),
         ),
         example="hold jump 1.5",
+        preflight=_preflight_hold,
         text_formatter=lambda r: f"holding: {r}",
     ),
     RpcSpec(

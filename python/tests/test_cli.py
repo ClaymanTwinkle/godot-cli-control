@@ -1140,6 +1140,47 @@ def test_combo_preflight_rejects_no_steps_before_connecting(
     assert "必须提供" in payload["error"]["message"]
 
 
+@pytest.mark.parametrize("bad_duration", ["0", "-1.5", "abc"])
+def test_hold_preflight_rejects_bad_duration_before_connecting(
+    bad_duration: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``hold`` 的 duration <= 0 或非数字必须在连 daemon **之前**报 EXIT_USAGE。
+
+    duration<=0 会让动作下一帧就释放（只生效一帧）；无限按住该用 ``press``。
+    见 issue #71。"""
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：hold duration 非法时不应连 daemon")
+
+    import godot_cli_control.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "hold", "jump", bad_duration])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert "duration" in payload["error"]["message"]
+
+
+def test_hold_preflight_accepts_positive_duration() -> None:
+    """合法 duration > 0 不应被 preflight 拦下（让它进到连接环节）。"""
+    import argparse
+
+    from godot_cli_control.cli import _preflight_hold
+
+    ns = argparse.Namespace(duration="1.5")
+    _preflight_hold(ns)  # 不抛即通过
+
+
 def test_combo_preflight_caches_steps_to_avoid_stdin_double_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
