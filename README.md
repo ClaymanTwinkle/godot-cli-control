@@ -206,7 +206,7 @@ Tracked in [issues](https://github.com/ClaymanTwinkle/godot-cli-control/issues).
 
 ## Contributing
 
-Issues and PRs welcome. The plugin's GUT unit tests run via `./addons/godot_cli_control/tests/run_gut.sh` (requires `GODOT_BIN`). The Python package's tests run via `pytest` from `python/`. CI matrix covers Linux, macOS, and Windows.
+Issues and PRs welcome. The plugin's GUT unit tests run via `./addons/godot_cli_control/tests/run_gut.sh` (bash) or the cross-platform `python addons/godot_cli_control/tests/run_gut.py` (what CI uses) — both require `GODOT_BIN`. The Python package's tests run via `pytest` from `python/`. CI matrix covers Linux, macOS, and Windows.
 
 ## License
 

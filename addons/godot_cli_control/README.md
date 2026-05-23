@@ -65,7 +65,11 @@ Compatibility shims are also kept at `addons/godot_cli_control/bin/run_cli_contr
 ## Running the GUT unit tests
 
 ```bash
+# Linux / macOS (bash):
 GODOT_BIN=/path/to/godot ./addons/godot_cli_control/tests/run_gut.sh
+
+# Cross-platform (Linux / macOS / Windows) — this is what CI runs:
+GODOT_BIN=/path/to/godot python addons/godot_cli_control/tests/run_gut.py
 ```
 
 The runner builds a throwaway Godot project, `git clone`s a pinned [GUT](https://github.com/bitwes/Gut) release into `addons/gut/`, copies this plugin in, and runs the test files under `addons/godot_cli_control/tests/gut/`. Coverage today is `LowLevelApi` handler boundaries (blacklist, missing-property, node-not-found) and `InputSimulationApi` state machine (combo / press / release / tap / release_all).

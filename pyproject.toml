@@ -22,6 +22,15 @@ godot-cli-control = "godot_cli_control.cli:main"
 [project.entry-points.pytest11]
 godot-cli-control = "godot_cli_control.pytest_plugin"
 
+[tool.pytest.ini_options]
+# gui：需要真实显示（开窗）才能跑的端到端测试。普通 unit / headless e2e 不带此
+# marker。本地默认随 GODOT_BIN / GCC_GUI_E2E 未设而 skip；CI 专档（Linux 套
+# xvfb 或 macOS runner）设 GCC_GUI_E2E=1 开启。注册在此避免 unknown-marker 警告，
+# 也让 `pytest -m "not gui"` 能稳定剔除。
+markers = [
+    "gui: 需要真实显示的 windowed e2e（screenshot frame_post_draw 路径，issue #64）",
+]
+
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
