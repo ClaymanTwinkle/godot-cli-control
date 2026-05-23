@@ -83,6 +83,22 @@ func test_hold_unknown_action_returns_1003() -> void:
 	assert_false(_api.has_active_holds())
 
 
+func test_hold_zero_duration_returns_invalid_params() -> void:
+	# duration <= 0 是无意义的「按住 0 秒」；防御纵深拦在服务端（CLI preflight 也拦）。
+	var result: Dictionary = _api.handle_hold({"action": "a", "duration": 0.0})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602, "duration=0 应回 INVALID_PARAMS(-32602)")
+	assert_false(_api.has_active_holds(), "非法 duration 不应进 held 列表")
+	assert_false("a" in _api.get_pressed_actions())
+
+
+func test_hold_negative_duration_returns_invalid_params() -> void:
+	var result: Dictionary = _api.handle_hold({"action": "a", "duration": -1.5})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_false(_api.has_active_holds())
+
+
 func test_combo_unknown_action_aborts_with_1003() -> void:
 	# combo step 引用未注册 action：必须 abort 整盘并通过 request_id 回 1003，
 	# 否则 _combo_active 卡 true 后续全 1004。

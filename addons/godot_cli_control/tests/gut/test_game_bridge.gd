@@ -70,9 +70,16 @@ class StubInputSimulationApi:
 		# _register_methods 之前测试会手动调一次。
 		combo_callback = send_response
 
+	# 断连测试用的 release_all 调用计数（不 override 行为，仅记账后走父类）
+	var release_all_calls: int = 0
+
 	func handle_action_press(params: Dictionary) -> Dictionary:
 		press_calls.append(params)
 		return press_return
+
+	func release_all() -> void:
+		release_all_calls += 1
+		super()
 
 	func handle_combo(params: Dictionary, request_id: String) -> void:
 		# 不立刻回响 —— 把 (params, request_id) 记下来；测试通过 finish_combo
@@ -120,6 +127,49 @@ func _send(raw: String) -> void:
 func _last_frame() -> Dictionary:
 	assert_true(_bridge.captured_frames.size() > 0, "应该至少有一个出站帧")
 	return _bridge.captured_frames[-1]
+
+
+# ── 断连按 close code 区分清/不清 ───────────────────────────────────
+# 回归：CLI 每条子命令都是独立连接、跑完即「干净关闭」（close frame，code
+# 1000）。干净关闭不能 release_all，否则 `hold <dur>` 定时器没倒计时就被清掉
+# （只生效一帧），sticky `press` 也无法跨命令存活。只有「异常掉线」（崩溃 /
+# kill / 网络断，get_close_code() == -1）才 release_all 兜底卡死键。
+# handle_hold 是真实逻辑（桩未 override），用它验证 held 状态。
+# 用足够长的 duration，避免测试期间 _process 的 advance_timers 提前释放。
+
+func test_clean_disconnect_preserves_inputs() -> void:
+	var hold_action := "__test_clean_disc__"
+	if not InputMap.has_action(hold_action):
+		InputMap.add_action(hold_action)
+	_input.handle_hold({"action": hold_action, "duration": 999.0})
+	assert_true(hold_action in _input.get_pressed_actions(), "前置：hold 应在持有列表")
+
+	# 1000 = 正常 WebSocket close frame（CLI 命令跑完）
+	_bridge._handle_disconnect(1000)
+
+	assert_eq(_input.release_all_calls, 0, "干净关闭不应调用 release_all（hold/press 须跨命令存活）")
+	assert_true(hold_action in _input.get_pressed_actions(), "干净关闭后 hold 应仍存活")
+	assert_eq(_bridge._active_peer, null, "断连应清掉 _active_peer")
+
+	_input.release_all()
+	InputMap.erase_action(hold_action)
+
+
+func test_abnormal_disconnect_releases_inputs() -> void:
+	var hold_action := "__test_abnormal_disc__"
+	if not InputMap.has_action(hold_action):
+		InputMap.add_action(hold_action)
+	_input.handle_hold({"action": hold_action, "duration": 999.0})
+	assert_true(hold_action in _input.get_pressed_actions(), "前置：hold 应在持有列表")
+
+	# -1 = 异常掉线（无 close frame：崩溃 / kill / 网络断）
+	_bridge._handle_disconnect(-1)
+
+	assert_eq(_input.release_all_calls, 1, "异常掉线应调用 release_all 兜底卡死键")
+	assert_false(hold_action in _input.get_pressed_actions(), "异常掉线后 hold 应被释放")
+	assert_eq(_bridge._active_peer, null, "断连应清掉 _active_peer")
+
+	InputMap.erase_action(hold_action)
 
 
 # ── JSON / 协议层校验：-32600 ──────────────────────────────────────

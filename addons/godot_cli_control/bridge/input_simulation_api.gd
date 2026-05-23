@@ -113,6 +113,14 @@ func handle_hold(params: Dictionary) -> Dictionary:
 	if not InputMap.has_action(action):
 		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Unknown action: %s" % action)
 	var duration: float = params.get("duration", 0.0) as float
+	# duration <= 0 是无意义的「按住 0 秒」：advance_timers 下一帧就释放 → 只生效
+	# 一帧。无限按住请用 press（sticky）。CLI preflight 也会拦，这里是防御纵深，
+	# 挡住绕过 CLI 的直连 RPC。
+	if duration <= 0.0:
+		return _err(
+			CliControlErrorCodes.INVALID_PARAMS,
+			"hold duration must be > 0 (got %s); use press for an indefinite hold" % duration,
+		)
 	_do_press(action)
 	_held_actions[action] = duration
 	return {"success": true}

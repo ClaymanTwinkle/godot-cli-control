@@ -114,7 +114,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1006` | server | Resource transiently unavailable (e.g. screenshot during scene transition). Rare under normal use — GameBridge waits for viewport first-frame before listening, and `screenshot` retries internally. Safe to retry if you do hit it. |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
-| `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, or `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements) |
+| `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold) |
 | `-1001` | client | Connection failure (daemon not running, port wrong, proxy hijacking localhost) |
 | `-1002` | client | Timeout waiting for response |
 | `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, …) |

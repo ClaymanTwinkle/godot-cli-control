@@ -143,10 +143,7 @@ func _poll_active_peer() -> void:
 	_active_peer.poll()
 	var state: WebSocketPeer.State = _active_peer.get_ready_state()
 	if state == WebSocketPeer.STATE_CLOSED:
-		print("GameBridge: Client disconnected")
-		_input_sim_api.release_all()
-		_active_peer = null
-		_active_stream = null
+		_handle_disconnect(_active_peer.get_close_code())
 		return
 	if state != WebSocketPeer.STATE_OPEN:
 		return
@@ -154,6 +151,25 @@ func _poll_active_peer() -> void:
 		var packet: PackedByteArray = _active_peer.get_packet()
 		var message: String = packet.get_string_from_utf8()
 		_handle_message(message)
+
+
+func _handle_disconnect(close_code: int) -> void:
+	print("GameBridge: Client disconnected (close_code=%d)" % close_code)
+	# 区分「命令正常结束」与「异常掉线」，决定是否 release_all：
+	#   - CLI 每条子命令都是独立连接、跑完即干净关闭（WebSocket close frame，
+	#     code 1000）。此时**不** release_all —— 否则 `hold <dur>` 的定时器还没
+	#     倒计时就被清掉（只生效一帧），sticky `press` 也无法跨命令存活。持有的
+	#     输入靠各自机制收尾：hold/tap/combo 的 advance_timers 定时器自然结束，
+	#     sticky press 持续到显式 release / release-all。
+	#   - 客户端崩溃 / 被 kill / 网络断开时不会发 close frame，get_close_code()
+	#     返回 -1（< 0）。此时 release_all 兜底，避免卡死键 + 跨会话脏状态残留。
+	#   （daemon 启动期的端口探活连接也可能是 -1，但那时没有任何持有输入，
+	#    release_all 无副作用。）
+	# pytest 的 bridge fixture 仍在 teardown 自己调 release_all() 做清理。
+	if close_code < 0:
+		_input_sim_api.release_all()
+	_active_peer = null
+	_active_stream = null
 
 
 func _register_methods() -> void:
