@@ -19,6 +19,18 @@ from godot_cli_control.daemon import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """统一把全局注册表重定向到 tmp_path/reg，覆盖整个模块。
+
+    成功路径的 start() 会写 ~/.local/state/godot-cli-control/daemons/；
+    autouse 后任何新写的成功路径测试都自动隔离，无需再手动 monkeypatch
+    （漏写会静默污染开发者 / CI 的真实注册表，失败模式不可见）。
+    """
+    from godot_cli_control import registry as _reg
+    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
+
+
 def test_is_running_false_when_no_pid_file(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
     assert daemon.is_running() is False
@@ -225,10 +237,6 @@ def test_start_detaches_subprocess_signal_group(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
-    # 隔离全局注册表
-    from godot_cli_control import registry as _reg
-    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
-
     daemon.start(port=29998)
 
     if _sys.platform == "win32":
@@ -316,8 +324,9 @@ def _setup_start_env(
 ) -> tuple[Daemon, Path]:
     """返回 (daemon, fake_bin)。已 patch find_godot_binary、_ensure_imported、Popen、sleep、_wait_port_ready。
 
-    同时把 registry._REGISTRY_DIR 重定向到 tmp_path/reg，避免成功 start()
-    的测试污染真实 ~/.local/state/godot-cli-control/daemons/。
+    registry._REGISTRY_DIR 的隔离由模块级 autouse fixture _isolate_registry
+    统一负责（重定向到 tmp_path/reg），避免成功 start() 污染真实
+    ~/.local/state/godot-cli-control/daemons/。
     """
     _touch_godot_project(tmp_path)
     fake_bin = tmp_path / "fake_godot"
@@ -345,9 +354,7 @@ def _setup_start_env(
         "godot_cli_control.daemon._wait_port_ready",
         lambda *a, **k: port_ready,
     )
-    # 隔离全局注册表：把写入重定向到临时目录，避免污染 ~/.local/state/…
-    from godot_cli_control import registry as _reg
-    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
+    # 全局注册表隔离由模块级 autouse fixture _isolate_registry 负责。
     return Daemon(tmp_path), fake_bin
 
 
@@ -606,10 +613,6 @@ def test_start_record_writes_movie_path_file_and_args(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
-    # 隔离全局注册表
-    from godot_cli_control import registry as _reg
-    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
-
     daemon = Daemon(tmp_path)
     movie = tmp_path / "rec.avi"
     daemon.start(record=True, movie_path=str(movie), fps=60, port=29994)
@@ -887,10 +890,6 @@ def test_start_redirects_godot_output_to_log_file(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
-    # 隔离全局注册表
-    from godot_cli_control import registry as _reg
-    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
-
     daemon = Daemon(tmp_path)
     daemon.start(port=29900)
 
@@ -1176,6 +1175,56 @@ def test_start_with_port_zero_writes_actual_port(
     assert 1024 < written < 65536
 
 
+def test_start_passes_actual_port_to_popen_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """port=0 时传给 Godot Popen 的 --game-bridge-port 必须是落盘的实际端口。
+
+    防回归：上面的 test 只验了 port 文件内容，没验同一端口确实通过
+    --game-bridge-port=<N> 传给了 Popen。若未来重构把"写文件"和"传 argv"
+    两条路径分裂（如误传 port=0 而非 actual_port），单测才能抓到。
+    """
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999_999_020
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin)
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._ensure_imported", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.subprocess.Popen", _record_popen
+    )
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
+    )
+
+    daemon = Daemon(tmp_path)
+    daemon.start(port=0)
+
+    written = int(daemon.port_file.read_text().strip())
+    expected = f"--game-bridge-port={written}"
+    assert any(a == expected for a in captured["args"]), \
+        f"Popen argv 必须含 {expected}（实际：{captured['args']}）"
+
+
 def test_start_passes_idle_timeout_to_popen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1211,9 +1260,6 @@ def test_start_passes_idle_timeout_to_popen(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
-    from godot_cli_control import registry as _reg
-    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
-
     daemon = Daemon(tmp_path)
     daemon.start(port=0, idle_timeout=10)
     assert any(a == "--game-bridge-idle-timeout=10" for a in captured["args"])
@@ -1254,9 +1300,6 @@ def test_start_omits_idle_timeout_when_zero(
     monkeypatch.setattr(
         "godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True
     )
-    from godot_cli_control import registry as _reg
-    monkeypatch.setattr(_reg, "_REGISTRY_DIR", tmp_path / "reg")
-
     daemon = Daemon(tmp_path)
     daemon.start(port=0)  # 不传 idle_timeout 用默认
     assert not any(a.startswith("--game-bridge-idle-timeout=") for a in captured["args"])
@@ -1272,7 +1315,7 @@ def test_start_registers_in_global_registry(
     """
     from godot_cli_control import registry
 
-    monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
+    # 注册表隔离由 autouse fixture _isolate_registry 统一重定向到 tmp_path/reg。
     daemon, _ = _setup_start_env(tmp_path, monkeypatch)
     record_file = tmp_path / "reg" / f"{registry.project_hash(tmp_path)}.json"
 

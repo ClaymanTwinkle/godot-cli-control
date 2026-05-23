@@ -76,7 +76,7 @@ release.sh                  # 发版脚本
 
 - 测试不能用 `pytest --cov` 跑，必须 `coverage run -m pytest`。原因写在 `pyproject.toml` 的注释里：pytest11 entry-point 在 pytest 启动时 import 包，pytest-cov 上得太晚会 miss 掉 import-time 语句。
 - 跑测试遵循全局规则：**用 subagent 委托执行（指定 `model: "sonnet"`），主会话只接收精简结论**，避免大量 pytest 输出污染上下文。
-- GDScript 那侧的单测走 `./addons/godot_cli_control/tests/run_gut.sh`，需要 `GODOT_BIN`。
+- GDScript 那侧的单测走 `./addons/godot_cli_control/tests/run_gut.sh`（bash，Linux/macOS）或跨平台的 `python addons/godot_cli_control/tests/run_gut.py`（CI 用这个，三平台通吃），都需要 `GODOT_BIN`。改其中一个记得对齐另一个。
 
 ## 发版 / CI
 

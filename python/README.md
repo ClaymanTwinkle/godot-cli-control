@@ -159,7 +159,10 @@ coverage run -m pytest python/tests/
 coverage report
 
 # GUT tests for the Godot plugin (needs GODOT_BIN env var)
+# bash (Linux/macOS):
 GODOT_BIN=/path/to/godot ./addons/godot_cli_control/tests/run_gut.sh
+# cross-platform (Linux/macOS/Windows) — what CI runs:
+GODOT_BIN=/path/to/godot python addons/godot_cli_control/tests/run_gut.py
 ```
 
 ## Documentation

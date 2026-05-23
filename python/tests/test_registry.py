@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,19 @@ from godot_cli_control import registry
 def reg_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "registry")
     return tmp_path / "registry"
+
+
+@pytest.fixture
+def dead_pid() -> int:
+    """一个 100% 已死、跨平台稳定的 PID。
+
+    起一个立即退出的子进程并 reap（wait）掉，其 PID 此后保证不存活——
+    比硬编码 magic PID（如 2_000_000）稳：后者依赖 OS 的 PID 上限，
+    Linux pid_max=4194304 下长跑系统理论上可能真有进程占到该 PID 而 flaky。
+    """
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    return proc.pid
 
 
 def test_register_creates_record(reg_dir: Path, tmp_path: Path) -> None:
@@ -35,24 +50,26 @@ def test_unregister_removes_record(reg_dir: Path, tmp_path: Path) -> None:
     assert registry.list_all() == []
 
 
-def test_list_all_prunes_dead_pids(reg_dir: Path, tmp_path: Path) -> None:
+def test_list_all_prunes_dead_pids(
+    reg_dir: Path, tmp_path: Path, dead_pid: int
+) -> None:
     proj = tmp_path / "p1"; proj.mkdir()
-    # PID 1 几乎不会是当前用户的 Godot；用一个肯定死的高位 PID
-    registry.register(proj, pid=2_000_000, port=1, godot_bin="x", log_path="x")
+    # 用一个已 reap 的子进程 PID —— 100% 死、跨平台稳
+    registry.register(proj, pid=dead_pid, port=1, godot_bin="x", log_path="x")
     assert registry.list_all() == []  # 探活后死记录被清掉
     # 注册表文件也应被删
     assert not list(reg_dir.glob("*.json"))
 
 
 def test_list_all_also_cleans_project_state_for_dead(
-    reg_dir: Path, tmp_path: Path
+    reg_dir: Path, tmp_path: Path, dead_pid: int
 ) -> None:
     proj = tmp_path / "p1"; proj.mkdir()
     ctrl = proj / ".cli_control"
     ctrl.mkdir()
-    (ctrl / "godot.pid").write_text("2000000")
+    (ctrl / "godot.pid").write_text(str(dead_pid))
     (ctrl / "port").write_text("12345")
-    registry.register(proj, pid=2_000_000, port=12345, godot_bin="x",
+    registry.register(proj, pid=dead_pid, port=12345, godot_bin="x",
                       log_path=str(ctrl / "godot.log"))
     registry.list_all()
     assert not (ctrl / "godot.pid").exists()
@@ -66,9 +83,9 @@ def test_project_hash_stable(tmp_path: Path) -> None:
     assert h1 == h2 and len(h1) == 12
 
 
-def test_process_alive_branches() -> None:
+def test_process_alive_branches(dead_pid: int) -> None:
     """直接覆盖 _process_alive 四个分支，避免未来 'simplify' 误改 PermissionError 含义。"""
     assert registry._process_alive(0) is False
     assert registry._process_alive(-1) is False
     assert registry._process_alive(os.getpid()) is True
-    assert registry._process_alive(2_000_000) is False
+    assert registry._process_alive(dead_pid) is False

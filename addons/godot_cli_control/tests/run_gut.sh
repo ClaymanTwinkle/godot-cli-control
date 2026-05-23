@@ -4,6 +4,10 @@
 # 没有把 GUT vendor 进仓库（它是开发依赖，不该跟 plugin 一起发布到 PyPI/AssetLib）；
 # 临时项目从头建，避免污染仓库的 .godot/ import 缓存。
 #
+# 跨平台：CI（ubuntu / macOS / windows 三格）跑的是同目录的 run_gut.py
+# （bash 在 Windows 用不了）。本 .sh 保留给 Linux / macOS 本地开发者方便用；
+# 两者逻辑等价，改一个记得对齐另一个。
+#
 # 用法：
 #   GODOT_BIN=/path/to/godot ./run_gut.sh
 #   （未设置 GODOT_BIN 时尝试 macOS 默认路径或 PATH 中的 godot）

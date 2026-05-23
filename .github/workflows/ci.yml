@@ -171,9 +171,91 @@ jobs:
         # GODOT_BIN 由前面 Resolve Godot exe path step 写到 $GITHUB_ENV
         run: python addons/godot_cli_control/tests/test_init_walkthrough.py
 
-      # ---- GUT unit tests (Linux only —— GUT cmdln 在 headless 下输出最稳定) ----
-      - name: Run GUT unit tests (Linux only)
+      # ---- GUT unit tests (跨平台 Python runner run_gut.py, issue #36) ----
+      # run_gut.py 是纯 stdlib（不 import godot_cli_control），只需 python + git，
+      # 无需 pip install。macOS 格的 GUT 在 gui-screenshot-e2e job 里跑（复用那边
+      # 已下载的 macOS Godot，免重复下载）。
+      - name: Run GUT unit tests (Linux)
         if: matrix.os == 'ubuntu-latest'
         env:
           GODOT_BIN: /home/runner/godot-bin/godot
-        run: ./addons/godot_cli_control/tests/run_gut.sh
+        run: python addons/godot_cli_control/tests/run_gut.py
+
+      - name: Run GUT unit tests (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        # GODOT_BIN 由前面 Resolve Godot exe path step 写到 $GITHUB_ENV
+        run: python addons/godot_cli_control/tests/run_gut.py
+
+  # windowed screenshot e2e（issue #64）：GUT / 普通 e2e 全跑 --headless，dummy
+  # renderer 拿不到 viewport texture，frame_post_draw 这条「真实用户用 screenshot」
+  # 的分支长期零覆盖（#61 即此类 silent regression）。这里用 macOS runner（真 GPU /
+  # 能开窗，无需 xvfb 赌软渲染）真起 GUI daemon、立刻截图，覆盖 windowed 路径。
+  gui-screenshot-e2e:
+    name: macOS e2e — windowed screenshot + GUT (Godot ${{ matrix.godot-version }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        godot-version: ['4.6.2-stable']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Cache Godot (macOS)
+        id: godot-cache-macos
+        uses: actions/cache@v5
+        with:
+          path: ~/godot-bin
+          key: godot-${{ matrix.godot-version }}-macos-universal
+
+      - name: Download Godot (macOS)
+        if: steps.godot-cache-macos.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot-bin
+          VER="${{ matrix.godot-version }}"
+          URL="https://github.com/godotengine/godot/releases/download/${VER}/Godot_v${VER}_macos.universal.zip"
+          echo "Downloading $URL"
+          curl -fsSL -o /tmp/godot.zip "$URL"
+          unzip -q /tmp/godot.zip -d ~/godot-bin
+
+      - name: Resolve Godot binary (macOS)
+        run: |
+          BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot"
+          if [ ! -x "$BIN" ]; then
+            echo "找不到 Godot 可执行：$BIN"; ls -R ~/godot-bin; exit 1
+          fi
+          echo "GODOT_BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Verify Godot (macOS)
+        run: |
+          "$GODOT_BIN" --version
+
+      # GCC_GUI_E2E=1 解锁 test_e2e_screenshot_gui.py 的默认 skip；--gui daemon
+      # 在 macOS runner 的窗口会话里真开窗。
+      - name: Run windowed screenshot e2e
+        env:
+          GCC_GUI_E2E: '1'
+        run: python -m pytest python/tests/test_e2e_screenshot_gui.py -v
+
+      # macOS 格的 GUT 在此跑（issue #36 三平台覆盖的第三格），复用上面下载的
+      # macOS Godot，免在 walkthrough job 再加一套 macOS Godot 下载步骤。
+      - name: Run GUT unit tests (macOS)
+        run: python addons/godot_cli_control/tests/run_gut.py
+
+      # 输入持续性 e2e（#70）：起真 headless daemon，过去因没有任何 CI job 同时
+      # 备齐 GODOT_BIN + 已装包 + pytest 而从未在 CI 真跑过（python-unit 不设
+      # GODOT_BIN ⇒ skip；walkthrough 不跑 pytest）。本 job 三者齐全，顺手让它
+      # 首次进 CI。headless，无需开窗。
+      - name: Run input-persistence e2e (headless)
+        run: python -m pytest python/tests/test_e2e_input.py -v
