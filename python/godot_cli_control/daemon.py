@@ -328,14 +328,20 @@ class Daemon:
         return f"{header}\n{body}"
 
     def _terminate(self, pid: int, timeout: float = 10.0) -> None:
-        """SIGTERM → wait → SIGKILL。"""
+        """SIGTERM → wait → SIGKILL。
+
+        探活用 ``_reap_if_dead`` 而非 ``_process_alive``：``run`` 自起的 daemon 中
+        Godot 是本进程的子进程，SIGTERM 后会变 zombie，``os.kill(pid, 0)`` 对
+        zombie 仍成功，必须 ``waitpid`` 回收才能正确判定其已退出 —— 否则空等满
+        timeout 才放弃，每次 ``run`` 收尾都打印 "SIGTERM 超时" 噪音（#67）。
+        """
         try:
             os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
             return
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if not _process_alive(pid):
+            if _reap_if_dead(pid):
                 return
             time.sleep(0.5)
         print("SIGTERM 超时，强制终止", file=sys.stderr)
@@ -343,6 +349,7 @@ class Daemon:
             os.kill(pid, _force_kill_signal())
         except (ProcessLookupError, OSError):
             pass
+        _reap_if_dead(pid)  # 回收被 SIGKILL 的 zombie 子进程（若它是本进程的孩子）
 
 
 # ── Godot 二进制发现 ──
@@ -423,6 +430,34 @@ def _process_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _reap_if_dead(pid: int) -> bool:
+    """Return True when ``pid`` is no longer a *running* process.
+
+    处理 ``_process_alive`` 单独搞不定的 zombie 场景：当 ``pid`` 是本进程已退出但
+    尚未被 wait 的子进程时，它以 zombie 形式滞留进程表，``os.kill(pid, 0)`` 持续
+    成功 —— ``_process_alive`` 会无限误报其存活。这正是 ``run`` 每次都打印
+    "SIGTERM 超时" 的根因（#67）：``run`` 是 daemon 的父进程，它 SIGTERM 掉的
+    Godot 变成无人回收的 zombie。
+
+    ``os.waitpid(pid, WNOHANG)`` 会回收这种子进程并报告其退出。对于不是本进程
+    子进程的 pid（如独立的 ``daemon stop``，其 Godot 已被 init 回收），waitpid 抛
+    ChildProcessError，回落到通用探活。
+    """
+    if sys.platform != "win32":
+        try:
+            reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass  # 不是本进程的子进程 —— 交给下面的通用探活
+        except OSError:
+            pass
+        else:
+            if reaped_pid == pid:
+                return True  # 子进程已退出并被回收
+            if reaped_pid == 0:
+                return False  # 子进程仍在运行
+    return not _process_alive(pid)
 
 
 def _process_is_godot(pid: int) -> bool:
