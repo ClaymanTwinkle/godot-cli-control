@@ -1,5 +1,7 @@
 # AI-Friendly CLI Fixes Implementation Plan
 
+> **Status:** ✅ Completed in #46 (2026-05-11). 所有 task 已 land；3 项 Minor follow-up 已开 issue 跟踪。下方 checkbox 保留原貌仅作历史记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix 7 issues found during AI-friendliness review so the CLI fully delivers on the "shell-first, JSON-envelope, AI-driven" contract documented in `CLAUDE.md`.
