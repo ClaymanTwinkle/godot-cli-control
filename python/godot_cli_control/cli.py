@@ -910,7 +910,8 @@ def cmd_daemon_status(ns: argparse.Namespace) -> int:
 def cmd_daemon_ls(ns: argparse.Namespace) -> int:
     """跨项目列出运行中的 daemon。
 
-    扫全局注册表 ~/.local/state/godot-cli-control/daemons/，对每条记录探活。
+    扫全局注册表（POSIX `~/.local/state/godot-cli-control/daemons/`；Windows
+    `%LOCALAPPDATA%\\godot-cli-control\\daemons\\`），对每条记录探活。
     死记录会被 list_all 自动清理（连同对应项目的 .cli_control/godot.pid 与 port）。
     JSON 模式：{"ok": true, "result": {"daemons": [...]}}（信封一致）。
     Text 模式：每条一行 `<pid>\t<port>\t<project_root>\t<started_at>`；空时 (no running daemons)。
@@ -1511,7 +1512,8 @@ def build_parser() -> argparse.ArgumentParser:
         "ls",
         help="列出所有正在运行的 daemon（跨项目）",
         description=(
-            "扫描全局注册表 ~/.local/state/godot-cli-control/daemons/，"
+            "扫描全局注册表（POSIX ~/.local/state/godot-cli-control/daemons/；"
+            "Windows %LOCALAPPDATA%\\godot-cli-control\\daemons\\），"
             "列出所有探活通过的 daemon。死记录会被自动清理。"
         ),
     )

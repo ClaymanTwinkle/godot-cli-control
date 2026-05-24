@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -434,6 +435,33 @@ def test_terminate_returns_early_when_process_already_gone(
 
     Daemon(tmp_path)._terminate(pid=123, timeout=1.0)
     assert len(sent) == 1, "进程已不存在时不应再尝试第二次 kill"
+
+
+def test_terminate_reaps_zombie_child_without_timeout(tmp_path: Path) -> None:
+    """#67 根因：`run` 自起的 daemon 中 Godot 是本进程的子进程，SIGTERM 后变
+    zombie；`os.kill(pid, 0)` 对 zombie 仍成功 → 旧实现误判存活、空等满 timeout
+    才放弃，每次 `run` 收尾都打印 "SIGTERM 超时" 噪音。`_terminate` 必须
+    waitpid 回收自己的 zombie 子进程并立即返回，不空等。"""
+    if sys.platform == "win32":
+        pytest.skip("zombie / waitpid 语义是 POSIX-only")
+
+    # 立即退出的子进程；不调用 proc.wait()/poll() → 成为本进程的 zombie 子进程。
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    try:
+        time.sleep(0.5)  # 等它退出（python -c "" 近即时），此刻起它是 zombie
+        start = time.monotonic()
+        Daemon(tmp_path)._terminate(pid=proc.pid, timeout=8.0)
+        elapsed = time.monotonic() - start
+        assert elapsed < 4.0, (
+            f"_terminate 应 reap zombie 子进程后立即返回，实际空等 {elapsed:.1f}s"
+            "（把 zombie 误判成存活 = #67 噪音根因）"
+        )
+    finally:
+        # 兜底回收：若 _terminate 已 reap，这里 ECHILD，忽略即可。
+        try:
+            os.waitpid(proc.pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
 
 
 # ── _process_is_godot 多平台矩阵 ──

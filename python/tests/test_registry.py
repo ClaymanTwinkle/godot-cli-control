@@ -89,3 +89,36 @@ def test_process_alive_branches(dead_pid: int) -> None:
     assert registry._process_alive(-1) is False
     assert registry._process_alive(os.getpid()) is True
     assert registry._process_alive(dead_pid) is False
+
+
+# ── _user_state_dir 平台选址（#43）──
+
+
+def test_user_state_dir_windows_uses_localappdata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows 上落到 %LOCALAPPDATA%\\godot-cli-control，而非 XDG 的 ~/.local/state。"""
+    monkeypatch.setattr(registry.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
+    d = registry._user_state_dir()
+    assert d == Path(r"C:\Users\tester\AppData\Local") / "godot-cli-control"
+
+
+def test_user_state_dir_windows_falls_back_without_localappdata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCALAPPDATA 缺失时回落到 ~/AppData/Local，不会误用 XDG 路径。"""
+    monkeypatch.setattr(registry.sys, "platform", "win32")
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    d = registry._user_state_dir()
+    assert d == Path.home() / "AppData" / "Local" / "godot-cli-control"
+
+
+def test_user_state_dir_posix_keeps_xdg_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Linux / macOS 维持既有 ~/.local/state 选址（不给已有用户搬家）。"""
+    monkeypatch.setattr(registry.sys, "platform", "linux")
+    assert registry._user_state_dir() == Path.home() / ".local" / "state" / "godot-cli-control"
+    monkeypatch.setattr(registry.sys, "platform", "darwin")
+    assert registry._user_state_dir() == Path.home() / ".local" / "state" / "godot-cli-control"

@@ -1,4 +1,4 @@
-"""Global cross-project daemon registry under ~/.local/state/godot-cli-control/daemons/.
+"""Global cross-project daemon registry，目录按平台惯例选址（见 ``_user_state_dir``）。
 
 每个守护进程一份 ``<project_hash>.json``，记录 PID / 端口 / 项目路径 / 启动时刻。
 ``list_all()`` 顺手探活并清理死记录。无文件锁 —— 每条记录文件名以 project_hash
@@ -14,7 +14,21 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-_REGISTRY_DIR = Path.home() / ".local" / "state" / "godot-cli-control" / "daemons"
+def _user_state_dir() -> Path:
+    """守护进程注册表的根目录，按平台惯例选址（#43）。
+
+    - Windows：``%LOCALAPPDATA%\\godot-cli-control``（回落 ``~/AppData/Local``）。
+      ``~/.local/state`` 是 XDG 约定，不是 Windows 用户会去找的位置。
+    - Linux / macOS：保持既有 XDG state 风格 ``~/.local/state/godot-cli-control``
+      （字节不变，避免已有用户的注册表搬家）。
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "godot-cli-control"
+    return Path.home() / ".local" / "state" / "godot-cli-control"
+
+
+_REGISTRY_DIR = _user_state_dir() / "daemons"
 
 
 @dataclass(frozen=True)
