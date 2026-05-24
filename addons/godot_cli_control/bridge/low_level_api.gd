@@ -7,11 +7,12 @@ extends Node
 ## 若冷启动或 GUT 跑前遇到 "Class 'CliControlErrorCodes' not found"，先跑一次
 ## 完整 import（`godot --editor --quit --path .`）让 .godot/global_script_class_cache.cfg 建立。
 
-const _BUILD_TREE_HARD_LIMIT: int = 50
+# depth=0（"无限深度"）时的递归深度兜底，防无限递归 / 病态深树。
+const _BUILD_TREE_DEFAULT_MAX_DEPTH: int = 50
 # 总节点数上限：宽场景（1000+ 子项的 Grid/Container）会构造极大 JSON，
 # 超 outbound buffer（默认 10 MB）后客户端拿到截断包 → STATE_CLOSED 断连。
 # 5000 节点对应 ~500 KB JSON，留足余量。
-const _BUILD_TREE_NODE_LIMIT: int = 5000
+const _BUILD_TREE_MAX_NODES: int = 5000
 # wait_game_time_async 防呆上限：防止误传 1e9 之类的数值挂死 session
 const _MAX_WAIT_SECONDS: float = 3600.0
 # take_screenshot_async 循环上限：常态下 GameBridge 启动 gate 已保证 viewport
@@ -370,14 +371,14 @@ func handle_get_children(params: Dictionary) -> Dictionary:
 func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	var max_depth: int = params.get("depth", 5) as int
 	# max_nodes 是客户端控制的软上限。**入口处 clamp 到硬墙
-	# _BUILD_TREE_NODE_LIMIT (5000)**：防止恶意 / 失误调用传 max_nodes=999999
+	# _BUILD_TREE_MAX_NODES (5000)**：防止恶意 / 失误调用传 max_nodes=999999
 	# 时让 _build_tree 真把整棵超大树构造成 Dictionary 后才被外层错误返回丢弃
 	# （DoS / OOM 路径）。clamp 后 _build_tree 内部的短路单一来源，
 	# 同时承担软上限（agent truncated 信号）与硬墙（防爆 outbound buffer）。
 	# 不传时也用硬墙做默认，兼容旧客户端。
-	var max_nodes: int = params.get("max_nodes", _BUILD_TREE_NODE_LIMIT) as int
-	if max_nodes <= 0 or max_nodes > _BUILD_TREE_NODE_LIMIT:
-		max_nodes = _BUILD_TREE_NODE_LIMIT
+	var max_nodes: int = params.get("max_nodes", _BUILD_TREE_MAX_NODES) as int
+	if max_nodes <= 0 or max_nodes > _BUILD_TREE_MAX_NODES:
+		max_nodes = _BUILD_TREE_MAX_NODES
 	var root: Node = get_tree().current_scene
 	if root == null:
 		root = get_tree().root
@@ -389,10 +390,10 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	# 因为 max_nodes 已 clamp 到 ≤ LIMIT，counter 最多比 LIMIT 多 ~1，
 	# 所以这条分支只在 max_nodes==LIMIT（客户端没传或传了 ≥LIMIT）时被触发。
 	# max_nodes < LIMIT 的客户端永远走 truncated 软信号路径，不会撞 1005。
-	if counter[0] > _BUILD_TREE_NODE_LIMIT:
+	if counter[0] > _BUILD_TREE_MAX_NODES:
 		return _err(
 			CliControlErrorCodes.SCENE_TREE_TOO_LARGE,
-			"scene tree too large (>%d nodes); lower 'depth' or query a subtree" % _BUILD_TREE_NODE_LIMIT,
+			"scene tree too large (>%d nodes); lower 'depth' or query a subtree" % _BUILD_TREE_MAX_NODES,
 		)
 	# 软上限：硬墙内但超过 max_nodes 时附加 truncated 信号让 agent 决定分子树。
 	var response: Dictionary = {"tree": tree}
@@ -479,10 +480,10 @@ func _has_property(node: Node, property: String) -> bool:
 	return false
 
 
-## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_HARD_LIMIT (50) 防止无限递归。
+## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_DEFAULT_MAX_DEPTH (50) 防止无限递归。
 ## counter 是 by-ref 计数器：超过 max_nodes 时短路（不再递归子节点），
 ## 调用方读 counter[0] > max_nodes 决定是否附加 truncated 信号，
-## 读 counter[0] > _BUILD_TREE_NODE_LIMIT 决定是否走 1005 (SCENE_TREE_TOO_LARGE) 错误路径。
+## 读 counter[0] > _BUILD_TREE_MAX_NODES 决定是否走 1005 (SCENE_TREE_TOO_LARGE) 错误路径。
 func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[int], max_nodes: int) -> Dictionary:
 	counter[0] += 1
 	var entry: Dictionary = {
@@ -497,7 +498,7 @@ func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[
 	if counter[0] > max_nodes:
 		# 超软上限：不再下递归，但当前 entry 已计入；调用方附加 truncated 信号
 		return entry
-	var effective_max: int = _BUILD_TREE_HARD_LIMIT if max_depth == 0 else max_depth
+	var effective_max: int = _BUILD_TREE_DEFAULT_MAX_DEPTH if max_depth == 0 else max_depth
 	if current_depth < effective_max:
 		var children: Array[Dictionary] = []
 		for child: Node in node.get_children():

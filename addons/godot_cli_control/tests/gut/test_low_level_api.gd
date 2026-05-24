@@ -631,11 +631,11 @@ func test_build_tree_short_circuits_above_node_limit() -> void:
 	var leaf: Node = Node.new()
 	leaf.name = "Leaf"
 	add_child_autofree(leaf)
-	var counter: Array[int] = [LowLevelApiScript._BUILD_TREE_NODE_LIMIT]
+	var counter: Array[int] = [LowLevelApiScript._BUILD_TREE_MAX_NODES]
 	# 第 5 参数 max_nodes = LIMIT（5000）；leaf 计入后 counter == LIMIT+1 > max_nodes，触发短路
-	var entry: Dictionary = _api._build_tree(leaf, 5, 0, counter, LowLevelApiScript._BUILD_TREE_NODE_LIMIT)
+	var entry: Dictionary = _api._build_tree(leaf, 5, 0, counter, LowLevelApiScript._BUILD_TREE_MAX_NODES)
 	# leaf 自身被计入 → counter 变成 LIMIT+1
-	assert_eq(int(counter[0]), LowLevelApiScript._BUILD_TREE_NODE_LIMIT + 1)
+	assert_eq(int(counter[0]), LowLevelApiScript._BUILD_TREE_MAX_NODES + 1)
 	# 超 limit 后立刻 return，不下递归 children
 	assert_does_not_have(entry, "children")
 
@@ -650,14 +650,14 @@ func test_build_tree_under_limit_includes_children() -> void:
 	parent.add_child(c1)
 	var counter: Array[int] = [0]
 	# 第 5 参数 max_nodes 给硬墙 5000，远超 2 个节点，不会触发软截断
-	var entry: Dictionary = _api._build_tree(parent, 5, 0, counter, LowLevelApiScript._BUILD_TREE_NODE_LIMIT)
+	var entry: Dictionary = _api._build_tree(parent, 5, 0, counter, LowLevelApiScript._BUILD_TREE_MAX_NODES)
 	assert_has(entry, "children")
 	assert_eq((entry.children as Array).size(), 1)
 
 
 func test_handle_get_scene_tree_clamps_oversized_max_nodes() -> void:
 	# P1 回归：恶意/失误客户端传 max_nodes=999999 时，
-	# 入口必须 clamp 到 _BUILD_TREE_NODE_LIMIT，
+	# 入口必须 clamp 到 _BUILD_TREE_MAX_NODES，
 	# 否则 _build_tree 会构造完整大字典再被外层 1005 丢弃（DoS 风险）。
 	# 这里 happy path 验证 clamp 不破坏正常调用——简单场景下无 1005 报错、无 truncated 信号。
 	var result: Dictionary = _api.handle_get_scene_tree({
