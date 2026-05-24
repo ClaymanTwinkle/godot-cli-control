@@ -29,6 +29,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Windows 默认 stdout/stderr 编码是 cp1252，编不了中文日志或 Godot 输出里的非 ASCII
+# 字符（issue #36：Windows CI 格曾因 `_log("使用 Godot…")` 在第一行就 UnicodeEncodeError
+# 崩掉，GUT 根本没跑起来）。强制 UTF-8，macOS/Linux 本就默认 UTF-8 不受影响。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):  # 非 TextIOWrapper（被重定向）时静默跳过
+        pass
+
 GUT_REF = "v9.4.0"  # bumping：检查 https://github.com/bitwes/Gut/releases
 
 # 仓库根：本脚本在 addons/godot_cli_control/tests/，往上 3 级。
