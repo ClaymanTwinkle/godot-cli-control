@@ -274,7 +274,7 @@ Or `{"steps": [...]}` wrapper form is also accepted. Steps run strictly serially
 The daemon can drive Godot's [Movie Maker](https://docs.godotengine.org/en/stable/tutorials/animation/creating_movies.html) (`--write-movie`) so input you script through this skill is captured to disk. Pipeline: Godot writes raw `.avi`, `daemon stop` shells out to `ffmpeg` to transcode that into `.mp4` next to the original.
 
 ```bash
-godot-cli-control daemon start --record --movie-path out.avi --headless --fps 60
+godot-cli-control daemon start --record --movie-path out.avi --fps 60
 godot-cli-control click /root/Main/StartButton
 godot-cli-control tap jump 0.3
 godot-cli-control daemon stop          # → produces out.mp4
@@ -283,6 +283,7 @@ godot-cli-control daemon stop          # → produces out.mp4
 Key constraints:
 
 - `--record` **requires** `--movie-path` (daemon refuses to start otherwise).
+- `--record` needs a **real renderer**, so it cannot run with `--headless`: Godot Movie Maker's `add_frame()` reads the viewport texture, which the headless dummy renderer leaves null → SIGSEGV on the first frame. The daemon therefore **rejects `--record --headless` with exit code 2** before launching Godot. You don't need to pass `--gui`: when `--record` is set the daemon auto-opens a window even in a non-TTY (subagent / pipe / CI) shell that would otherwise default to headless.
 - The `.mp4` is produced **only when `daemon stop` runs**; `kill -9` leaves the raw `.avi` behind.
 - `ffmpeg` must be on `PATH` for transcoding. If transcoding fails, the raw `.avi` is kept and `daemon stop` exits with code `2` (transcode log at `.cli_control/ffmpeg.log`).
 - `--fps` controls the **fixed simulation framerate** Godot runs at while recording — set it to your target video framerate.

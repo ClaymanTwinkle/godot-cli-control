@@ -1258,6 +1258,47 @@ def test_daemon_start_text_mode_keeps_silent_success(
     assert capsys.readouterr().out == ""
 
 
+def test_daemon_start_rejects_record_with_explicit_headless(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``daemon start --record --movie-path x --headless`` → ok:false 信封 +
+    EXIT_INFRA_ERROR(2)，且 message 点名 headless（CultivationWorld #180）。
+
+    显式 --headless 经 _resolve_headless 仍是 True，被 daemon.start 的 preflight
+    拒绝。find_godot_binary mock 成 None 确保 RED 时不会真去 spawn Godot。"""
+    import json as _json
+
+    (tmp_path / "project.godot").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: None
+    )
+
+    from godot_cli_control.cli import (
+        EXIT_INFRA_ERROR,
+        OUTPUT_JSON,
+        cmd_daemon_start,
+    )
+
+    ns = __import__("argparse").Namespace(
+        record=True,
+        movie_path=str(tmp_path / "demo.avi"),
+        headless=True,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_start(ns)
+    assert rc == EXIT_INFRA_ERROR
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert "headless" in payload["error"]["message"]
+
+
 def test_daemon_stop_emits_json_envelope(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1795,6 +1836,30 @@ class TestDaemonHeadlessAutodetect:
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         ns = type("NS", (), {"headless": True, "gui": False})()
         assert _resolve_headless(ns, force_gui_hint=True) is True
+
+    def test_record_flips_pipe_to_gui(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--record 没显式 --headless 时强制开窗 —— Movie Maker 需真实渲染器，
+        headless dummy renderer 拿不到 viewport texture 会 SIGSEGV
+        （CultivationWorld #180，同 screenshot/#65）。非 TTY 默认 headless
+        的 subagent/pipe/CI 场景下，--record 也应自动翻成 GUI。"""
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        ns = type("NS", (), {"headless": False, "gui": False, "record": True})()
+        assert _resolve_headless(ns) is False
+
+    def test_explicit_headless_wins_over_record_flip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """显式 --headless + --record 仍返回 True —— 不静默改写用户意图，
+        而是把矛盾交给 daemon.start 的 preflight 拒绝（给明确用法错）。"""
+        from godot_cli_control.cli import _resolve_headless
+
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+        ns = type("NS", (), {"headless": True, "gui": False, "record": True})()
+        assert _resolve_headless(ns) is True
 
 
 class TestScriptLikelyUsesScreenshot:

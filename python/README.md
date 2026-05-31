@@ -97,7 +97,8 @@ The CLI is the canonical surface — every `GameClient` method has a one-line eq
 ```bash
 # Lifecycle
 godot-cli-control init [--path DIR] [--force]
-godot-cli-control daemon start [--headless --record --movie-path X --fps N --port N --idle-timeout 30m]
+godot-cli-control daemon start [--headless | --gui] [--port N --idle-timeout 30m]
+godot-cli-control daemon start --record --movie-path X [--fps N]   # 录制需真实渲染器，不能与 --headless 同用
 godot-cli-control daemon stop [--all | --project PATH]
 godot-cli-control daemon status
 godot-cli-control daemon ls                  # list running daemons across all projects
