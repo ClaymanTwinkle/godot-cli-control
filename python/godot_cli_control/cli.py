@@ -73,10 +73,17 @@ def _resolve_headless(
     True，让没显式指定 ``--headless`` / ``--gui`` 的非 TTY 场景（subagent / pipe）
     自动改走 GUI —— headless 下 dummy renderer 拿不到 viewport texture，screenshot
     永远 1006 fail（issue #65）。
+
+    ``--record`` 同理且更狠：Movie Maker 的 ``add_frame()`` 读的也是 viewport
+    texture，headless 下拿到 null 直接 SIGSEGV（CultivationWorld #180）。所以没显式
+    ``--headless`` 时一律翻成 GUI；显式 ``--headless`` 仍返回 True，由
+    ``daemon.start`` 的 preflight 拒绝（明确用法错，不静默改写用户意图）。
     """
     if getattr(ns, "headless", False):
         return True
     if getattr(ns, "gui", False):
+        return False
+    if getattr(ns, "record", False):
         return False
     if force_gui_hint:
         return False
@@ -1356,7 +1363,8 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--record",
         action="store_true",
-        help="启动后录制 demo（写到 .cli_control/movie_path）",
+        help="启动后录制 demo（写到 .cli_control/movie_path）。需真实渲染器，"
+        "不能与 --headless 同用；没指定时会自动开窗（即使非 TTY）。",
     )
     p.add_argument(
         "--movie-path",
@@ -1367,7 +1375,8 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     headless_grp.add_argument(
         "--headless",
         action="store_true",
-        help="无窗口模式。默认值：stdout 非 TTY 时自动 headless（CI / pipe / agent）。",
+        help="无窗口模式。默认值：stdout 非 TTY 时自动 headless（CI / pipe / agent）。"
+        "与 --record 互斥（录制需真实渲染器）。",
     )
     headless_grp.add_argument(
         "--gui",

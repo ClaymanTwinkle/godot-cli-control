@@ -80,6 +80,26 @@ def test_start_rejects_record_without_movie_path(tmp_path: Path) -> None:
         daemon.start(record=True, movie_path=None)
 
 
+def test_start_rejects_record_with_headless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """record + headless 必须在 spawn 前拒绝。
+
+    Godot Movie Maker 在 headless dummy renderer 下拿不到 viewport texture，
+    add_frame() 收到 null 纹理直接 SIGSEGV（CultivationWorld #180，同 #65 截图）。
+    这是用法矛盾 —— preflight 报错，别让 Godot 段错误吓人。检查必须在 Godot
+    binary 查找/spawn 之前，所以即使 find_godot_binary 被 mock 成 None 也应先命中
+    headless 报错。"""
+    _touch_godot_project(tmp_path)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: None
+    )
+    daemon = Daemon(tmp_path)
+    movie = tmp_path / "rec.avi"
+    with pytest.raises(DaemonError, match="headless"):
+        daemon.start(record=True, movie_path=str(movie), headless=True)
+
+
 def test_start_rejects_when_godot_bin_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -93,6 +93,17 @@ class Daemon:
             )
         if record and not movie_path:
             raise DaemonError("--record requires --movie-path")
+        # 录制无法在 headless 下跑：Godot Movie Maker 的 add_frame() 读 viewport
+        # texture，headless dummy renderer 拿到 null 直接 SIGSEGV（首帧崩，
+        # CultivationWorld #180）。CLI 侧 _resolve_headless 已把「没显式 --headless
+        # 的 record」翻成 GUI，所以走到这里还 headless=True 的只可能是用户显式
+        # --headless —— 这是用法矛盾，spawn 前拒绝，别让 Godot 段错误。
+        if record and headless:
+            raise DaemonError(
+                "录制与 --headless 冲突：Godot Movie Maker 需要真实渲染器，"
+                "headless dummy renderer 拿不到 viewport texture，add_frame() 会"
+                " SIGSEGV。去掉 --headless（默认/非 TTY 会自动开窗）或显式 --gui。"
+            )
 
         bin_path = (
             godot_bin
