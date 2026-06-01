@@ -723,6 +723,7 @@ def test_cmd_init_catches_unexpected_exception_into_envelope(
         no_skills=False,
         skills_only=False,
         skills_no_clobber=False,
+        no_gitignore=False,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_init(ns)

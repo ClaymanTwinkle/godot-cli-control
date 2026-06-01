@@ -9,13 +9,13 @@ If you have the Python CLI installed (`pipx install godot-cli-control`), the ent
 
 ```bash
 cd your_godot_project
-godot-cli-control init        # copy plugin, patch project.godot, detect Godot
+godot-cli-control init        # copy plugin, patch project.godot, detect Godot, gitignore .cli_control/
 godot-cli-control daemon start
 godot-cli-control tree 3
 godot-cli-control daemon stop
 ```
 
-`init` automates everything described in the manual setup below — copying the addon, editing `project.godot`, and detecting your Godot binary.
+`init` automates everything described in the manual setup below — copying the addon, editing `project.godot`, and detecting your Godot binary. It also appends `.cli_control/` to the project's root `.gitignore` (the daemon's machine-local state dir: detected binary path, pid, port, log, recording intermediates), so that state never gets committed. Pass `--no-gitignore` to skip that step.
 
 ## Manual Setup (if you prefer)
 

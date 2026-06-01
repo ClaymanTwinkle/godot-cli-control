@@ -428,6 +428,7 @@ def test_cmd_init_emits_success_envelope_in_json_mode(
         no_skills=False,
         skills_only=False,
         skills_no_clobber=False,
+        no_gitignore=False,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_init(ns)
@@ -459,6 +460,7 @@ def test_cmd_init_emits_error_envelope_on_non_godot_dir(
         no_skills=False,
         skills_only=False,
         skills_no_clobber=False,
+        no_gitignore=False,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_init(ns)
@@ -469,3 +471,184 @@ def test_cmd_init_emits_error_envelope_on_non_godot_dir(
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003  # CLIENT_CODE_USAGE
     assert "project.godot" in payload["error"]["message"]
+
+
+# ── .gitignore 维护（确保 .cli_control/ 不被提交）──
+
+
+def test_gitignore_adds_entry_to_empty_text() -> None:
+    """纯函数：空文本追加条目。"""
+    from godot_cli_control.init_cmd import _add_gitignore_entries
+
+    out, added = _add_gitignore_entries("", [".cli_control/"])
+    assert added == [".cli_control/"]
+    assert out == ".cli_control/\n"
+    # 不允许出现前导空行
+    assert not out.startswith("\n")
+
+
+def test_gitignore_appends_preserving_existing_entries() -> None:
+    """已有别的忽略项时只追加、不动原内容。"""
+    from godot_cli_control.init_cmd import _add_gitignore_entries
+
+    text = "*.tmp\nbuild/\n"
+    out, added = _add_gitignore_entries(text, [".cli_control/"])
+    assert added == [".cli_control/"]
+    assert "*.tmp" in out
+    assert "build/" in out
+    assert out.endswith(".cli_control/\n")
+
+
+def test_gitignore_idempotent_when_entry_present() -> None:
+    """已含完全相同条目 → 不重复加。"""
+    from godot_cli_control.init_cmd import _add_gitignore_entries
+
+    text = "build/\n.cli_control/\n"
+    out, added = _add_gitignore_entries(text, [".cli_control/"])
+    assert added == []
+    assert out == text
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [".cli_control\n", "/.cli_control/\n", "/.cli_control\n", ".cli_control/  \n"],
+)
+def test_gitignore_idempotent_on_equivalent_variants(existing: str) -> None:
+    """带/不带斜杠、带前导 / 、带尾随空白都视为已忽略，不重复加。"""
+    from godot_cli_control.init_cmd import _add_gitignore_entries
+
+    out, added = _add_gitignore_entries(existing, [".cli_control/"])
+    assert added == []
+    assert out == existing
+
+
+def test_gitignore_commented_line_does_not_count_as_present() -> None:
+    """被注释掉的同名行不算忽略，真条目仍要补上。"""
+    from godot_cli_control.init_cmd import _add_gitignore_entries
+
+    text = "# .cli_control/\n"
+    out, added = _add_gitignore_entries(text, [".cli_control/"])
+    assert added == [".cli_control/"]
+    assert "# .cli_control/" in out  # 注释保留
+    assert out.endswith(".cli_control/\n")
+
+
+def test_gitignore_appends_newline_when_file_lacks_trailing_one() -> None:
+    """原文件末行无换行符时，新条目必须独立成行、不黏在末行后面。"""
+    from godot_cli_control.init_cmd import _add_gitignore_entries
+
+    out, added = _add_gitignore_entries("build/", [".cli_control/"])
+    assert added == [".cli_control/"]
+    assert out == "build/\n.cli_control/\n"
+
+
+def test_ensure_gitignore_creates_file_when_missing(tmp_path: Path) -> None:
+    """项目根没有 .gitignore → 创建并写入 .cli_control/。"""
+    from godot_cli_control.init_cmd import _ensure_gitignore_entries
+
+    added = _ensure_gitignore_entries(tmp_path)
+    gi = tmp_path / ".gitignore"
+    assert gi.is_file()
+    assert ".cli_control/" in gi.read_text(encoding="utf-8")
+    assert added == [".cli_control/"]
+
+
+def test_ensure_gitignore_idempotent_across_runs(tmp_path: Path) -> None:
+    """连跑两次只写一条，不重复。"""
+    from godot_cli_control.init_cmd import _ensure_gitignore_entries
+
+    _ensure_gitignore_entries(tmp_path)
+    added2 = _ensure_gitignore_entries(tmp_path)
+    assert added2 == []
+    content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert content.count(".cli_control/") == 1
+
+
+def test_ensure_gitignore_preserves_crlf(tmp_path: Path) -> None:
+    """已有 CRLF 的 .gitignore 在追加后必须仍是 CRLF，不混入裸 LF。"""
+    from godot_cli_control.init_cmd import _ensure_gitignore_entries
+
+    gi = tmp_path / ".gitignore"
+    gi.write_bytes(b"*.tmp\r\nbuild/\r\n")
+    _ensure_gitignore_entries(tmp_path)
+    after = gi.read_bytes()
+    assert b".cli_control/\r\n" in after
+    bare_lf = after.count(b"\n") - after.count(b"\r\n")
+    assert bare_lf == 0, f"出现裸 LF：{bare_lf} 处"
+
+
+def test_run_init_adds_cli_control_to_gitignore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端到端：run_init 默认在项目根 .gitignore 忽略 .cli_control/。"""
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    proj = _minimal_project(tmp_path)
+    assert run_init(proj) == 0
+    gi = (proj / ".gitignore").read_text(encoding="utf-8")
+    assert ".cli_control/" in gi
+
+
+def test_run_init_no_gitignore_skips_gitignore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """write_gitignore=False → 不创建 / 不改 .gitignore。"""
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    proj = _minimal_project(tmp_path)
+    assert run_init(proj, write_gitignore=False) == 0
+    assert not (proj / ".gitignore").exists()
+
+
+def test_run_init_skills_only_skips_gitignore(tmp_path: Path) -> None:
+    """skills_only 属于纯刷 SKILL.md，不应碰 .gitignore。"""
+    proj = _make_min_godot_project(tmp_path)
+    assert run_init(proj, skills_only=True) == 0
+    assert not (proj / ".gitignore").exists()
+
+
+def test_run_init_json_records_gitignore_added(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """json 模式 result 必须回填 gitignore_added 字段。"""
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    proj = _make_min_godot_project(tmp_path)
+    result: dict[str, object] = {}
+    assert run_init(proj, output_format="json", result=result) == 0
+    assert result["gitignore_added"] == [".cli_control/"]
+
+
+def test_cmd_init_no_gitignore_flag_skips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CLI 层：--no-gitignore（ns.no_gitignore=True）不写 .gitignore。"""
+    import argparse
+
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_init
+
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    proj = _make_min_godot_project(tmp_path)
+    ns = argparse.Namespace(
+        path=str(proj),
+        force=False,
+        no_skills=False,
+        skills_only=False,
+        skills_no_clobber=False,
+        no_gitignore=True,
+        output_format=OUTPUT_JSON,
+    )
+    assert cmd_init(ns) == 0
+    capsys.readouterr()
+    assert not (proj / ".gitignore").exists()

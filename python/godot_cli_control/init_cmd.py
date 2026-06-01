@@ -8,6 +8,8 @@
    绕过 Godot Editor GUI 启用步骤
 4. 自动检测 Godot 二进制，写入 ``.cli_control/godot_bin``，daemon 启动时
    会优先读取此文件
+5. 在项目根 ``.gitignore`` 追加 ``.cli_control/`` —— daemon 的机器本地状态
+   目录（godot_bin 绝对路径 / pid / port / log / 录制中间产物），不应提交
 
 完成后用户只需 ``godot-cli-control daemon start`` 即可。
 """
@@ -26,6 +28,12 @@ from .daemon import find_godot_binary, reimport_project
 PLUGIN_DIR_NAME = "godot_cli_control"
 ADDONS_DIRNAME = "addons"
 
+GITIGNORE_NAME = ".gitignore"
+# 需要 init 写进目标项目 .gitignore 的条目。用元组而非单值，给将来"增量加
+# 忽略项"留口子（与 method_blacklist_extra 同样的增量哲学）；目前只有 daemon
+# 的机器本地状态目录 .cli_control/。
+GITIGNORE_ENTRIES: tuple[str, ...] = (".cli_control/",)
+
 AUTOLOAD_KEY = "GameBridgeNode"
 AUTOLOAD_VALUE = '"*res://addons/godot_cli_control/bridge/game_bridge.gd"'
 PLUGIN_CFG_PATH = "res://addons/godot_cli_control/plugin.cfg"
@@ -43,6 +51,7 @@ def run_init(
     write_skills: bool = True,
     skills_only: bool = False,
     clobber_skills: bool = True,
+    write_gitignore: bool = True,
     *,
     output_format: str = "text",
     result: dict[str, Any] | None = None,
@@ -56,6 +65,9 @@ def run_init(
     ``clobber_skills=False``：写 skill 时遇到已存在文件就跳过（用户改过
     SKILL.md、希望保留本地版又允许 init 把缺失那条补上时用）。与
     ``write_skills=False`` / ``skills_only=True`` 都兼容。
+    ``write_gitignore=False``：跳过往项目根 ``.gitignore`` 追加 ``.cli_control/``
+    （不想让 init 碰 ``.gitignore`` 的用户逃生口）。该步骤属于"项目接入"阶段，
+    ``skills_only=True`` 时本就跳过。
 
     ``output_format='json'``：抑制全部人类可读 print；调用方（cli.cmd_init）
     传入 ``result`` 字典，本函数会回填结构化字段，由 cli 侧封 JSON envelope。
@@ -93,6 +105,7 @@ def run_init(
         project_godot_changes=[],
         godot_bin=None,
         skills_written=[],
+        gitignore_added=[],
     )
 
     if not (project_root / "project.godot").is_file():
@@ -156,6 +169,15 @@ def run_init(
                 ".cli_control/godot_bin。\n"
                 "（跳过资源重新导入；首次 daemon start 会兜底重建 cache）"
             )
+
+        # .gitignore：无条件确保（不依赖 godot_bin 是否检测到——daemon 早晚
+        # 会建 .cli_control/，提前忽略最稳）。属于"项目接入"阶段，故在
+        # not skills_only 块内。
+        if write_gitignore:
+            added = _ensure_gitignore_entries(project_root)
+            if added:
+                _say(f"修改 .gitignore：忽略 {', '.join(added)}")
+            _record(gitignore_added=added)
 
     if write_skills:
         # lazy import：保持与 cli.cmd_init 那侧 `from .init_cmd import run_init`
@@ -319,3 +341,69 @@ def _ensure_in_packed_array(
         body.rstrip("\n") + "\n" + f'{key}=PackedStringArray("{value}")\n'
     )
     return text[:start] + new_body + text[end:], True
+
+
+# ── .gitignore 维护 ──
+
+
+def _gitignore_has_entry(text: str, entry: str) -> bool:
+    """``.gitignore`` 文本里是否已忽略 ``entry``。
+
+    宽松匹配：忽略前导 ``/`` 与尾随 ``/``、行首尾空白，所以 ``.cli_control``、
+    ``.cli_control/``、``/.cli_control/`` 视为同一条，不重复加。注释行（``#`` 开头）
+    不算数 —— 用户把它注释掉就是想让它失效，真条目仍要补。
+    """
+    target = entry.strip().strip("/")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.strip("/") == target:
+            return True
+    return False
+
+
+def _add_gitignore_entries(
+    text: str, entries: tuple[str, ...] | list[str]
+) -> tuple[str, list[str]]:
+    """纯函数：把缺失的 ``entries`` 追加到 ``.gitignore`` 文本末尾。
+
+    返回 ``(新文本, 实际新增的条目列表)``。已存在的条目跳过。追加前确保末尾
+    有换行，避免把新条目黏到原末行后面；空文本不留前导空行。行尾统一用
+    ``\\n``，CRLF 回写交给 IO 包装层（与 ``_patch_project_godot`` 同构）。
+    """
+    added: list[str] = []
+    out = text
+    for entry in entries:
+        if _gitignore_has_entry(out, entry):
+            continue
+        if out and not out.endswith("\n"):
+            out += "\n"
+        out += entry + "\n"
+        added.append(entry)
+    return out, added
+
+
+def _ensure_gitignore_entries(
+    project_root: Path, entries: tuple[str, ...] = GITIGNORE_ENTRIES
+) -> list[str]:
+    """确保项目根 ``.gitignore`` 忽略 ``entries``；返回实际新增的条目。
+
+    文件不存在则创建（LF）。已存在则沿用 ``_patch_project_godot`` 的 bytes+CRLF
+    思路：读 bytes、探测原文是否 CRLF、解码时折成 LF 便于匹配，仅在确有新增时
+    回写并把行尾翻回原样 —— 保 Windows 上 git diff 不被整文件行尾翻转污染。
+    """
+    path = project_root / GITIGNORE_NAME
+    if path.exists():
+        raw = path.read_bytes()
+        is_crlf = b"\r\n" in raw
+        text = raw.decode("utf-8").replace("\r\n", "\n")
+    else:
+        is_crlf = False
+        text = ""
+
+    new_text, added = _add_gitignore_entries(text, entries)
+    if added:
+        out = new_text.replace("\n", "\r\n") if is_crlf else new_text
+        path.write_bytes(out.encode("utf-8"))
+    return added
