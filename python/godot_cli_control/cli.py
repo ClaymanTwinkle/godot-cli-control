@@ -1264,6 +1264,7 @@ def cmd_init(ns: argparse.Namespace) -> int:
             write_skills=not ns.no_skills,
             skills_only=ns.skills_only,
             clobber_skills=not ns.skills_no_clobber,
+            write_gitignore=not ns.no_gitignore,
             output_format=fmt,
             result=result,
         )
@@ -1569,7 +1570,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="在 Godot 项目根一键接入插件",
         description=(
             "复制 addons/godot_cli_control 到目标项目、patch project.godot 启用插件、"
-            "校验 GODOT_BIN。"
+            "校验 GODOT_BIN、在 .gitignore 忽略 .cli_control/。"
         ),
         epilog=(
             "GODOT_BIN 查找顺序：\n"
@@ -1599,6 +1600,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "写 skill 时跳过已存在的 .claude/.codex SKILL.md（默认会覆盖以"
             "保证版本与 CLI 帮助同步）。与 --no-skills / --skills-only 都兼容。"
+        ),
+    )
+    init_p.add_argument(
+        "--no-gitignore",
+        action="store_true",
+        help=(
+            "跳过往项目根 .gitignore 追加 .cli_control/（默认会追加，"
+            "忽略 daemon 的机器本地状态目录）。--skills-only 模式下本就跳过。"
         ),
     )
     skills_group = init_p.add_mutually_exclusive_group()

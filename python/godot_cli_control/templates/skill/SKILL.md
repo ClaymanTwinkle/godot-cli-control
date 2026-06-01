@@ -85,7 +85,7 @@ $ godot-cli-control --text exists /root/Main
 true
 
 $ godot-cli-control init
-{"ok": true, "result": {"project_root": "/path/to/proj", "plugin_copied": true, "plugin_overwritten": false, "project_godot_changes": ["autoload/GameBridgeNode", "editor_plugins/enabled"], "godot_bin": "/usr/bin/godot", "skills_written": [".../SKILL.md", ".../SKILL.md"], "skills_only": false, "write_skills": true}}
+{"ok": true, "result": {"project_root": "/path/to/proj", "plugin_copied": true, "plugin_overwritten": false, "project_godot_changes": ["autoload/GameBridgeNode", "editor_plugins/enabled"], "godot_bin": "/usr/bin/godot", "skills_written": [".../SKILL.md", ".../SKILL.md"], "gitignore_added": [".cli_control/"], "skills_only": false, "write_skills": true}}
 
 $ godot-cli-control run my_script.py
 {"ok": true, "result": {"exit_code": 0, "script": "my_script.py"}}
