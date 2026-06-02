@@ -23,8 +23,12 @@ godot-cli-control = "godot_cli_control.cli:main"
 godot-cli-control = "godot_cli_control.pytest_plugin"
 
 [tool.pytest.ini_options]
+# pytest-asyncio：显式钉死 async fixture 的 loop scope 为 function（= 未来版本默认值），
+# 消除 "asyncio_default_fixture_loop_scope is unset" 的 deprecation warning。改这行前
+# 先确认没有 module/session-scope 的 async fixture 依赖跨用例共享 loop。
+asyncio_default_fixture_loop_scope = "function"
 # gui：需要真实显示（开窗）才能跑的端到端测试。普通 unit / headless e2e 不带此
-# marker。本地默认随 GODOT_BIN / GCC_GUI_E2E 未设而 skip；CI 专档（Linux 套
+# marker。本地默认随 godot 检测 / GCC_GUI_E2E 未设而 skip；CI 专档（Linux 套
 # xvfb 或 macOS runner）设 GCC_GUI_E2E=1 开启。注册在此避免 unknown-marker 警告，
 # 也让 `pytest -m "not gui"` 能稳定剔除。
 markers = [

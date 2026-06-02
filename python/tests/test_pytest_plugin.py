@@ -11,6 +11,21 @@ import pytest
 pytest_plugins = ["pytester"]
 
 
+@pytest.fixture(autouse=True)
+def _pin_asyncio_loop_scope(pytester: pytest.Pytester) -> None:
+    """pytester 子实例不继承主 pyproject 的 ``[tool.pytest.ini_options]``，而
+    pytest-asyncio 是已安装插件，每次子 ``runpytest`` 都会因
+    ``asyncio_default_fixture_loop_scope`` 未设发 deprecation warning（同进程下冒泡到
+    主 summary）。这些子测试只验证同步 fixture，给每个临时项目写一份最小 ini 钉死该值，
+    消除噪音；与主 pyproject 的同名配置保持一致。"""
+    pytester.makeini(
+        """
+        [pytest]
+        asyncio_default_fixture_loop_scope = function
+        """
+    )
+
+
 def test_options_registered_in_help(pytester: pytest.Pytester) -> None:
     """--help 输出含我们的 CLI 选项 group。"""
     result = pytester.runpytest("--help")
