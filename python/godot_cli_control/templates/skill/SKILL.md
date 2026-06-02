@@ -44,9 +44,9 @@ godot-cli-control daemon stop
 |---|---|
 | 0 | Success (or, for `exists` / `visible` / `wait-node`, the boolean was true / found) |
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`=timeout, `daemon status`=stopped |
-| 2 | Connection / IO / usage error (daemon not running, malformed `combo` input, script path not found). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
+| 2 | Connection / IO / usage error (daemon not running, script path not found). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
 | 3 | `daemon stop --all` partial failure: at least one daemon in the registry failed to stop. Per-record `rc` is in the JSON `result.stopped[]`. |
-| 64 | Argparse usage error |
+| 64 | Argparse usage error, **or a pre-flight usage error caught before connecting** — e.g. `combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, or `hold` with a non-positive duration. The error envelope carries client code `-1003`. |
 
 Shell-`if` works:
 
