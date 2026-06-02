@@ -8,16 +8,38 @@ on:
   workflow_dispatch:
 
 jobs:
+  # lint 门禁（issue #83）：规则集 + line-length 锁在 pyproject [tool.ruff]，CI 只负责
+  # 跑。独立 job 而非塞进 python-unit 矩阵——lint 与 OS/Python 版本无关，跑一次即可。
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff>=0.6"
+
+      - name: ruff check
+        run: ruff check .
+
   python-unit:
     name: pytest (Python ${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      GODOT_VERSION: '4.6.2-stable'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13']
         include:
-          # 跨平台 daemon / pathing 验证：Windows + macOS 跑一份 3.12 即可，
+          # 跨平台 daemon / pathing 验证：Windows + macOS 跑一份 3.12 即可,
           # 不再扩成全 python × 全 os 的 12 格 matrix。
           - os: windows-latest
             python-version: '3.12'
@@ -38,6 +60,38 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
+
+      # ---- Godot for headless e2e (issue #84) -----------------------------
+      # 仅 ubuntu+3.12（覆盖率门禁所在格）下装 Godot，让 headless e2e
+      # （test_e2e_input / test_e2e_example / test_e2e_client_direct）在 CI 真跑
+      # 并计入覆盖率。装了 godot ⇒ find_godot_binary() 命中 ⇒ 这些文件不再 skip。
+      # 其余 python 版本格仍走纯 unit（无 GODOT_BIN ⇒ e2e 自动 skip），不重复下载。
+      # 复用 walkthrough job 的下载逻辑；headless 不需要 display，普通 runner 即可。
+      - name: Cache Godot (Linux, e2e)
+        id: godot-cache-e2e
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/cache@v5
+        with:
+          path: ~/godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Download Godot (Linux, e2e)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' && steps.godot-cache-e2e.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot-bin
+          VER="${GODOT_VERSION}"
+          URL="https://github.com/godotengine/godot/releases/download/${VER}/Godot_v${VER}_linux.x86_64.zip"
+          echo "Downloading $URL"
+          curl -fsSL -o /tmp/godot.zip "$URL"
+          unzip -q /tmp/godot.zip -d ~/godot-bin
+          mv ~/godot-bin/Godot_v${VER}_linux.x86_64 ~/godot-bin/godot
+          chmod +x ~/godot-bin/godot
+
+      - name: Expose GODOT_BIN for e2e (Linux)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          ~/godot-bin/godot --version
+          echo "GODOT_BIN=$HOME/godot-bin/godot" >> "$GITHUB_ENV"
 
       # 用 `coverage run` 而非 `pytest --cov`：pytest 启动时
       # pytest11 entry-point 会自动加载 godot_cli_control.pytest_plugin，
@@ -266,3 +320,14 @@ jobs:
       # 属性名一旦回归，这一步立刻红 —— 仓库自带 demo 不许悄悄腐烂。
       - name: Run example demo e2e (headless)
         run: python -m pytest python/tests/test_e2e_example.py -v
+
+      # 录屏 e2e（#78）：本 job 是唯一同时备齐「真实显示 + GODOT_BIN + ffmpeg」的格，
+      # 录制必须开窗（headless dummy renderer 写帧 SIGSEGV，正是 #180 根因），
+      # 所以只能在这里跑。先确保 ffmpeg/ffprobe 在 PATH（缺则 test 自身 skip 并打印原因）。
+      - name: Ensure ffmpeg (macOS)
+        run: ffmpeg -version >/dev/null 2>&1 && ffprobe -version >/dev/null 2>&1 || brew install ffmpeg
+
+      - name: Run record e2e (windowed --record → mp4)
+        env:
+          GCC_GUI_E2E: '1'
+        run: python -m pytest python/tests/test_e2e_record.py -v

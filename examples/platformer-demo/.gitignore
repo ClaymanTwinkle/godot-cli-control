@@ -8,5 +8,15 @@
 # godot-cli-control daemon runtime (PID + port files).
 /.cli_control/
 
+# Skill files written by `godot-cli-control init` into the consuming project.
+/.claude/
+/.codex/
+
+# Godot per-script UID sidecars, generated on first import. The repo-root addons/
+# commits its .uid (stable cross-references matter there); this demo ships
+# deliberately un-imported (run `init` to materialize), so its script UIDs are
+# per-machine import artifacts — don't commit them.
+*.gd.uid
+
 # Screenshots produced by drive.sh.
 *.png

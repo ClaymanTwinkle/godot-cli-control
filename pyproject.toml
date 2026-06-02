@@ -12,9 +12,9 @@ dependencies = [
 
 [project.optional-dependencies]
 pytest = ["pytest>=7"]
-# 全套测试依赖 —— 仅 CI / 开发者本地测试用，包含 pytest-cov 与 pytest-asyncio。
-# 普通用户用 `[pytest]` 已够；不要把 cov 拖到默认安装路径。
-test = ["pytest>=7", "pytest-asyncio>=0.21", "pytest-cov>=4"]
+# 全套测试依赖 —— 仅 CI / 开发者本地测试用，包含 pytest-cov、pytest-asyncio 与
+# ruff（lint 门禁，issue #83）。普通用户用 `[pytest]` 已够；不要把这些拖到默认安装路径。
+test = ["pytest>=7", "pytest-asyncio>=0.21", "pytest-cov>=4", "ruff>=0.6"]
 
 [project.scripts]
 godot-cli-control = "godot_cli_control.cli:main"
@@ -34,6 +34,21 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "gui: 需要真实显示的 windowed e2e（screenshot frame_post_draw 路径，issue #64）",
 ]
+
+# ── lint（ruff）─────────────────────────────────────────────────────────
+# issue #83：把 lint 从「开发者本机全局 ruff」收编成 CI 门禁 + dev 依赖，趁全仓
+# 基线为 0 锁定收益。规则集刻意只钉 ruff 默认的 pyflakes(F) + pycodestyle 子集
+# (E4/E7/E9)——这正是当前 0-error 基线对应的集合；扩到 E501/I/UP/B 会一次性炸出
+# 几十条历史报错，与「锁定基线、零噪音引入门禁」的目标相悖。要加规则请单开 PR、
+# 连同 autofix 一起 land，别让门禁第一天就红。line-length 仅供 `ruff format`
+# 参考（E501 未纳入 select，不构成门禁）。
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["python/godot_cli_control/_version.py"]  # hatch-vcs 生成物
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

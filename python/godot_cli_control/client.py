@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -23,7 +24,39 @@ DEFAULT_PORT: int = 9877
 # 改用固定大值后：正常完成时 server 自然回包；server 真死循环时由 600s 兜底
 # （而不是 55s 把还活着的录像炸掉）；死连接由 websockets 库的 ping/pong 心跳
 # 在 ~40s 内独立检测，与本上限无关。
-LONG_OP_CLIENT_TIMEOUT: float = 600.0
+LONG_OP_DEFAULT_TIMEOUT: float = 600.0
+
+
+def _resolve_long_op_timeout() -> float:
+    """长操作生死线，可被 ``GODOT_CLI_LONG_OP_TIMEOUT`` env 覆盖（issue #69）。
+
+    默认 ``LONG_OP_DEFAULT_TIMEOUT``（600s）。合法录像 > 10min 等少数长操作可
+    设环境变量调高（如 ``GODOT_CLI_LONG_OP_TIMEOUT=1800``）。非正数 / 非数字一律
+    忽略并回退默认——这是个兜底生死线，绝不能因 env 写错被设成 0 把正常操作秒杀。
+    """
+    raw = os.environ.get("GODOT_CLI_LONG_OP_TIMEOUT")
+    if not raw:
+        return LONG_OP_DEFAULT_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "GODOT_CLI_LONG_OP_TIMEOUT=%r 不是数字，回退默认 %.0fs",
+            raw, LONG_OP_DEFAULT_TIMEOUT,
+        )
+        return LONG_OP_DEFAULT_TIMEOUT
+    if value <= 0:
+        logger.warning(
+            "GODOT_CLI_LONG_OP_TIMEOUT=%r 必须 > 0，回退默认 %.0fs",
+            raw, LONG_OP_DEFAULT_TIMEOUT,
+        )
+        return LONG_OP_DEFAULT_TIMEOUT
+    return value
+
+
+# 模块级解析一次：进程生命周期内 env 不变；测试需要时改 env 后调
+# ``_resolve_long_op_timeout()`` 拿新值，或直接给 request() 传 timeout。
+LONG_OP_CLIENT_TIMEOUT: float = _resolve_long_op_timeout()
 
 
 class RpcError(RuntimeError):
@@ -43,7 +76,17 @@ class RpcError(RuntimeError):
 class GameClient:
     """WebSocket client that connects to Godot's GameBridge service."""
 
-    def __init__(self, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, port: int | None = None) -> None:
+        # port=None（无显式端口）→ 从 .cli_control/port auto-discover，找不到再回退
+        # DEFAULT_PORT。daemon 默认 OS 自动分配端口，所以照 README 写
+        # ``GameClient()`` 单连接脚本的用户/agent 必须经由这条发现路径才能连上
+        # （issue #91）。发现逻辑收敛在 daemon.discover_port，CLI 走同一入口。
+        # 延迟 import 避免 client 在 package import 时拉起 daemon→registry 这条
+        # 较重的依赖链。
+        if port is None:
+            from .daemon import discover_port
+
+            port = discover_port() or DEFAULT_PORT
         self._port = port
         self._ws: ClientConnection | None = None
         self._pending: dict[str, asyncio.Future[dict]] = {}
@@ -279,17 +322,18 @@ class GameClient:
     async def wait_game_time(self, seconds: float) -> dict:
         """按 Godot game time 等待 N 秒。
 
-        客户端用固定 ``LONG_OP_CLIENT_TIMEOUT`` 生死线（issue #45）：game-time
-        与 wall-time 比值受录像模式 / 分辨率 / 盘速 / fps 影响不可预测，任何
-        seconds-scaled 公式都会在某个组合下假超时。死连接由 ws ping/pong 兜底。
-        seconds <= 0 时客户端短路返回，不发 RPC。
+        客户端用固定的长操作生死线（issue #45）：game-time 与 wall-time 比值受
+        录像模式 / 分辨率 / 盘速 / fps 影响不可预测，任何 seconds-scaled 公式都会
+        在某个组合下假超时。死连接由 ws ping/pong 兜底。生死线默认 600s，可被
+        ``GODOT_CLI_LONG_OP_TIMEOUT`` env 覆盖（issue #69）——每次调用现取，
+        让 env 改动即时生效。seconds <= 0 时客户端短路返回，不发 RPC。
         """
         if seconds <= 0:
             return {"success": True}
         return await self.request(
             "wait_game_time",
             {"seconds": seconds},
-            timeout=LONG_OP_CLIENT_TIMEOUT,
+            timeout=_resolve_long_op_timeout(),
         )
 
     # ---- Input simulation API ----
@@ -311,10 +355,11 @@ class GameClient:
         )
 
     async def combo(self, steps: list[dict]) -> dict:
-        # 客户端用固定 LONG_OP_CLIENT_TIMEOUT 生死线（issue #45）：见
-        # wait_game_time 注释——同样的 game-time / wall-time 不对齐问题。
+        # 长操作生死线（issue #45）：见 wait_game_time 注释——同样的 game-time /
+        # wall-time 不对齐问题。默认 600s，可被 GODOT_CLI_LONG_OP_TIMEOUT 覆盖
+        # （issue #69），每次调用现取。
         return await self.request(
-            "input_combo", {"steps": steps}, timeout=LONG_OP_CLIENT_TIMEOUT
+            "input_combo", {"steps": steps}, timeout=_resolve_long_op_timeout()
         )
 
     async def combo_cancel(self) -> dict:

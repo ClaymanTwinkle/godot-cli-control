@@ -243,6 +243,39 @@ def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
     return parsed
 
 
+def _combo_total_duration(steps: list[dict]) -> float:
+    """combo 全部 step 的累计 game-time（给 ``--wait`` 算阻塞时长，issue #90）。
+
+    step schema 与服务端一致：``{"action": ..., "duration": <默认 0.1>}`` 串行
+    按下/释放，``{"wait": <秒>}`` 纯等待。非数字 / 缺字段按默认 0.1 兜底，绝不
+    抛错——``--wait`` 是体验增强，估时偏差远好过让命令崩掉。
+    """
+    total = 0.0
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        raw = step.get("wait", step.get("duration", 0.1))
+        try:
+            total += float(raw)
+        except (TypeError, ValueError):
+            total += 0.1
+    return total
+
+
+async def _maybe_block_for_duration(
+    client: GameClient, ns: argparse.Namespace, duration: float
+) -> None:
+    """``--wait``：输入命令发出后，阻塞 ``duration`` 的 game-time 再返回（issue #90）。
+
+    把 SKILL.md 推荐的「读动作完成后状态前先 wait-time <时长>」折叠进同一条命令、
+    复用同一连接：需要同步的 agent 一步到位拿到结算后状态。默认（不传 ``--wait``）
+    保持异步立即返回，sticky + timer 模型不变。``wait_game_time`` 在 ≤0 时本就短路，
+    这里也提前挡掉，省一次 RPC 往返。
+    """
+    if getattr(ns, "wait", False) and duration > 0:
+        await client.wait_game_time(duration)
+
+
 # ── 现有 RPC 命令 handler（迁移到 ns 签名 + 返回数据） ──
 
 
@@ -279,11 +312,16 @@ async def cmd_release(client: GameClient, ns: argparse.Namespace) -> dict:
 
 async def cmd_tap(client: GameClient, ns: argparse.Namespace) -> dict:
     duration = float(ns.duration) if ns.duration else 0.1
-    return await client.action_tap(ns.action, duration)
+    result = await client.action_tap(ns.action, duration)
+    await _maybe_block_for_duration(client, ns, duration)
+    return result
 
 
 async def cmd_hold(client: GameClient, ns: argparse.Namespace) -> dict:
-    return await client.hold(ns.action, float(ns.duration))
+    duration = float(ns.duration)
+    result = await client.hold(ns.action, duration)
+    await _maybe_block_for_duration(client, ns, duration)
+    return result
 
 
 async def cmd_combo(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -291,7 +329,9 @@ async def cmd_combo(client: GameClient, ns: argparse.Namespace) -> dict:
     steps = getattr(ns, "_combo_steps", None)
     if steps is None:
         steps = _read_combo_steps(ns)
-    return await client.combo(steps)
+    result = await client.combo(steps)
+    await _maybe_block_for_duration(client, ns, _combo_total_duration(steps))
+    return result
 
 
 async def cmd_release_all(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -424,8 +464,18 @@ def _exit_from_wait_node(r: dict) -> int:
 # ── extra_args registrators ──
 
 
+def _register_wait_flag(p: argparse.ArgumentParser) -> None:
+    """``--wait``：输入命令阻塞到动作时长（game-time）结束再返回（issue #90）。"""
+    p.add_argument(
+        "--wait",
+        action="store_true",
+        help="阻塞到动作时长（game-time）结束再返回，再读状态即结算后值；"
+        "默认异步立即返回。等价于命令后再跑一次 wait-time <时长>，但复用同一连接。",
+    )
+
+
 def _register_combo_args(p: argparse.ArgumentParser) -> None:
-    """combo 的 args：``json_file`` 位置可选，加 ``--steps-json``。
+    """combo 的 args：``json_file`` 位置可选，加 ``--steps-json`` / ``--wait``。
     互斥校验在 ``_read_combo_steps`` 里做（argparse 里不能同时加 dest 冲突的
     位置参数和可选参数到 mutually_exclusive_group）。"""
     p.add_argument(
@@ -439,6 +489,7 @@ def _register_combo_args(p: argparse.ArgumentParser) -> None:
         default=None,
         help="直接传 JSON 字符串，不需要文件（与位置参数互斥）",
     )
+    _register_wait_flag(p)
 
 
 def _register_tree_args(p: argparse.ArgumentParser) -> None:
@@ -558,23 +609,25 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
         name="tap",
         handler=cmd_tap,
-        description="短按动作（press → 等待 → release）。",
+        description="短按动作（press → 等待 → release）。默认异步立即返回；加 --wait 阻塞到时长结束。",
         positionals=(
             Positional("action", None, "InputMap 动作名"),
             Positional("duration", "?", "按下时长（秒），默认 0.1"),
         ),
         example="tap jump 0.2",
+        extra_args=_register_wait_flag,
         text_formatter=lambda r: f"tapped: {r}",
     ),
     RpcSpec(
         name="hold",
         handler=cmd_hold,
-        description="按住动作指定时长（秒），到点自动释放。",
+        description="按住动作指定时长（秒），到点自动释放。默认命令立即返回（动作在游戏里持续该时长）；要读动作完成后的状态请加 --wait（或命令后先 wait-time <时长>）。",
         positionals=(
             Positional("action", None, "InputMap 动作名"),
             Positional("duration", None, "按住时长（秒，必须 > 0）"),
         ),
         example="hold jump 1.5",
+        extra_args=_register_wait_flag,
         preflight=_preflight_hold,
         text_formatter=lambda r: f"holding: {r}",
     ),
@@ -762,12 +815,37 @@ RPC_BY_NAME: dict[str, RpcSpec] = {s.name: s for s in RPC_SPECS}
 # ── Daemon / run / init 子命令 ──
 
 
-def cmd_daemon_start(ns: argparse.Namespace) -> int:
-    from .daemon import Daemon, DaemonError
+def _resolve_idle_timeout(ns: argparse.Namespace) -> int:
+    """解析 idle-timeout 秒数：显式 ``--idle-timeout`` > 项目级 config > 0（关闭）。
+
+    issue #44：默认值 ``"0"`` 时回退读 ``.cli_control/config.json`` 的 ``idle_timeout``，
+    省得喜欢自动收尾的用户每次手敲 ``--idle-timeout``。config 也没设则仍是 0（关闭）。
+    注意：显式 ``--idle-timeout 0`` 与默认 ``"0"`` 不可区分，两者都会回退 config——
+    config 设了又想单次强制关闭，临时 `unset` 配置即可（YAGNI，未做 opt-out flag）。
+    非法 duration（CLI 或 config 任一）抛 ``ValueError``，由调用方转 EXIT_USAGE。
+    """
     from ._duration import parse_duration
 
+    raw = getattr(ns, "idle_timeout", "0")
+    if raw == "0":
+        from .daemon import read_project_config
+
+        cfg_val = read_project_config().get("idle_timeout")
+        if cfg_val is not None:
+            try:
+                return parse_duration(str(cfg_val))
+            except ValueError as e:
+                raise ValueError(
+                    f".cli_control/config.json 的 idle_timeout 非法：{e}"
+                ) from e
+    return parse_duration(raw)
+
+
+def cmd_daemon_start(ns: argparse.Namespace) -> int:
+    from .daemon import Daemon, DaemonError
+
     try:
-        idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
+        idle_seconds = _resolve_idle_timeout(ns)
     except ValueError as e:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
         return EXIT_USAGE
@@ -965,7 +1043,6 @@ def cmd_run(ns: argparse.Namespace) -> int:
       64 argparse 用法错（idle_timeout 解析失败等"明显参数写错"）
     """
     from .daemon import Daemon, DaemonError
-    from ._duration import parse_duration
 
     fmt = _output_format(ns)
 
@@ -985,7 +1062,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
             return EXIT_INFRA_ERROR
 
         try:
-            idle_seconds = parse_duration(getattr(ns, "idle_timeout", "0"))
+            idle_seconds = _resolve_idle_timeout(ns)
         except ValueError as e:
             if fmt == OUTPUT_JSON:
                 _emit_error_payload(CLIENT_CODE_USAGE, str(e))
@@ -1395,7 +1472,8 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
         "--idle-timeout",
         type=str,
         default="0",
-        help="空闲超时（如 30m / 2h / 90s / 0=关闭，默认关）。开启后 Godot 端 Timer 自动 quit。",
+        help="空闲超时（如 30m / 2h / 90s / 0=关闭，默认关）。开启后 Godot 端 Timer 自动 quit。"
+        "不传时回退读 .cli_control/config.json 的 idle_timeout（issue #44），省得每次手敲。",
     )
 
 
@@ -1748,9 +1826,12 @@ async def _run_rpc(
         _emit_envelope_error(fmt, code, msg)
         return EXIT_INFRA_ERROR
     except (ValueError, json.JSONDecodeError) as e:
-        # 用法错误：combo 没文件没 inline、set value 解析失败……
+        # 用法错误：set/call 的 value JSON 解析失败等（这些命令无 preflight）。
+        # 统一退 EXIT_USAGE(64)，与 preflight 路径（combo/hold）一致 —— 同一客户端
+        # 码 -1003 必须恒等于 exit 64，否则 agent 拿到 -1003 无法据此推断退出码
+        # （issue #82，破坏「单 code 字段无歧义」契约）。
         _emit_envelope_error(fmt, CLIENT_CODE_USAGE, str(e))
-        return EXIT_INFRA_ERROR
+        return EXIT_USAGE
     except Exception as e:  # noqa: BLE001
         # 兜底：客户端内部 bug（AttributeError、KeyError、协议解析意外等）
         # 也要落进信封，否则 ``--json`` 契约对 AI agent 不再可信。把异常类
@@ -1805,9 +1886,10 @@ def main() -> None:
 
         port = ns.port
         if port is None:
-            from .daemon import Daemon
+            # 与 GameClient()/GameBridge() 共用同一发现入口（issue #91）。
+            from .daemon import discover_port
 
-            port = Daemon(Path.cwd()).current_port() or DEFAULT_PORT
+            port = discover_port() or DEFAULT_PORT
 
         rc = asyncio.run(_run_rpc(spec, ns, port, fmt))
         sys.exit(rc)

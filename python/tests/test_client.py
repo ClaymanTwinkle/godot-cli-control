@@ -109,7 +109,7 @@ async def test_listen_clears_pending_on_disconnect() -> None:
     async def fake_iter():
         # iterator 立即结束（模拟连接关闭）
         return
-        yield  # noqa: unreachable
+        yield  # 让函数成为 async generator；return 在前，这行永远到不了
 
     fake_ws.__aiter__ = lambda self: fake_iter()
     fake_ws.close = AsyncMock()
@@ -148,7 +148,7 @@ async def test_request_timeout_cleans_pending() -> None:
         # async iterator 永久挂起：不会 yield 也不会结束，
         # 模拟"连接活着但不回响应"——request() 必定走 timeout 路径。
         await asyncio.Event().wait()
-        yield  # noqa: unreachable
+        yield  # 让函数成为 async generator；return 在前，这行永远到不了
 
     fake_ws.__aiter__ = lambda self: hang_iter()
     fake_ws.send = AsyncMock()
@@ -285,7 +285,7 @@ async def test_request_raises_rpc_error_with_code() -> None:
     async def hang_iter():
         # 让 listen task 保持活着 —— 我们手动通过 _pending 注入响应。
         await asyncio.Event().wait()
-        yield  # noqa: unreachable
+        yield  # 让函数成为 async generator；return 在前，这行永远到不了
 
     fake_ws.__aiter__ = lambda self: hang_iter()
     fake_ws.send = AsyncMock()
@@ -335,7 +335,7 @@ async def test_get_pressed_unwraps_actions_field() -> None:
     async def hang_iter():
         # 让 listen task 保持活着 —— 我们手动通过 _pending 注入响应。
         await asyncio.Event().wait()
-        yield  # noqa: unreachable
+        yield  # 让函数成为 async generator；return 在前，这行永远到不了
 
     fake_ws.__aiter__ = lambda self: hang_iter()
     fake_ws.send = AsyncMock()
@@ -378,7 +378,7 @@ async def test_list_input_actions_passes_include_builtin_param() -> None:
     async def hang_iter():
         # 让 listen task 保持活着 —— 我们手动通过 _pending 注入响应。
         await asyncio.Event().wait()
-        yield  # noqa: unreachable
+        yield  # 让函数成为 async generator；return 在前，这行永远到不了
 
     fake_ws.__aiter__ = lambda self: hang_iter()
     fake_ws.send = AsyncMock()
