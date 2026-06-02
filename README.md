@@ -16,12 +16,9 @@ Click nodes. Read & write properties. Simulate input. Take screenshots. Record m
 
 </div>
 
-<!--
-  Hero GIF goes here. Record examples/platformer-demo with Godot Movie Maker
-  (see examples/platformer-demo/drive.sh), export to docs/hero.gif, then replace
-  this comment with:
-  <p align="center"><img src="docs/hero.gif" width="640" alt="godot-cli-control driving a Godot scene"></p>
--->
+<p align="center">
+  <img src="docs/hero.gif" width="640" alt="A shell / AI agent driving a running Godot scene via godot-cli-control — clicking Start, then making the character jump and run">
+</p>
 
 ---
 
