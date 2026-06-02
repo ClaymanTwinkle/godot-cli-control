@@ -13,7 +13,7 @@ screenshot 回归）的产物。
   3. 连续重复 N 次（覆盖动态 transient 兜底，验证不是只有第一帧侥幸成功）。
 
 需要真实 Godot 4 **且真实显示**：
-  - ``GODOT_BIN`` 指向可执行文件；
+  - PATH 里有 ``godot``（或设 ``GODOT_BIN``）；
   - ``GCC_GUI_E2E=1`` 显式开启（本地默认 skip —— 多数开发机 / 无头 CI 没显示，
     误跑会卡在开窗或拿不到 RenderingDevice）。CI 专档在 Linux 套 xvfb 或用
     macOS runner，并设 ``GCC_GUI_E2E=1``。
@@ -35,7 +35,11 @@ from typing import Any
 
 import pytest
 
-_GODOT_BIN = os.environ.get("GODOT_BIN")
+from godot_cli_control.daemon import find_godot_binary
+
+# 与生产 daemon 用同一套 godot 检测（GODOT_BIN > macOS .app > PATH > Windows），
+# 不再硬依赖 GODOT_BIN env。注意本文件还有第二层 GCC_GUI_E2E gate（需真实显示）。
+_GODOT_BIN = find_godot_binary()
 _ADDON_SRC = Path(__file__).resolve().parents[2] / "addons" / "godot_cli_control"
 
 # RESOURCE_UNAVAILABLE：screenshot 时 viewport texture 暂不可用的 transient 码。
@@ -48,8 +52,8 @@ _REPEAT = 5
 pytestmark = [
     pytest.mark.gui,
     pytest.mark.skipif(
-        not _GODOT_BIN or not Path(_GODOT_BIN).exists(),
-        reason="需要真实 Godot 4：设置 GODOT_BIN 指向可执行文件",
+        not _GODOT_BIN,
+        reason="需要真实 Godot 4：把 godot 装进 PATH 或设 GODOT_BIN",
     ),
     pytest.mark.skipif(
         os.environ.get("GCC_GUI_E2E") != "1",

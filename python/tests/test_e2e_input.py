@@ -10,13 +10,12 @@
   2. sticky ``press`` 跨命令存活，直到 ``release-all``。
   3. 异常掉线（无 WebSocket close frame，close_code == -1）触发 release_all 兜底。
 
-需要真实 Godot 4：设置 ``GODOT_BIN`` 指向可执行文件，否则整文件 skip。
+需要真实 Godot 4：PATH 里有 ``godot``（或设 ``GODOT_BIN``），否则整文件 skip。
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -26,12 +25,16 @@ from typing import Any
 
 import pytest
 
-_GODOT_BIN = os.environ.get("GODOT_BIN")
+from godot_cli_control.daemon import find_godot_binary
+
+# 与生产 daemon 用同一套 godot 检测（GODOT_BIN > macOS .app > PATH > Windows），
+# 不再硬依赖 GODOT_BIN env：本机装了 godot 即自动跑这条 e2e。
+_GODOT_BIN = find_godot_binary()
 _ADDON_SRC = Path(__file__).resolve().parents[2] / "addons" / "godot_cli_control"
 
 pytestmark = pytest.mark.skipif(
-    not _GODOT_BIN or not Path(_GODOT_BIN).exists(),
-    reason="需要真实 Godot 4：设置 GODOT_BIN 指向可执行文件",
+    not _GODOT_BIN,
+    reason="需要真实 Godot 4：把 godot 装进 PATH 或设 GODOT_BIN，否则整文件 skip",
 )
 
 # 用 `python -m godot_cli_control` 调 CLI：与 PATH 无关，always 命中当前环境。
