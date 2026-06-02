@@ -12,13 +12,19 @@ Click nodes. Read & write properties. Simulate input. Take screenshots. Record m
 [![CI](https://github.com/ClaymanTwinkle/godot-cli-control/actions/workflows/ci.yml/badge.svg)](https://github.com/ClaymanTwinkle/godot-cli-control/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+[**▶ Runnable demo — `examples/platformer-demo` →**](examples/platformer-demo)
+
 </div>
+
+<p align="center">
+  <img src="docs/hero.gif" width="640" alt="A shell / AI agent driving a running Godot scene via godot-cli-control — clicking Start, then making the character jump and run">
+</p>
 
 ---
 
 ## Why
 
-Godot ships great tools for *playing* a scene, but very little for *programmatically poking it from outside*. If you want CI to assert that "the boss spawns after the third hit," or you want an AI agent to navigate a menu, or you want a pytest run to drive a 2D skeleton through 200 frames and diff the screenshot — you typically end up writing a one-off in-engine harness per project.
+Godot ships great tools for *playing* a scene, but very little for *programmatically poking it from outside*. If you want CI to assert that "the boss spawns after the third hit," or you want an AI agent to navigate a menu, or you want a pytest run to drive an animated character through 200 frames and diff the screenshot — you typically end up writing a one-off in-engine harness per project.
 
 `godot-cli-control` is that harness, generalized:
 
@@ -59,6 +65,17 @@ godot-cli-control daemon stop
 ```
 
 Want unreleased main? `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"`.
+
+## Try the demo
+
+A self-contained example lives in [`examples/platformer-demo/`](examples/platformer-demo) — a tiny scene with a **Start** button and a jumping character, plus a `drive.sh` that walks it end to end (init → daemon → click → simulate input → read state back → screenshot). Clone the repo, then:
+
+```bash
+cd examples/platformer-demo
+./drive.sh
+```
+
+It's driven under a real (headless) Godot in CI, so it can't silently rot.
 
 ## A taste
 
@@ -153,6 +170,7 @@ Full RPC reference (signatures, error codes, blacklist): [plugin README](addons/
 godot-cli-control/
 ├── addons/godot_cli_control/   # Godot 4 plugin (drop into your project's addons/)
 ├── python/                     # Python client + CLI (pip-installable)
+├── examples/platformer-demo/   # runnable demo (clone-and-run + hero-GIF source)
 └── .github/workflows/          # CI + release packaging
 ```
 
@@ -196,7 +214,7 @@ If you don't want `init`, copy the plugin manually and enable it from the editor
 
 ## Status
 
-Alpha. Published on PyPI (`pipx install godot-cli-control`); Godot AssetLib submission pending ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18)). Dogfooded in [`godot-2d-skeleton`](https://github.com/ClaymanTwinkle/godot-2d-skeleton). Current version: see [`CHANGELOG`](addons/godot_cli_control/CHANGELOG.md).
+Alpha. Published on PyPI (`pipx install godot-cli-control`); Godot AssetLib submission pending ([#18](https://github.com/ClaymanTwinkle/godot-cli-control/issues/18)). Current version: see [`CHANGELOG`](addons/godot_cli_control/CHANGELOG.md).
 
 ## Roadmap
 

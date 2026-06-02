@@ -259,3 +259,10 @@ jobs:
       # 首次进 CI。headless，无需开窗。
       - name: Run input-persistence e2e (headless)
         run: python -m pytest python/tests/test_e2e_input.py -v
+
+      # demo 防腐 e2e（examples/platformer-demo）：headless 起 daemon，跑 demo 的
+      # 核心驱动序列并断言黑盒属性（jump_count==1、moved_right==true）。复用本 job
+      # 已备齐的 GODOT_BIN + 已装包 + pytest。场景节点路径 / CLI 子命令 / player.gd
+      # 属性名一旦回归，这一步立刻红 —— 仓库自带 demo 不许悄悄腐烂。
+      - name: Run example demo e2e (headless)
+        run: python -m pytest python/tests/test_e2e_example.py -v

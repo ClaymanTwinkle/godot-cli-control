@@ -1,0 +1,12 @@
+# Copied in by `godot-cli-control init` — the repo-root addons/ is the single
+# source of truth, so we never commit this vendored copy.
+/addons/
+
+# Godot import cache / per-machine editor state.
+/.godot/
+
+# godot-cli-control daemon runtime (PID + port files).
+/.cli_control/
+
+# Screenshots produced by drive.sh.
+*.png
