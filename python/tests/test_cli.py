@@ -398,7 +398,7 @@ def test_exec_user_script_json_redirects_script_stdout_to_stderr(
     rc = _exec_user_script(script, port=9999, output_format="json")
     captured = capsys.readouterr()
     assert rc == 0
-    out_lines = [l for l in captured.out.splitlines() if l.strip()]
+    out_lines = [line for line in captured.out.splitlines() if line.strip()]
     assert len(out_lines) == 1, f"stdout 不是单行 envelope：{captured.out!r}"
     payload = _json.loads(out_lines[0])
     assert payload["ok"] is True
@@ -425,7 +425,7 @@ def test_exec_user_script_json_error_on_runtime_exception(
     rc = _exec_user_script(script, port=9999, output_format="json")
     captured = capsys.readouterr()
     assert rc == 1
-    out_lines = [l for l in captured.out.splitlines() if l.strip()]
+    out_lines = [line for line in captured.out.splitlines() if line.strip()]
     assert len(out_lines) == 1
     payload = _json.loads(out_lines[0])
     assert payload["ok"] is False
@@ -571,7 +571,7 @@ def test_exec_user_script_json_top_level_print_does_not_leak(
     rc = _exec_user_script(script, port=9999, output_format="json")
     captured = capsys.readouterr()
     assert rc == 0
-    out_lines = [l for l in captured.out.splitlines() if l.strip()]
+    out_lines = [line for line in captured.out.splitlines() if line.strip()]
     assert len(out_lines) == 1, (
         f"stdout 不是单行 envelope（顶层 print 漏了？）：{captured.out!r}"
     )
@@ -1119,7 +1119,7 @@ def test_combo_preflight_rejects_no_steps_before_connecting(
     避免 agent 等 30s 连接 retry 才看到错误。"""
     import json as _json
 
-    from godot_cli_control.cli import EXIT_USAGE, build_parser, main
+    from godot_cli_control.cli import EXIT_USAGE, main
 
     # 把 GameClient 替成会爆的桩 —— 如果 preflight 没生效、跑到连接环节就立刻看见。
     class _ShouldNotConnect:
@@ -1188,7 +1188,7 @@ def test_combo_preflight_caches_steps_to_avoid_stdin_double_read(
     """stdin 流不能读两次：preflight 必须把解析结果缓存到 ns，handler 复用。"""
     import io
 
-    from godot_cli_control.cli import _preflight_combo, _read_combo_steps, build_parser
+    from godot_cli_control.cli import _preflight_combo, build_parser
 
     monkeypatch.setattr(sys, "stdin", io.StringIO('[{"action":"jump"}]'))
     ns = build_parser().parse_args(["combo", "-"])
@@ -1559,7 +1559,8 @@ def test_daemon_ls_lists_active_daemon(
     import os
     from godot_cli_control import registry
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
-    proj = tmp_path / "p"; proj.mkdir()
+    proj = tmp_path / "p"
+    proj.mkdir()
     registry.register(
         proj, pid=os.getpid(), port=12345, godot_bin="x", log_path="y"
     )
@@ -1592,8 +1593,10 @@ def test_daemon_stop_all_invokes_terminate(
     from godot_cli_control import registry
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
 
-    proj1 = tmp_path / "a"; proj1.mkdir()
-    proj2 = tmp_path / "b"; proj2.mkdir()
+    proj1 = tmp_path / "a"
+    proj1.mkdir()
+    proj2 = tmp_path / "b"
+    proj2.mkdir()
     import os
     registry.register(proj1, pid=os.getpid(), port=1, godot_bin="x", log_path="y")
     registry.register(proj2, pid=os.getpid(), port=2, godot_bin="x", log_path="y")
@@ -1621,8 +1624,10 @@ def test_daemon_stop_all_returns_partial_when_one_fails(
     from godot_cli_control.daemon import DaemonError
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
 
-    proj1 = tmp_path / "ok"; proj1.mkdir()
-    proj2 = tmp_path / "bad"; proj2.mkdir()
+    proj1 = tmp_path / "ok"
+    proj1.mkdir()
+    proj2 = tmp_path / "bad"
+    proj2.mkdir()
     import os
     registry.register(proj1, pid=os.getpid(), port=1, godot_bin="x", log_path="y")
     registry.register(proj2, pid=os.getpid(), port=2, godot_bin="x", log_path="y")
@@ -1648,7 +1653,8 @@ def test_daemon_stop_all_ffmpeg_rc2_does_not_promote_to_partial(
     """单条 stop 返回 2（ffmpeg 转码失败但 daemon 已停）不算 --all 失败 —— rc 应为 0。"""
     from godot_cli_control import registry
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
-    proj = tmp_path / "p"; proj.mkdir()
+    proj = tmp_path / "p"
+    proj.mkdir()
     import os
     registry.register(proj, pid=os.getpid(), port=1, godot_bin="x", log_path="y")
 
@@ -1666,7 +1672,8 @@ def test_daemon_stop_project_flag(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """--project <path> 应对该项目调 Daemon(...).stop()，与 cwd 无关。"""
-    target = tmp_path / "p"; target.mkdir()
+    target = tmp_path / "p"
+    target.mkdir()
     seen: list[Path] = []
     import godot_cli_control.daemon as daemon_mod
     monkeypatch.setattr(daemon_mod.Daemon, "stop",
