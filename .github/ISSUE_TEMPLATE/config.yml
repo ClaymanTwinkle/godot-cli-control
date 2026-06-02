@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation — RPC reference, error & exit codes, security model
+    url: https://github.com/ClaymanTwinkle/godot-cli-control/blob/main/addons/godot_cli_control/README.md
+    about: The plugin README covers the full command surface, error/exit codes, activation modes, and the security model. Please skim it before filing.
+  - name: Report a security vulnerability (private)
+    url: https://github.com/ClaymanTwinkle/godot-cli-control/security/advisories/new
+    about: Please report security issues privately via a GitHub security advisory, not as a public issue.

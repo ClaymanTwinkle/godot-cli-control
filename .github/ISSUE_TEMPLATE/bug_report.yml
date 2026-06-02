@@ -1,0 +1,76 @@
+name: Bug report
+description: Something doesn't behave the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Every command prints a single-line JSON envelope — that envelope
+        is usually enough to localize a failure, so please paste it below.
+  - type: input
+    id: cli-version
+    attributes:
+      label: godot-cli-control version
+      description: Output of `godot-cli-control --version`.
+      placeholder: e.g. 0.2.13
+    validations:
+      required: true
+  - type: input
+    id: godot-version
+    attributes:
+      label: Godot version
+      placeholder: e.g. 4.3.stable
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows (native)
+        - Other (note in description)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - pipx install godot-cli-control
+        - pip install godot-cli-control
+        - editable / from source (pip install -e)
+        - other (note below)
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command(s)
+      description: The shell command(s) or `run` script you executed, including all flags.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: envelope
+    attributes:
+      label: JSON envelope / output
+      description: The single line of JSON printed on stdout, plus anything on stderr.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      description: What you expected to happen, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Scene setup, a minimal repro project, activation mode, headless vs GUI, etc.
+    validations:
+      required: false
