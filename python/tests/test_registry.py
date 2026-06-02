@@ -44,7 +44,8 @@ def test_register_creates_record(reg_dir: Path, tmp_path: Path) -> None:
 
 
 def test_unregister_removes_record(reg_dir: Path, tmp_path: Path) -> None:
-    proj = tmp_path / "p1"; proj.mkdir()
+    proj = tmp_path / "p1"
+    proj.mkdir()
     registry.register(proj, pid=os.getpid(), port=1, godot_bin="x", log_path="x")
     registry.unregister(proj)
     assert registry.list_all() == []
@@ -53,7 +54,8 @@ def test_unregister_removes_record(reg_dir: Path, tmp_path: Path) -> None:
 def test_list_all_prunes_dead_pids(
     reg_dir: Path, tmp_path: Path, dead_pid: int
 ) -> None:
-    proj = tmp_path / "p1"; proj.mkdir()
+    proj = tmp_path / "p1"
+    proj.mkdir()
     # 用一个已 reap 的子进程 PID —— 100% 死、跨平台稳
     registry.register(proj, pid=dead_pid, port=1, godot_bin="x", log_path="x")
     assert registry.list_all() == []  # 探活后死记录被清掉
@@ -64,7 +66,8 @@ def test_list_all_prunes_dead_pids(
 def test_list_all_also_cleans_project_state_for_dead(
     reg_dir: Path, tmp_path: Path, dead_pid: int
 ) -> None:
-    proj = tmp_path / "p1"; proj.mkdir()
+    proj = tmp_path / "p1"
+    proj.mkdir()
     ctrl = proj / ".cli_control"
     ctrl.mkdir()
     (ctrl / "godot.pid").write_text(str(dead_pid))
@@ -77,7 +80,8 @@ def test_list_all_also_cleans_project_state_for_dead(
 
 
 def test_project_hash_stable(tmp_path: Path) -> None:
-    p = tmp_path / "p"; p.mkdir()
+    p = tmp_path / "p"
+    p.mkdir()
     h1 = registry.project_hash(p)
     h2 = registry.project_hash(p)
     assert h1 == h2 and len(h1) == 12

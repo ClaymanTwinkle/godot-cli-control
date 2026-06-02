@@ -15,7 +15,6 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
-import pytest
 
 from godot_cli_control import cli
 
