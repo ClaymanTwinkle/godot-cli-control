@@ -6,6 +6,43 @@ readme = "python/README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "kesar" }]
+# keywords / classifiers 仅供 PyPI 搜索与分类筛选；与 GitHub repo topics 对齐。
+# 改这里时顺手对一眼 README 顶部徽章 + repo About 的 topics，别让三处漂移。
+keywords = [
+    "godot",
+    "godot4",
+    "godot-plugin",
+    "gdscript",
+    "automation",
+    "game-testing",
+    "pytest",
+    "websocket",
+    "json-rpc",
+    "ai-agent",
+    "llm",
+    "screenshot",
+    "headless",
+    "cli",
+]
+classifiers = [
+    # README 自称 Alpha；升 Beta/Stable 时记得同步这里与 README 的 Status 段。
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    # Python 版本与 CI matrix（.github/workflows/ci.yml）保持一致：实测 3.10–3.13。
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Games/Entertainment",
+    # pytest11 entry-point 让它成为一个 pytest 插件 —— 这条 classifier 能把包
+    # 收进 PyPI 的 pytest-plugin 分类列表，是面向 pytest 用户的关键发现入口。
+    "Framework :: Pytest",
+]
 dependencies = [
     "websockets>=14,<16",
 ]
@@ -21,6 +58,15 @@ godot-cli-control = "godot_cli_control.cli:main"
 
 [project.entry-points.pytest11]
 godot-cli-control = "godot_cli_control.pytest_plugin"
+
+# PyPI 项目页侧栏的链接全靠这张表（现在为空 = 侧栏只有一个 PyPI 自身链接）。
+# Changelog 指向 addon 内的 CHANGELOG（README「Status」段也引这份），别改成根目录。
+[project.urls]
+Homepage = "https://github.com/ClaymanTwinkle/godot-cli-control"
+Repository = "https://github.com/ClaymanTwinkle/godot-cli-control"
+Documentation = "https://github.com/ClaymanTwinkle/godot-cli-control#readme"
+Changelog = "https://github.com/ClaymanTwinkle/godot-cli-control/blob/main/addons/godot_cli_control/CHANGELOG.md"
+Issues = "https://github.com/ClaymanTwinkle/godot-cli-control/issues"
 
 [tool.pytest.ini_options]
 # pytest-asyncio：显式钉死 async fixture 的 loop scope 为 function（= 未来版本默认值），
