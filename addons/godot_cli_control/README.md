@@ -106,6 +106,10 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 
 > **CLI note**: as a shell subcommand, `screenshot` **requires an output path** — `godot-cli-control screenshot /tmp/shot.png` — and writes the PNG to that file. Returning base64 over stdout is intentionally unsupported, to keep large binary payloads out of an automating agent's context window.
 
+> **`--wait`**: `tap` / `hold` / `combo` return as soon as the input is armed, *before* the motion finishes. Add `--wait` (e.g. `hold run 1.5 --wait`) to block until the action's duration elapses (game-time) so the next read sees the settled state — equivalent to following the command with `wait-time <duration>` on the same connection.
+
+> **No-arg `GameClient()` / `GameBridge()`**: with no `port` argument they auto-discover the daemon's port from `.cli_control/port` (falling back to `9877`), so a single-connection script connects to a running daemon without hardcoding a port.
+
 ### Error codes
 
 Three numeric ranges share `error.code`; they never overlap, so a single field is unambiguous.
@@ -123,7 +127,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold) |
 | `-1001` | client | Connection failure (daemon not running, port wrong, proxy hijacking localhost) |
 | `-1002` | client | Timeout waiting for response |
-| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, …) |
+| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `set`/`call` value that fails JSON parsing, …). From an RPC subcommand this always exits **64** (#82); top-level `run`/`daemon` precondition failures also use `-1003` but exit 2. |
 | `-1004` | client | Local file IO error (e.g. screenshot can't write the destination) |
 | `-1005` | client | `run <script>` user script raised an uncaught exception — fix the script |
 | `-1099` | client | Internal CLI bug — please file an issue |
@@ -143,6 +147,8 @@ The daemon is the long-lived Godot process the CLI talks to (one per project roo
 | `daemon status` | Exit 0 = running, 1 = stopped. When stopped, the payload may carry `last_log` / `last_exit_code` to diagnose a crash. |
 | `daemon ls` | List every registered daemon (project root, pid, port). |
 
+**Project-level defaults**: drop a `.cli_control/config.json` with `{"idle_timeout": "30m"}` to give `daemon start` / `run` a default idle-timeout without passing `--idle-timeout` each time. It's consulted only when the flag is omitted (default `0`); an explicit `--idle-timeout` always wins. A long-running `wait-time` / `combo` / recording is bounded client-side by a 600s wall-time fail-safe — override it for legitimately long operations with `GODOT_CLI_LONG_OP_TIMEOUT=<seconds>`.
+
 ## Exit codes
 
 Semantic exit codes so `if godot-cli-control exists /root/Foo; then …` works in shell:
@@ -153,7 +159,7 @@ Semantic exit codes so `if godot-cli-control exists /root/Foo; then …` works i
 | 1 | RPC error; also `exists`/`visible`=false, `wait-node` timeout, `daemon status`=stopped |
 | 2 | Connection / IO error, or `daemon stop` ffmpeg-transcode failure |
 | 3 | `daemon stop --all` partial failure (≥1 daemon failed to stop) |
-| 64 | Usage error — bad argparse args, or a pre-flight reject like `combo` with no steps / malformed `--steps-json` (envelope carries client code `-1003`) |
+| 64 | Usage error on an RPC subcommand — bad argparse args, a pre-flight reject (`combo` with no steps / malformed `--steps-json`), a non-numeric `tap`/`wait-time` arg, or a `set`/`call` value that fails JSON parsing. These all carry client code `-1003` and now consistently exit 64 (#82; a few previously exited 2). |
 
 ## Activation Modes
 

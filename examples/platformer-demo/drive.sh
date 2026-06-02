@@ -12,8 +12,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # 0) One-time: install the control surface into this project (copies the addon,
-#    patches project.godot, detects the Godot binary). addons/, .godot/ and
-#    .cli_control/ are all gitignored, so this never dirties the repo. Idempotent.
+#    patches project.godot to wire the autoload + plugin, detects the Godot
+#    binary, writes .claude/.codex skill files). Idempotent. The vendored copies
+#    — addons/, .godot/, .cli_control/, .claude/, .codex/, *.gd.uid — are all
+#    gitignored. project.godot IS tracked and this demo ships without the bridge
+#    sections (left for init), so the one change `git status` shows after a run is
+#    that patch; `git checkout examples/platformer-demo/project.godot` reverts it.
 godot-cli-control init
 
 # 1) Start the daemon with a window (GUI mode — screenshots need a real renderer).

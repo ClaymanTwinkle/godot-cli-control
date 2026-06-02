@@ -26,8 +26,8 @@
 3. **退出码语义化**
    - 0 = 成功 / 布尔 true / 节点存在 / wait 命中
    - 1 = RPC 错（含 `exists`/`visible`=false、`wait-node` timeout、`daemon status` stopped）
-   - 2 = 连接 / IO / 用法错（agent 应该 retry 或修参数，而不是把它当 RPC 失败）
-   - 64 = argparse 用法错
+   - 2 = 连接 / IO 错，或 `run`/`daemon` 前置失败（脚本路径不存在、daemon 起不来；这些仍带 `-1003`）
+   - 64 = 用法错：argparse + RPC 子命令的 preflight / 运行期参数解析失败，统一携带 `-1003`（issue #82：RPC 子命令的 `-1003` 恒等于 64，不再有 2/64 歧义）
    - 3 = `daemon stop --all` 部分失败（专用，避免与 2 撞）
    - shell `if godot-cli-control exists /root/Foo; then …` 必须能用。
 

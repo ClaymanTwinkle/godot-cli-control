@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -361,6 +362,46 @@ class Daemon:
         except (ProcessLookupError, OSError):
             pass
         _reap_if_dead(pid)  # 回收被 SIGKILL 的 zombie 子进程（若它是本进程的孩子）
+
+
+# ── 项目级配置 ──
+
+
+def read_project_config(project_root: Path | None = None) -> dict:
+    """读取项目级 ``<project_root>/.cli_control/config.json``（issue #44）。
+
+    存放无需每次手敲的默认值，目前支持 ``idle_timeout``（如 ``{"idle_timeout":"30m"}``）。
+    ``project_root`` 默认 ``Path.cwd()``。缺文件 / 非法 JSON / 顶层非对象一律返回
+    ``{}``——配置坏掉绝不能让 daemon 起不来，缺省即回到「无配置」行为。
+    """
+    root = Path(project_root) if project_root is not None else Path.cwd()
+    path = root / ".cli_control" / "config.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# ── 端口发现 ──
+
+
+def discover_port(project_root: Path | None = None) -> int | None:
+    """从 ``<project_root>/.cli_control/port`` 读取 daemon 当前监听端口。
+
+    daemon 默认以 OS 自动分配端口启动（写入 ``.cli_control/port``），所以"无显式
+    端口"的连接方都得先来这里发现实际端口，再回退 ``DEFAULT_PORT``。这是 CLI RPC
+    子命令、``GameClient()`` 与 ``GameBridge()`` 三处无显式 port 时的**唯一共用**
+    发现入口（issue #91）——与 README 承诺的 "auto-discover from ``.cli_control/port``"
+    对齐。
+
+    ``project_root`` 默认 ``Path.cwd()``（与 CLI 的工作目录约定一致）。无 port 文件
+    或解析失败时返回 ``None``，由调用方决定回退值。
+    """
+    root = Path(project_root) if project_root is not None else Path.cwd()
+    return Daemon(root).current_port()
 
 
 # ── Godot 二进制发现 ──

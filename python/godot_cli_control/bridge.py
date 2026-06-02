@@ -15,13 +15,16 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from .client import DEFAULT_PORT, GameClient
+from .client import GameClient
 
 
 class GameBridge:
     """同步接口，内部通过事件循环调用异步 GameClient。"""
 
-    def __init__(self, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, port: int | None = None) -> None:
+        # port=None → GameClient 从 .cli_control/port auto-discover（issue #91）。
+        # daemon 默认 OS 自动分配端口，所以 ``GameBridge()`` 无参数也能连上正在
+        # 跑的 daemon，与 README 的单连接脚本示例一致。
         self._loop = asyncio.new_event_loop()
         self._client = GameClient(port=port)
         self._loop.run_until_complete(

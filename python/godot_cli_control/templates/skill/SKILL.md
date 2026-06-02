@@ -14,7 +14,7 @@ WebSocket bridge for headless / scripted control of Godot 4 scenes. A daemon pro
 **Output is JSON by default.** Every RPC subcommand prints a single-line envelope on stdout:
 
 - success: `{"ok": true, "result": <data>}` — exit 0 (or per-command exit code, see *Exit codes* below)
-- error:   `{"ok": false, "error": {"code": <int>, "message": "..."}}` — exit 1 (RPC error) / 2 (connection, timeout, usage)
+- error:   `{"ok": false, "error": {"code": <int>, "message": "..."}}` — exit 1 (RPC error) / 2 (connection, timeout) / 64 (usage)
 
 Pipe straight into `jq` or `json.loads`. Add `--text` (or `--no-json`) to switch back to the legacy human-readable strings if you really want them.
 
@@ -44,9 +44,9 @@ godot-cli-control daemon stop
 |---|---|
 | 0 | Success (or, for `exists` / `visible` / `wait-node`, the boolean was true / found) |
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`=timeout, `daemon status`=stopped |
-| 2 | Connection / IO / usage error (daemon not running, script path not found). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
+| 2 | Connection / IO error (daemon not running, script path not found). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
 | 3 | `daemon stop --all` partial failure: at least one daemon in the registry failed to stop. Per-record `rc` is in the JSON `result.stopped[]`. |
-| 64 | Argparse usage error, **or a pre-flight usage error caught before connecting** — e.g. `combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, or `hold` with a non-positive duration. The error envelope carries client code `-1003`. |
+| 64 | Usage error on an **RPC subcommand** — argparse, a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), **and** a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing). For RPC subcommands these all carry client code `-1003` and now consistently exit 64 (a few previously exited 2 — fixed in #82). |
 
 Shell-`if` works:
 
@@ -128,7 +128,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 |---|---|
 | `-1001` | Connection failure (daemon not running, port wrong, proxy hijacking localhost). Run `daemon status`. |
 | `-1002` | Timeout waiting for a response. Daemon may be hung mid-frame; check Godot stderr. |
-| `-1003` | Usage error (e.g. `combo` got no steps, malformed `--steps-json`, `combo -` from a TTY). Fix the invocation. |
+| `-1003` | Usage error (`combo` got no steps, malformed `--steps-json`, `combo -` from a TTY, a non-numeric `tap`/`wait-time` arg, **or** a `set`/`call` value that fails JSON parsing). From an RPC subcommand this always exits **64**. (Top-level `run`/`daemon` precondition failures — e.g. script path not found, daemon failed to start — also surface `-1003` but exit **2**.) Fix the invocation. |
 | `-1004` | Local file IO error (e.g. `screenshot` can't write the destination — bad path, no write permission). **Not** a daemon problem. |
 | `-1005` | `run <script>` user script raised an uncaught exception. The error message has the exception type + last-line summary; full traceback is on stderr. Fix the script, not the CLI. |
 | `-1099` | Internal client error (unforeseen exception). Bug in this CLI; please file an issue. Stderr has the full traceback. |
@@ -154,11 +154,13 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 
 **Input simulation:**
 - `press <action>` / `release <action>` — sticky press
-- `tap <action> [duration]` — press → wait → release
-- `hold <action> <duration>` — auto-release after N seconds (`duration` must be `> 0`; for an indefinite hold use `press`)
-- `combo --steps-json '[...]'` (or `combo file.json` / `combo -` for stdin) — sequence
+- `tap <action> [duration] [--wait]` — press → wait → release
+- `hold <action> <duration> [--wait]` — auto-release after N seconds (`duration` must be `> 0`; for an indefinite hold use `press`)
+- `combo --steps-json '[...]' [--wait]` (or `combo file.json` / `combo -` for stdin) — sequence
 - `combo-cancel` — abort running combo
 - `release-all` — release everything
+
+`tap` / `hold` / `combo` are **async by default** — they return as soon as the input is armed, *before* the in-game motion finishes (see *Common pitfalls*). Add **`--wait`** to block until the action's duration elapses (game-time) so the next `get` reads the settled state — it folds an implicit `wait-time <duration>` into the same command/connection.
 
 **Wait:**
 - `wait-node <path> [timeout]` — block until node appears (exit 0=found, 1=timeout)
@@ -288,6 +290,9 @@ Key constraints:
 - `ffmpeg` must be on `PATH` for transcoding. If transcoding fails, the raw `.avi` is kept and `daemon stop` exits with code `2` (transcode log at `.cli_control/ffmpeg.log`).
 - `--fps` controls the **fixed simulation framerate** Godot runs at while recording — set it to your target video framerate.
 - Output path is relative to cwd; use absolute paths if your script changes cwd.
+- Long `wait-time` / `combo` / recording ops are bounded client-side by a fixed **600s** wall-time fail-safe (not a per-call timeout — game-time vs wall-time can't be predicted). A genuinely long operation (e.g. a > 10-minute recording) that trips it can raise the ceiling via `GODOT_CLI_LONG_OP_TIMEOUT=<seconds>` (e.g. `1800`); a non-positive / non-numeric value is ignored and falls back to 600s.
+
+**Project-level defaults** (`.cli_control/config.json`, optional): set `{"idle_timeout": "30m"}` so `daemon start` / `run` auto-quit after idle without re-typing `--idle-timeout` every time. It's read only when you don't pass `--idle-timeout` (default `0`); an explicit flag wins. Bad JSON / a malformed duration there surfaces as a `-1003` usage error (exit 64).
 
 ## CLI reference
 
@@ -299,7 +304,7 @@ Key constraints:
 
 ## Python `GameClient` API
 
-`from godot_cli_control.client import GameClient` — async WebSocket client; use as `async with GameClient(port=...) as client:`. **Every method below has a 1-line CLI equivalent above; only reach for Python when you need to keep a client open across many steps without the connection-per-call overhead.**
+`from godot_cli_control.client import GameClient` — async WebSocket client; use as `async with GameClient() as client:`. **With no `port` argument it auto-discovers from `.cli_control/port`** (the same file the daemon writes and the CLI reads), falling back to `9877` if absent — so a no-arg `GameClient()` connects to a running daemon out of the box. Pass `GameClient(port=N)` only to override. (`GameBridge()` in `run` scripts auto-discovers identically.) **Every method below has a 1-line CLI equivalent above; only reach for Python when you need to keep a client open across many steps without the connection-per-call overhead.**
 
 Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserves the server's error code — useful for retrying `1004 "combo in progress"`.
 
@@ -394,6 +399,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
   - `daemon start --port N`: the port the daemon itself listens on. This is a local flag of `start`, so — like any other `daemon` flag — its position doesn't matter.
 - **`combo` rejects everything with `1004`** — a combo is already running. Call `combo-cancel` (or `release-all`) to abort.
 - **`hold` / `press` persist after the command returns** — by design. Each CLI command is its own short-lived connection that closes *cleanly*, and a clean close does **not** release inputs. `hold <action> <dur>` auto-releases after `<dur>` seconds (its timer keeps running in the daemon); a sticky `press <action>` stays held until you call `release <action>` / `release-all` (or the daemon's idle-timeout shuts it down). If a character looks stuck moving, you probably left a `press` dangling — run `release-all`. (An *abnormal* drop — your client crashing or being killed mid-session — does trigger a safety `release-all`, so stuck keys can't outlive a dead client.)
+- **`hold` / `tap` / `combo` return *before* the motion finishes — use `--wait` (or `wait-time`) before reading state.** These input commands are asynchronous: `hold move_right 1.0` returns in ~0.4s (it just arms a release-timer in the daemon), but the character keeps moving for the full `1.0` in-game second. If you `get position` immediately you read a *mid-motion* value (e.g. `x=415` instead of the settled `x=540`). Two fixes: ① pass **`--wait`** (`hold move_right 1.0 --wait` blocks until the duration elapses, then `get … position` reads the settled value) — one command, one connection; ② or do it explicitly: `hold move_right 1.0` → `wait-time 1.0` → `get … position`. `--wait` works on `tap` (default `0.1`s) and `combo` (waits the summed step durations) too. Either way, also account for any physics/animation that plays out over extra frames after the input lands.
 - **`tree` returns `1005 "scene tree too large"`** — your scene has more than 5000 visible nodes (a Grid / spawned-bullets situation). Pass `--max-nodes 200` to cap, or `children <path>` for one specific subtree.
 - **`set` with a string that *looks* like JSON** — value parser parses JSON first. To force a literal `"42"` string, pass `'"42"'`; to set a literal hash sign or array text, JSON-encode it.
 - **`daemon start` opens a window when I expected headless** — your stdout is a TTY (interactive terminal). Pass `--headless` explicitly, or shell out from a context where stdout is piped.
