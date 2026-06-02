@@ -104,6 +104,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `get_pressed()` | `await client.get_pressed()` |
 | `list_input_actions(include_builtin=False)` | `await client.list_input_actions()` |
 
+> **CLI note**: as a shell subcommand, `screenshot` **requires an output path** — `godot-cli-control screenshot /tmp/shot.png` — and writes the PNG to that file. Returning base64 over stdout is intentionally unsupported, to keep large binary payloads out of an automating agent's context window.
+
 ### Error codes
 
 Three numeric ranges share `error.code`; they never overlap, so a single field is unambiguous.
@@ -112,7 +114,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 |---|---|---|
 | `1001` | server | Node not found at the given path |
 | `1002` | server | Property not found / shape mismatch |
-| `1003` | server | Method not found on the node (schema error, don't retry) |
+| `1003` | server | Method not found on the node, **or** unknown InputMap action passed to `press`/`release`/`tap`/`hold`/`combo` (`"Unknown action: <name>"`). Schema error — don't retry; run `actions` (or `actions --all`) to list valid actions |
 | `1004` | server | Combo already in progress (call `combo-cancel` to retry) |
 | `1005` | server | Scene tree too large (lower `depth` or pass `--max-nodes`) |
 | `1006` | server | Resource transiently unavailable (e.g. screenshot during scene transition). Rare under normal use — GameBridge waits for viewport first-frame before listening, and `screenshot` retries internally. Safe to retry if you do hit it. |
@@ -127,6 +129,31 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `-1099` | client | Internal CLI bug — please file an issue |
 
 For full retry guidance see the SKILL.md shipped by `godot-cli-control init` (`.claude/skills/godot-cli-control/SKILL.md` in the target project).
+
+## Daemon commands
+
+The daemon is the long-lived Godot process the CLI talks to (one per project root). The CLI auto-starts it where needed; manage it explicitly with:
+
+| Command | What it does |
+|---|---|
+| `daemon start [--headless\|--gui] [--record]` | Launch Godot with the bridge listening. Headless vs GUI is auto-detected from the TTY; `--record` forces GUI (Movie Maker needs a real renderer) and is **rejected with `--headless`** (exit 2). |
+| `daemon stop` | Stop this project's daemon. Exit 2 if it stopped cleanly but the `.avi`→`.mp4` ffmpeg transcode failed (raw `.avi` kept; see `.cli_control/ffmpeg.log`). |
+| `daemon stop --all` | Stop every registered daemon across all projects. **Exit 3** if at least one failed; per-record `rc` (and an `error` field on failures) is in `result.stopped[]`. |
+| `daemon stop --project <path>` | Stop the daemon for one specific project root. |
+| `daemon status` | Exit 0 = running, 1 = stopped. When stopped, the payload may carry `last_log` / `last_exit_code` to diagnose a crash. |
+| `daemon ls` | List every registered daemon (project root, pid, port). |
+
+## Exit codes
+
+Semantic exit codes so `if godot-cli-control exists /root/Foo; then …` works in shell:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (or boolean true for `exists` / `visible`, node found for `wait-node`) |
+| 1 | RPC error; also `exists`/`visible`=false, `wait-node` timeout, `daemon status`=stopped |
+| 2 | Connection / IO error, or `daemon stop` ffmpeg-transcode failure |
+| 3 | `daemon stop --all` partial failure (≥1 daemon failed to stop) |
+| 64 | Usage error — bad argparse args, or a pre-flight reject like `combo` with no steps / malformed `--steps-json` (envelope carries client code `-1003`) |
 
 ## Activation Modes
 
@@ -151,7 +178,7 @@ If none triggered, the plugin prints `[Godot CLI Control] inactive — ...` to c
 ## Known Limitations
 
 1. **Headless + Movie Maker is broken** (Godot upstream): `--write-movie` produces empty MP4 in headless mode (no framebuffer). Use GUI mode for recording.
-2. **Godot binary detection** falls back to `GODOT_BIN` env var. `init` writes `.cli_control/godot_bin` after autodetect; daemon reads that file before scanning. Detection covers macOS `/Applications/Godot*.app`, `PATH` (`godot`/`godot4`), and Windows `Program Files\Godot*`.
+2. **Godot binary detection** order: `GODOT_BIN` env var → macOS `/Applications/Godot*.app` → `PATH` (`godot4`/`godot`) → Windows `Program Files\Godot*`. `init` writes the detected path to `.cli_control/godot_bin`; the daemon reads that file before re-scanning. The pytest e2e suite uses this same detection, so a `godot` on `PATH` is enough to run it.
 3. **Python ≥ 3.10** required (websockets>=14 dependency).
 4. **Single-client mode**: only one WebSocket client at a time; second connection rejected.
 5. **Headless plugin auto-register**: in headless mode, `--editor --quit` may not trigger `plugin._enter_tree` to write the autoload. `init` handles this automatically by patching `project.godot` directly.
