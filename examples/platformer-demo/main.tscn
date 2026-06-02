@@ -1,0 +1,50 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://main.gd" id="1_main"]
+[ext_resource type="Script" path="res://player.gd" id="2_player"]
+
+[sub_resource type="RectangleShape2D" id="Rect_ground"]
+size = Vector2(640, 60)
+
+[sub_resource type="RectangleShape2D" id="Rect_player"]
+size = Vector2(40, 40)
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="Background" type="Polygon2D" parent="."]
+color = Color(0.12, 0.14, 0.2, 1)
+polygon = PackedVector2Array(0, 0, 640, 0, 640, 360, 0, 360)
+
+[node name="World" type="Node2D" parent="."]
+
+[node name="Ground" type="StaticBody2D" parent="World"]
+position = Vector2(320, 330)
+
+[node name="GroundShape" type="CollisionShape2D" parent="World/Ground"]
+shape = SubResource("Rect_ground")
+
+[node name="GroundVisual" type="Polygon2D" parent="World/Ground"]
+color = Color(0.3, 0.5, 0.35, 1)
+polygon = PackedVector2Array(-320, -30, 320, -30, 320, 30, -320, 30)
+
+[node name="Player" type="CharacterBody2D" parent="World"]
+position = Vector2(320, 80)
+visible = false
+script = ExtResource("2_player")
+
+[node name="PlayerShape" type="CollisionShape2D" parent="World/Player"]
+shape = SubResource("Rect_player")
+
+[node name="PlayerVisual" type="Polygon2D" parent="World/Player"]
+color = Color(0.95, 0.65, 0.25, 1)
+polygon = PackedVector2Array(-20, -20, 20, -20, 20, 20, -20, 20)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="StartButton" type="Button" parent="UI"]
+offset_left = 270.0
+offset_top = 150.0
+offset_right = 370.0
+offset_bottom = 190.0
+text = "Start"

@@ -1,0 +1,28 @@
+; godot-cli-control · platformer demo
+;
+; This is a deliberately *pristine* player project: it contains only the game
+; itself (scene + two InputMap actions). The control surface is NOT committed
+; here — `godot-cli-control init` appends the [autoload] + [editor_plugins]
+; sections and copies the addon in (all gitignored). That keeps the addon in a
+; single source of truth (repo-root addons/) and demonstrates `init` for real.
+
+config_version=5
+
+[application]
+
+config/name="godot-cli-control · platformer demo"
+run/main_scene="res://main.tscn"
+
+[debug]
+
+settings/stdout/print_fps=false
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=360
+
+[input]
+
+jump={"deadzone":0.5,"events":[]}
+move_right={"deadzone":0.5,"events":[]}
