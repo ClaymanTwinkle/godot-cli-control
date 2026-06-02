@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a new capability or an improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that you can't (easily) do today?
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface does this touch?
+      multiple: true
+      options:
+        - CLI subcommand
+        - GameClient (async) / GameBridge (sync)
+        - pytest fixtures
+        - GDScript addon / RPC
+        - SKILL.md / agent docs
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: A sketch of the command/API and the JSON output it would print, if you have one.
+    validations:
+      required: false
+  - type: textarea
+    id: ai-friendly
+    attributes:
+      label: AI-friendliness
+      description: >
+        How would an AI agent discover and use this from a single shell command plus one line of
+        JSON? See the contract in CONTRIBUTING.md.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
