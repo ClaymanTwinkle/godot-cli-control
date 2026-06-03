@@ -8,7 +8,7 @@ WebSocket bridge for headless / scripted control of Godot 4 scenes — Python cl
 pipx install godot-cli-control
 
 # or, for unreleased main:
-pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"
+pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git"
 ```
 
 The wheel ships the Godot plugin source so the `init` command can drop it into your project.

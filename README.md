@@ -64,7 +64,7 @@ godot-cli-control screenshot /tmp/x.png
 godot-cli-control daemon stop
 ```
 
-Want unreleased main? `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git#subdirectory=python"`.
+Want unreleased main? `pipx install "git+https://github.com/ClaymanTwinkle/godot-cli-control.git"`.
 
 ## Try the demo
 
