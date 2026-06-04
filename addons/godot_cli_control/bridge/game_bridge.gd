@@ -27,6 +27,7 @@ var _in_flight: int = 0
 var _outbound_buffer_size: int = DEFAULT_OUTBOUND_BUFFER_MB * 1024 * 1024
 var _low_level_api: LowLevelApi = null
 var _input_sim_api: InputSimulationApi = null
+var _wait_api: WaitApi = null
 # 方法注册表：{method_name: {"callable": Callable, "kind": "sync"|"async"|"async_with_id"}}
 # - sync: handler(params) -> Dictionary，dispatcher 立即 send response
 # - async: handler(params) -> await Dictionary，dispatcher await 后 send response
@@ -54,6 +55,10 @@ func _ready() -> void:
 	_input_sim_api.name = "InputSimulationApi"
 	add_child(_input_sim_api)
 	_input_sim_api.setup(_on_async_response)
+	_wait_api = WaitApi.new()
+	_wait_api.name = "WaitApi"
+	add_child(_wait_api)
+	_wait_api.setup(_low_level_api._read_property)
 	# 构建统一方法注册表
 	_register_methods()
 	# 缓存 outbound buffer 大小（ProjectSettings 可覆盖默认 10MB，至少 1MB）
@@ -184,12 +189,12 @@ func _register_methods() -> void:
 	_methods["is_visible"] = {"callable": _low_level_api.handle_is_visible, "kind": "sync"}
 	_methods["get_children"] = {"callable": _low_level_api.handle_get_children, "kind": "sync"}
 	_methods["get_scene_tree"] = {"callable": _low_level_api.handle_get_scene_tree, "kind": "sync"}
-	# 低层 API（异步）
-	_methods["wait_for_node"] = {"callable": _low_level_api.wait_for_node_async, "kind": "async"}
-	_methods["wait_game_time"] = {"callable": _low_level_api.wait_game_time_async, "kind": "async"}
-	_methods["wait_frames"] = {"callable": _low_level_api.wait_frames_async, "kind": "async"}
-	_methods["wait_property"] = {"callable": _low_level_api.wait_property_async, "kind": "async"}
-	_methods["wait_signal"] = {"callable": _low_level_api.wait_signal_async, "kind": "async"}
+	# Wait API（异步）
+	_methods["wait_for_node"] = {"callable": _wait_api.wait_for_node_async, "kind": "async"}
+	_methods["wait_game_time"] = {"callable": _wait_api.wait_game_time_async, "kind": "async"}
+	_methods["wait_frames"] = {"callable": _wait_api.wait_frames_async, "kind": "async"}
+	_methods["wait_property"] = {"callable": _wait_api.wait_property_async, "kind": "async"}
+	_methods["wait_signal"] = {"callable": _wait_api.wait_signal_async, "kind": "async"}
 	_methods["screenshot"] = {"callable": _wrap_screenshot, "kind": "async"}
 	# 输入模拟（同步）
 	_methods["input_action_press"] = {
