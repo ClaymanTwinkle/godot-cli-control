@@ -1311,8 +1311,14 @@ def test_scene_change_preflight_rejects_bad_prefix(
     """
     import json as _json
 
+    import godot_cli_control.cli as cli_mod
     from godot_cli_control.cli import EXIT_USAGE, main
 
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：scene-change 坏前缀时不应连 daemon")
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
     monkeypatch.setattr(
         sys, "argv", ["godot-cli-control", "scene-change", "second.tscn"]
     )
