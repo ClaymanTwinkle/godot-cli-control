@@ -20,6 +20,7 @@ const GameBridgeScript := preload("res://addons/godot_cli_control/bridge/game_br
 const LowLevelApiScript := preload("res://addons/godot_cli_control/bridge/low_level_api.gd")
 const InputSimulationApiScript := preload("res://addons/godot_cli_control/bridge/input_simulation_api.gd")
 const WaitApiScript := preload("res://addons/godot_cli_control/bridge/wait_api.gd")
+const SceneApiScript := preload("res://addons/godot_cli_control/bridge/scene_api.gd")
 
 
 # ── 子类：捕获 _send_json 出站 + 跳过 peer 状态检查 ──────────────────
@@ -104,6 +105,7 @@ var _bridge: TestableGameBridge
 var _low: StubLowLevelApi
 var _input: StubInputSimulationApi
 var _wait: StubWaitApi
+var _scene: SceneApi
 
 
 func before_each() -> void:
@@ -123,9 +125,14 @@ func before_each() -> void:
 	_wait.name = "WaitApi"
 	add_child_autofree(_wait)
 
+	_scene = SceneApi.new()
+	_scene.name = "SceneApi"
+	add_child_autofree(_scene)
+
 	_bridge._low_level_api = _low
 	_bridge._input_sim_api = _input
 	_bridge._wait_api = _wait
+	_bridge._scene_api = _scene
 	# InputSim 的 callback：bridge 的 _on_async_response 把 (id, result) 转回 dispatch
 	_input.setup(_bridge._on_async_response)
 	_bridge._register_methods()
@@ -491,3 +498,12 @@ func test_wait_first_frame_ready_returns_under_headless() -> void:
 func test_first_frame_ready_max_frames_constant_is_positive() -> void:
 	# 防回归：常量被改成 0 或负数会让循环立刻退出 → 启动 gate 失效。
 	assert_gt(GameBridgeScript.FIRST_FRAME_READY_MAX_FRAMES, 0)
+
+
+# ── 注册表完整性：scene API（issue #98） ─────────────────────────────
+
+func test_registry_has_scene_methods() -> void:
+	assert_true(_bridge._methods.has("scene_reload"), "scene_reload 应已注册")
+	assert_eq(str(_bridge._methods["scene_reload"]["kind"]), "async")
+	assert_true(_bridge._methods.has("scene_change"), "scene_change 应已注册")
+	assert_eq(str(_bridge._methods["scene_change"]["kind"]), "async")

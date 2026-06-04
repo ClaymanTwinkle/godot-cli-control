@@ -28,6 +28,7 @@ var _outbound_buffer_size: int = DEFAULT_OUTBOUND_BUFFER_MB * 1024 * 1024
 var _low_level_api: LowLevelApi = null
 var _input_sim_api: InputSimulationApi = null
 var _wait_api: WaitApi = null
+var _scene_api: SceneApi = null
 # 方法注册表：{method_name: {"callable": Callable, "kind": "sync"|"async"|"async_with_id"}}
 # - sync: handler(params) -> Dictionary，dispatcher 立即 send response
 # - async: handler(params) -> await Dictionary，dispatcher await 后 send response
@@ -59,6 +60,9 @@ func _ready() -> void:
 	_wait_api.name = "WaitApi"
 	add_child(_wait_api)
 	_wait_api.setup(_low_level_api._read_property)
+	_scene_api = SceneApi.new()
+	_scene_api.name = "SceneApi"
+	add_child(_scene_api)
 	# 构建统一方法注册表
 	_register_methods()
 	# 缓存 outbound buffer 大小（ProjectSettings 可覆盖默认 10MB，至少 1MB）
@@ -215,6 +219,9 @@ func _register_methods() -> void:
 	}
 	# 输入模拟（async_with_id：handler 自行通过 _on_async_response 回响）
 	_methods["input_combo"] = {"callable": _input_sim_api.handle_combo, "kind": "async_with_id"}
+	# Scene API（异步，issue #98）
+	_methods["scene_reload"] = {"callable": _scene_api.scene_reload_async, "kind": "async"}
+	_methods["scene_change"] = {"callable": _scene_api.scene_change_async, "kind": "async"}
 
 
 # screenshot wrapper：take_screenshot_async 不接 params，统一签名为 (params) -> Dictionary
