@@ -35,6 +35,10 @@ Godot ships great tools for *playing* a scene, but very little for *programmatic
 
 One install, one daemon, one consistent API across your editor, your tests, your CI, and your agents.
 
+## Recent changes
+
+**BREAKING (unreleased):** `get` now returns compound Variants (Vector2, Color, etc.) as a structured object `{"value": [x, y], "type": "Vector2"}` instead of the old `"(x, y)"` string. The `value` array is the same layout `set` accepts, so round-trips work directly. Also new: `get <path> <prop1> <prop2>` reads multiple properties atomically in one frame (`get_properties` RPC, #100).
+
 ## Highlights
 
 | | |

@@ -83,7 +83,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | Method | Example |
 |---|---|
 | `click(path)` | `await client.click("/root/MyScene/Button")` |
-| `get_property(path, property)` | `await client.get_property("/root/Player", "position")` |
+| `get_property(path, property)` | `await client.get_property("/root/Player", "position")` — returns bare value; CLI `get` returns `{"value": ..., "type"?: ...}` shape |
+| `get_properties(path, properties)` | `await client.get_properties("/root/Player", ["position", "health"])` — multi-property atomic read; returns `{prop: bare_value, ...}` dict |
 | `set_property(path, property, value)` | `await client.set_property("/root/Player", "visible", False)` |
 | `call_method(path, method, args)` | `await client.call_method("/root/Player", "take_damage", [10])` |
 | `get_text(path)` | `await client.get_text("/root/UI/Label")` |
