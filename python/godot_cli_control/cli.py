@@ -57,6 +57,7 @@ CLIENT_CODE_TIMEOUT = -1002
 CLIENT_CODE_USAGE = -1003
 CLIENT_CODE_IO = -1004  # 本地文件 IO 错误（screenshot 写盘等），与连接错误分开
 CLIENT_CODE_SCRIPT_ERROR = -1005  # `run <script>` 用户脚本抛出未捕获异常（agent 错的是脚本，不是 CLI 框架）
+CLIENT_CODE_PRECONDITION = -1006  # infra 前置失败（daemon 起不来、脚本不可访问等），恒 exit 2；与「-1003 恒 64」双射互补
 CLIENT_CODE_INTERNAL = -1099  # 兜底：客户端内部异常（理论上不该到这里，但兜住契约）
 
 
@@ -1024,7 +1025,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             idle_timeout=idle_seconds,
         )
     except DaemonError as e:
-        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
+        _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
         return EXIT_INFRA_ERROR
     if _output_format(ns) == OUTPUT_JSON:
         # 跟 daemon status 的信封形状对齐，方便 agent 一套 jq 处理三个命令。
@@ -1094,7 +1095,7 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
     try:
         rc = daemon.stop()
     except DaemonError as e:
-        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
+        _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
         return EXIT_INFRA_ERROR
     if fmt == OUTPUT_JSON:
         # rc 0=正常停 / 2=ffmpeg 转码失败但 daemon 已停。两种都算"stopped"，
@@ -1215,14 +1216,13 @@ def cmd_run(ns: argparse.Namespace) -> int:
     try:
         script_path = Path(ns.script)
         if not script_path.exists():
-            # 用户传错路径属于"用法错" → EXIT_INFRA_ERROR(2)，
-            # 与 CLAUDE.md 契约 3 对齐，亦与 cmd_daemon_start 错误码一致。
+            # 用户传错路径属于"用法错" → -1003 + EXIT_USAGE(64)（#92）
             msg = f"找不到脚本: {script_path}"
             if fmt == OUTPUT_JSON:
                 _emit_error_payload(CLIENT_CODE_USAGE, msg)
             else:
                 print(f"错误：{msg}", file=sys.stderr)
-            return EXIT_INFRA_ERROR
+            return EXIT_USAGE
 
         try:
             idle_seconds = _resolve_idle_timeout(ns)
@@ -1252,10 +1252,10 @@ def cmd_run(ns: argparse.Namespace) -> int:
                     idle_timeout=idle_seconds,
                 )
             except DaemonError as e:
-                # daemon 起不来是基础设施错（端口冲突、godot bin 不可执行等），
-                # 走 EXIT_INFRA_ERROR(2) 与 cmd_daemon_start(line 734) 一致。
+                # daemon 起不来是 infra 前置失败（端口冲突、godot bin 不可执行等），
+                # → -1006 (PRECONDITION) + EXIT_INFRA_ERROR(2)（#92）
                 if fmt == OUTPUT_JSON:
-                    _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+                    _emit_error_payload(CLIENT_CODE_PRECONDITION, str(e))
                 else:
                     print(f"错误：{e}", file=sys.stderr)
                 return EXIT_INFRA_ERROR
@@ -1445,7 +1445,7 @@ def _exec_user_script(
             return 1
         if missing_run:
             _emit_usage(f"脚本 {script_path} 中缺少 run(bridge) 函数")
-            return 1
+            return EXIT_USAGE  # 用法错，#92
         if connection_error is not None:
             if is_json:
                 _emit_error_payload(
