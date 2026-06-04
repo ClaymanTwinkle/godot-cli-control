@@ -40,7 +40,12 @@ def test_options_registered_in_help(pytester: pytest.Pytester) -> None:
 
 
 def test_fixtures_listed(pytester: pytest.Pytester) -> None:
-    """`pytest --fixtures` 列出 godot_daemon + bridge。"""
+    """`pytest --fixtures` 列出 godot_daemon + bridge + fresh_scene。
+
+    逐个 fnmatch（顺序无关——pytest 对 fixture 的列出顺序不保证），
+    并锚定「<name> ... -- ...pytest_plugin.py」定义行格式，
+    避免 docstring 里提及其它 fixture 名造成假阳性。
+    """
     pytester.makepyfile(
         test_smoke="""
         def test_smoke():
@@ -48,7 +53,8 @@ def test_fixtures_listed(pytester: pytest.Pytester) -> None:
         """
     )
     result = pytester.runpytest("--fixtures")
-    result.stdout.fnmatch_lines(["*godot_daemon*", "*bridge*"])
+    for name in ("godot_daemon", "bridge", "fresh_scene"):
+        result.stdout.fnmatch_lines([f"{name}*-- *pytest_plugin.py*"])
 
 
 def test_fixture_lifecycle(pytester: pytest.Pytester) -> None:
@@ -391,7 +397,7 @@ def test_project_root_option_is_respected(pytester: pytest.Pytester) -> None:
 
 def test_fresh_scene_fixture(pytester: pytest.Pytester) -> None:
     """fresh_scene：setup 时 scene_reload 恰好调 1 次，yield 出 bridge 本身，
-    teardown 不再调 scene_reload（总计 1 次）。
+    teardown 不再调 scene_reload（每用例各 1 次，无额外调用）。
     """
     pytester.makeconftest(
         """
