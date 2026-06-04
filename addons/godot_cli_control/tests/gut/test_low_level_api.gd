@@ -807,12 +807,9 @@ func test_get_properties_missing_prop_fails_atomically_naming_all() -> void:
 func test_get_property_object_type_returns_string_type_field() -> void:
 	## handle_get_property 读 Object 属性 → codec 编码为 {"value": "<str>", "type": "Object"}
 	## 检验 handler → codec 全链路（codec 单测已覆盖 encode，这里测 handler 调 codec 的接缝）。
-	## Node.get_viewport() 返回 Viewport（Object 子类），是内置可用的 Object 属性。
+	## 用 Node 的 "multiplayer" 属性（MultiplayerAPI，headless 下恒非 null）作内置 Object 属性。
 	var node := Node2D.new()
 	add_child_autofree(node)
-	# "owner" 在未 add_child 前是 null，不适合测 Object 值。
-	# Node.get_viewport() 是方法而非属性。找一个内置 Object 类型属性：
-	# Node 的 "multiplayer" 属性是 MultiplayerAPI（Object 子类）且总有非 null 值。
 	var result: Dictionary = _api.handle_get_property({
 		"path": str(node.get_path()), "property": "multiplayer",
 	})
@@ -823,11 +820,7 @@ func test_get_property_object_type_returns_string_type_field() -> void:
 
 func test_get_property_stringname_type_returns_string_type_field() -> void:
 	## handle_get_property 读 StringName 属性 → codec 编码为 {"value": "<str>", "type": "StringName"}
-	## Node "scene_file_path" 是 String，不是 StringName。
-	## AnimationPlayer.current_animation 是 String。
-	## 用自定义 fixture 节点持有 StringName 类型属性来测。
-	## Node.name 在 GDScript 里是 String（不是 StringName），无法直接用内置属性。
-	## 改用 custom fixture：
+	## 内置属性在 GDScript 暴露面里都是 String（如 Node.name），用自建 fixture 持有 StringName。
 	var fixture := _StringNameFixture.new()
 	add_child_autofree(fixture)
 	var result: Dictionary = _api.handle_get_property({

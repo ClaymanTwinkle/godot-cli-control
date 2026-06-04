@@ -202,7 +202,11 @@ def test_abnormal_disconnect_releases_held_inputs(daemon: Any) -> None:
 
 @pytest.fixture(scope="module")
 def probe_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """带 probe.gd（_unhandled_input 探针）的独立 Godot 项目，用于 issue #97 e2e。"""
+    """带 probe.gd（_unhandled_input 探针）的独立 Godot 项目，用于 issue #97 e2e。
+
+    module scope 对齐 godot_project 先例（#113）：全量 import ~12s，后续 probe 类
+    e2e 复用同一项目目录；消费测试自管 daemon 起停，无跨用例状态。
+    """
     proj = tmp_path_factory.mktemp("gcc_e2e_probe")
     (proj / "addons").mkdir()
     shutil.copytree(_ADDON_SRC, proj / "addons" / "godot_cli_control")
