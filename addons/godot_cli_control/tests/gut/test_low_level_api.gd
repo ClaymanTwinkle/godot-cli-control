@@ -717,3 +717,52 @@ func test_screenshot_returns_image_or_1006_under_headless() -> void:
 func test_screenshot_max_frames_constant_is_positive() -> void:
 	# 防回归：常量被改成 0 或负数会让循环立刻退出 → 等同未修。
 	assert_gt(LowLevelApiScript.SCREENSHOT_MAX_FRAMES, 0)
+
+
+# ── issue #99：get 编码 + sub-path 读 ──
+
+func test_get_property_encodes_vector2_with_type() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(1.5, -2.0)
+	var result: Dictionary = _api.handle_get_property({"path": str(node.get_path()), "property": "position"})
+	assert_eq(result.get("value"), [1.5, -2.0])
+	assert_eq(result.get("type"), "Vector2")
+
+
+func test_get_property_primitive_has_no_type_field() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.visible = false
+	var result: Dictionary = _api.handle_get_property({"path": str(node.get_path()), "property": "visible"})
+	assert_eq(result, {"value": false})
+
+
+func test_get_property_sub_path_reads_leaf() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(7.0, 9.0)
+	var result: Dictionary = _api.handle_get_property({"path": str(node.get_path()), "property": "position:x"})
+	assert_eq(result, {"value": 7.0})
+
+
+func test_get_property_sub_path_bogus_top_level_is_1002() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_get_property({"path": str(node.get_path()), "property": "nope:x"})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1002)
+
+
+func test_get_set_round_trip_vector2() -> void:
+	# round-trip 闭环：get 输出的数组原样灌回 set，再 get 等值
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(3.25, -4.5)
+	var got: Dictionary = _api.handle_get_property({"path": str(node.get_path()), "property": "position"})
+	var set_result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()), "property": "position", "value": got["value"],
+	})
+	assert_false(set_result.has("error"))
+	var got2: Dictionary = _api.handle_get_property({"path": str(node.get_path()), "property": "position"})
+	assert_eq(got2["value"], got["value"])

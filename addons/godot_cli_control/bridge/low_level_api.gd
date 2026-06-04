@@ -115,11 +115,27 @@ func handle_get_property(params: Dictionary) -> Dictionary:
 	var node: Node = _get_node_or_error(params)
 	if node == null:
 		return _node_not_found(params.get("path", "") as String)
-	var property: String = params.get("property", "") as String
+	var read: Dictionary = _read_property(node, params.get("property", "") as String)
+	if read.has("error"):
+		return read
+	# issue #99：复合 Variant 走 codec 编码（与 set 侧 array schema 对称），
+	# 返回 {"value": ..., "type": <仅复合类型>}，round-trip 闭环。
+	return CliControlVariantCodec.encode(read["value"])
+
+
+## 读单个属性，支持 sub-path（"position:x"，与 set 侧对称走 get_indexed）。
+## 返回 {"value": Variant} 或 {"error": ...}。
+## sub-path 的 leaf 非法时 get_indexed 返回 null——与「真 null 值」无法区分，
+## SKILL.md 已声明该边界；这里只校验 ":" 前的 top-level 名存在（1002 兜底 typo）。
+func _read_property(node: Node, property: String) -> Dictionary:
 	if property.is_empty():
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'property' parameter")
-	if not _has_property(node, property):
-		return _err(CliControlErrorCodes.PROPERTY_NOT_FOUND, "Property not found: %s" % property)
+	var is_sub_path: bool = ":" in property
+	var top_level: String = property.split(":", true, 1)[0] if is_sub_path else property
+	if not _has_property(node, top_level):
+		return _err(CliControlErrorCodes.PROPERTY_NOT_FOUND, "Property not found: %s" % top_level)
+	if is_sub_path:
+		return {"value": node.get_indexed(NodePath(property))}
 	return {"value": node.get(property)}
 
 
