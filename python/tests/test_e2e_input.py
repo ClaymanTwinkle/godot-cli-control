@@ -200,7 +200,7 @@ def test_abnormal_disconnect_releases_held_inputs(daemon: Any) -> None:
     assert _pressed(project) == [], "异常掉线应触发 release_all 清掉持有输入"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def probe_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """带 probe.gd（_unhandled_input 探针）的独立 Godot 项目，用于 issue #97 e2e。"""
     proj = tmp_path_factory.mktemp("gcc_e2e_probe")
