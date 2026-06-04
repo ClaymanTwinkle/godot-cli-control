@@ -36,8 +36,8 @@ func test_wait_frames_advances_n_process_frames() -> void:
 
 
 func test_wait_frames_physics_mode() -> void:
-	# 帧边界防御，同上
-	await get_tree().process_frame
+	# 帧边界防御，同上——本用例测物理帧差，跨 physics_frame 边界才对齐
+	await get_tree().physics_frame
 	var start: int = Engine.get_physics_frames()
 	var result: Dictionary = await _api.wait_frames_async({"frames": 2, "physics": true})
 	assert_eq(result, {"success": true, "frames": 2})

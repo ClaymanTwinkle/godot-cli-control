@@ -12,7 +12,8 @@ const _MAX_TIME_SCALE: float = 100.0
 const _MAX_STEP_FRAMES: int = 3600
 
 
-## 解析 --cli-time-scale=<x> 启动参数（_parse_port_from_args 同构）。
+## 解析 --cli-time-scale=<x> 启动参数（解析结构同 _parse_port_from_args，
+## 但非法值用 printerr 而非 push_warning——headless 下 stderr 是用户唯一可见渠道）。
 ## 无该参数返回 -1.0；非法值（非数字 / 越界）printerr 警告后也返回 -1.0
 ## ——不挡启动。静态纯查询：GameBridge 传 OS.get_cmdline_args()，GUT 传构造数组。
 static func parse_cmdline_time_scale(args: PackedStringArray) -> float:
