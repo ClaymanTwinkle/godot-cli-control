@@ -68,15 +68,17 @@ func _await_new_scene_ready(old: Node, timeout: float) -> Dictionary:
 
 
 ## timeout 参数校验：合法返回 float，非法返回 error Dictionary（调用方透传）。
+## 场景切换是 deferred 的，至少需要一帧才能完成，故 timeout=0 无意义——
+## 传 0 会导致调用方永远收到 1008 超时，对 agent 是神秘错误，因此拒收。
 func _parse_timeout(params: Dictionary) -> Variant:
 	var raw: Variant = params.get("timeout", _DEFAULT_TIMEOUT)
 	if not (raw is int or raw is float):
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "'timeout' must be a number")
 	var t: float = float(raw)
-	if t < 0.0 or t > _MAX_SCENE_TIMEOUT:
+	if t <= 0.0 or t > _MAX_SCENE_TIMEOUT:
 		return _err(
 			CliControlErrorCodes.INVALID_PARAMS,
-			"timeout must be 0..%s" % _MAX_SCENE_TIMEOUT,
+			"timeout must be > 0 and <= %s" % _MAX_SCENE_TIMEOUT,
 		)
 	return t
 

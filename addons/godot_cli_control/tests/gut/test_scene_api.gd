@@ -49,3 +49,18 @@ func test_scene_change_timeout_out_of_range_returns_minus_32602() -> void:
 	})
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602)
+
+
+func test_scene_reload_zero_timeout_returns_minus_32602() -> void:
+	## timeout=0 无意义（场景切换至少需要一帧），按用法错拒收而非神秘超时
+	var result: Dictionary = await _api.scene_reload_async({"timeout": 0.0})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+
+
+func test_scene_change_timeout_above_max_returns_minus_32602() -> void:
+	var result: Dictionary = await _api.scene_change_async({
+		"path": "res://anything.tscn", "timeout": 3601.0,
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
