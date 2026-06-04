@@ -864,3 +864,77 @@ func test_wait_frames_rejects_bad_input() -> void:
 		var result: Dictionary = await _api.wait_frames_async({"frames": bad})
 		assert_has(result, "error", "frames=%s 应报错" % [bad])
 		assert_eq(int(result.error.code), -32602)
+
+
+# ── issue #96：wait_property ──
+
+func test_wait_property_matches_immediately() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(5.0, 0.0)
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "position", "value": [5.0, 0.0], "timeout": 1.0,
+	})
+	assert_true(result["matched"])
+	assert_eq(result["value"], [5.0, 0.0])
+
+
+func test_wait_property_catches_later_change() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.visible = false
+	get_tree().create_timer(0.05).timeout.connect(func() -> void: node.visible = true)
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "visible", "value": true, "timeout": 2.0,
+	})
+	assert_true(result["matched"])
+
+
+func test_wait_property_gt_on_sub_path() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(0.0, 0.0)
+	get_tree().create_timer(0.05).timeout.connect(func() -> void: node.position = Vector2(600.0, 0.0))
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "position:x", "value": 500, "op": "gt", "timeout": 2.0,
+	})
+	assert_true(result["matched"])
+
+
+func test_wait_property_timeout_reports_reason_and_last_value() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.visible = false
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "visible", "value": true, "timeout": 0.1,
+	})
+	assert_false(result["matched"])
+	assert_eq(result["reason"], "timeout")
+	assert_eq(result["value"], false)
+
+
+func test_wait_property_node_not_found_reason() -> void:
+	var result: Dictionary = await _api.wait_property_async({
+		"path": "/root/__nope__", "property": "visible", "value": true, "timeout": 0.1,
+	})
+	assert_false(result["matched"])
+	assert_eq(result["reason"], "node_not_found")
+
+
+func test_wait_property_tolerance_eq() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(1.0001, 0.0)
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "position:x", "value": 1.0,
+		"tolerance": 0.001, "timeout": 0.5,
+	})
+	assert_true(result["matched"])
+
+
+func test_wait_property_rejects_ordering_op_with_non_numeric_value() -> void:
+	var result: Dictionary = await _api.wait_property_async({
+		"path": "/root", "property": "name", "value": [1, 2], "op": "gt", "timeout": 0.1,
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
