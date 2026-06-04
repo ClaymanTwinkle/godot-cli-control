@@ -2292,3 +2292,124 @@ def test_run_rpc_tree_truncated_envelope(
     assert envelope["result"]["tree"]["name"] == "root"
     # cmd_tree 应当把 ns.max_nodes 透传给 client.get_scene_tree
     mock_client.get_scene_tree.assert_awaited_once_with(depth=3, max_nodes=200)
+
+
+# ── Task A1: argparse 层用法错统一 -1003 + exit 64 ──────────────────────────
+
+
+def test_argparse_missing_required_positional_exits_64_with_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`get` 缺位置参数 → SystemExit code 64 + stdout 单行 {"ok": false, "error": {"code": -1003, ...}} + usage 在 stderr。"""
+    import json as _json
+
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["get"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    # stdout 必须是单行 JSON 信封
+    out_lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+    assert len(out_lines) == 1, f"stdout 不是单行: {captured.out!r}"
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    # usage 走 stderr
+    assert "usage" in captured.err.lower() or "get" in captured.err
+
+
+def test_argparse_invalid_choice_exits_64_with_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`wait-prop /n p 1 --op bogus`(非法 choices) → SystemExit code 64 + envelope。"""
+    import json as _json
+
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["wait-prop", "/root/Node", "scale", "1", "--op", "bogus"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    out_lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+    assert len(out_lines) == 1, f"stdout 不是单行: {captured.out!r}"
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def test_argparse_unknown_subcommand_exits_64_with_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """未知子命令 → SystemExit code 64 + envelope。"""
+    import json as _json
+
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["nonexistent-command"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    out_lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+    assert len(out_lines) == 1, f"stdout 不是单行: {captured.out!r}"
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def test_argparse_rpc_subcommand_missing_arg_exits_64_with_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`set` 只给一个参数(缺 value) → SystemExit code 64 + envelope。三层 subparser 继承。"""
+    import json as _json
+
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["set", "/root/Node"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    out_lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+    assert len(out_lines) == 1, f"stdout 不是单行: {captured.out!r}"
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def test_argparse_help_exits_0(capsys: pytest.CaptureFixture[str]) -> None:
+    """`--help` → SystemExit 0（正常帮助，不是错误）。"""
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["--help"])
+    assert exc_info.value.code == 0
+
+
+def test_argparse_daemon_help_exits_0(capsys: pytest.CaptureFixture[str]) -> None:
+    """`daemon --help` → SystemExit 0。"""
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["daemon", "--help"])
+    assert exc_info.value.code == 0
+
+
+def test_argparse_text_mode_error_no_json_on_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--text` 模式用法错：stdout 无 JSON，人类可读错误走 stderr，仍 exit 64。"""
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["--text", "get"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    # stdout 不应有 JSON
+    assert not captured.out.strip(), f"--text 模式 stdout 不应有 JSON: {captured.out!r}"
+    # stderr 应有错误信息
+    assert captured.err.strip(), "stderr 应有错误信息"
