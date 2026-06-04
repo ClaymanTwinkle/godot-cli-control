@@ -100,6 +100,9 @@ class _StubClient:
     async def get_property(self, path: str, prop: str) -> Any:
         return self._record("get_property", (path, prop), {})
 
+    async def get_properties(self, path: str, props: list) -> dict:
+        return self._record("get_properties", (path, props), {})
+
     async def set_property(self, path: str, prop: str, value: Any) -> dict:
         return self._record("set_property", (path, prop, value), {})
 
@@ -401,6 +404,16 @@ def test_get_property(stub_client: dict) -> None:
     c.returns["get_property"] = 42
     assert b.get_property("/root/X", "value") == 42
     assert c.calls[-1] == ("get_property", ("/root/X", "value"), {})
+    b.close()
+
+
+def test_get_properties_delegates_to_client(stub_client: dict) -> None:
+    """``bridge.get_properties`` 必须委托到 ``client.get_properties``，参数透传，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["get_properties"] = {"position": [1, 2], "visible": True}
+    result = b.get_properties("/root/Player", ["position", "visible"])
+    assert c.calls[-1] == ("get_properties", ("/root/Player", ["position", "visible"]), {})
+    assert result == {"position": [1, 2], "visible": True}
     b.close()
 
 

@@ -143,6 +143,10 @@ class GameBridge:
         """获取节点属性。"""
         return self._run(self._client.get_property(path, prop))
 
+    def get_properties(self, path: str, props: list[str]) -> dict[str, Any]:
+        """同帧原子读多个属性（issue #100），返回 {prop: value} 映射。"""
+        return self._run(self._client.get_properties(path, props))
+
     def set_property(self, path: str, prop: str, value: Any) -> None:
         """设置节点属性。"""
         self._run(self._client.set_property(path, prop, value))
