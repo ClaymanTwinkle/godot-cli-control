@@ -44,9 +44,9 @@ godot-cli-control daemon stop
 |---|---|
 | 0 | Success (or, for `exists` / `visible` / `wait-node` / `wait-prop` / `wait-signal`, the boolean was true / found / matched / emitted) |
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`/`wait-prop`/`wait-signal`=timeout, `daemon status`=stopped |
-| 2 | Connection / IO error (daemon not running, script path not found). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
+| 2 | Connection / IO error (daemon not running) or infra pre-condition failure (daemon failed to start, `daemon stop` encountered a system error — these carry client code `-1006`). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
 | 3 | `daemon stop --all` partial failure: at least one daemon in the registry failed to stop. Per-record `rc` is in the JSON `result.stopped[]`. |
-| 64 | Usage error on an **RPC subcommand** — argparse, a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), **and** a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing). For RPC subcommands these all carry client code `-1003` and now consistently exit 64 (a few previously exited 2 — fixed in #82). |
+| 64 | Usage error — argparse parse failure (missing / invalid args, unknown subcommand), a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing), **or** `run <script>` given a non-existent path / a script with no `run(bridge)` function. All carry client code `-1003` and consistently exit 64 (#82 / #111). |
 
 Shell-`if` works:
 
@@ -141,9 +141,10 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 |---|---|
 | `-1001` | Connection failure (daemon not running, port wrong, proxy hijacking localhost). Run `daemon status`. |
 | `-1002` | Timeout waiting for a response. Daemon may be hung mid-frame; check Godot stderr. |
-| `-1003` | Usage error (`combo` got no steps, malformed `--steps-json`, `combo -` from a TTY, a non-numeric `tap`/`wait-time` arg, **or** a `set`/`call` value that fails JSON parsing). From an RPC subcommand this always exits **64**. (Top-level `run`/`daemon` precondition failures — e.g. script path not found, daemon failed to start — also surface `-1003` but exit **2**.) Fix the invocation. |
+| `-1003` | Usage error (`combo` got no steps, malformed `--steps-json`, `combo -` from a TTY, a non-numeric `tap`/`wait-time` arg, a `set`/`call` value that fails JSON parsing, script path not found, or script missing `run(bridge)`). Always exits **64** (#111). Fix the invocation. |
 | `-1004` | Local file IO error (e.g. `screenshot` can't write the destination — bad path, no write permission). **Not** a daemon problem. |
 | `-1005` | `run <script>` user script raised an uncaught exception. The error message has the exception type + last-line summary; full traceback is on stderr. Fix the script, not the CLI. |
+| `-1006` | Infra pre-condition failure (`daemon start` / `daemon stop` / `run`'s auto-start failed at the OS level — port conflict, Godot binary not found, PID file missing, etc.). Always exits **2** (#92). Fix the environment, not the invocation. |
 | `-1099` | Internal client error (unforeseen exception). Bug in this CLI; please file an issue. Stderr has the full traceback. |
 
 Server vs client ranges never overlap, so a single `code` field is unambiguous.
