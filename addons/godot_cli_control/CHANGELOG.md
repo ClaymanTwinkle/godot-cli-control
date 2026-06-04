@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **feat(wait): `wait-prop` / `wait-signal` / `wait-frames` 条件等待原语 + 错误码 1007（#96）**: 三个新 CLI 子命令。`wait-prop <path> <prop> <value> [--op eq|ne|gt|ge|lt|le] [--timeout] [--tolerance] [--physics]` 等属性满足条件（exit 0=matched, 1=timeout）；`wait-signal <path> <signal> [--timeout]` 等信号发射（exit 0=emitted, 1=timeout）；`wait-frames <N> [--physics]` 推进 N 帧。服务端错误码 1007 SIGNAL_NOT_FOUND（wait-signal 传未知信号名，永久性 schema 错，不应 retry）。Python `GameClient` 对应方法：`wait_property` / `wait_signal` / `wait_frames`。
+
 ### Changed
 - **BREAKING** `get` 复合 Variant 返回从旧版 `"(x, y)"` 字符串改为 set-schema 数组 + type 字段；信封 result 从裸值变 `{"value": <array-or-scalar>, "type"?: "<GodotType>"}` 对象（#99）。写侧 `set` 接受的 Array layout 完全一致，get→set round-trip 无需转换。Python API `get_property` / `get_properties` 只返回裸 value（type 已剥离），要拿 type 字段走 CLI `get` 或底层 `client.request("get_property", ...)`。
 
