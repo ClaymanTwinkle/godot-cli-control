@@ -219,7 +219,7 @@ func _register_methods() -> void:
 	}
 	# 输入模拟（async_with_id：handler 自行通过 _on_async_response 回响）
 	_methods["input_combo"] = {"callable": _input_sim_api.handle_combo, "kind": "async_with_id"}
-	# Scene API（异步，issue #98）
+	# Scene API（异步）
 	_methods["scene_reload"] = {"callable": _scene_api.scene_reload_async, "kind": "async"}
 	_methods["scene_change"] = {"callable": _scene_api.scene_change_async, "kind": "async"}
 
