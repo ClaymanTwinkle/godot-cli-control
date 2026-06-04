@@ -108,6 +108,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 
 > **`--wait`**: `tap` / `hold` / `combo` return as soon as the input is armed, *before* the motion finishes. Add `--wait` (e.g. `hold run 1.5 --wait`) to block until the action's duration elapses (game-time) so the next read sees the settled state — equivalent to following the command with `wait-time <duration>` on the same connection.
 
+> **Event pipeline**: `press` / `tap` / `hold` / `combo` inject an `InputEventAction` through the engine's event pipeline — both polling (`is_action_pressed`, `get_vector`) **and** event callbacks (`_input`, `_unhandled_input`) see the input. `InputEventAction` carries no mouse coordinates; position-dependent `_gui_input` widgets need `click` instead.
+
 > **No-arg `GameClient()` / `GameBridge()`**: with no `port` argument they auto-discover the daemon's port from `.cli_control/port` (falling back to `9877`), so a single-connection script connects to a running daemon without hardcoding a port.
 
 ### Error codes
