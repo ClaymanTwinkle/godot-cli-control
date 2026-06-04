@@ -1329,6 +1329,7 @@ def test_scene_change_preflight_rejects_bad_prefix(
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003
     assert "res://" in payload["error"]["message"]
+    assert "uid://" in payload["error"]["message"]
 
 
 def test_scene_specs_registered() -> None:
@@ -1337,7 +1338,6 @@ def test_scene_specs_registered() -> None:
     for name in ("scene-reload", "scene-change"):
         spec = RPC_BY_NAME[name]
         assert spec.preflight is not None
-        assert spec.text_formatter({"scene_path": "res://m.tscn", "name": "M"})
 
 
 def test_scene_text_formatters() -> None:
@@ -1359,16 +1359,45 @@ def test_scene_reload_preflight_rejects_bad_timeout(
     """scene-reload --timeout <=0 必须在连 daemon 之前报 EXIT_USAGE。"""
     import json as _json
 
+    import godot_cli_control.cli as cli_mod
     from godot_cli_control.cli import EXIT_USAGE, main
 
     class _ShouldNotConnect:
         def __init__(self, *_: Any, **__: Any) -> None:
             raise AssertionError("preflight 失效：scene-reload 非法 timeout 时不应连 daemon")
 
-    import godot_cli_control.cli as cli_mod
-
     monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
     monkeypatch.setattr(sys, "argv", ["godot-cli-control", "scene-reload", "--timeout", bad_timeout])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "timeout" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("bad_timeout", ["-1", "0"])
+def test_scene_change_preflight_rejects_bad_timeout(
+    bad_timeout: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """scene-change --timeout <=0 必须在连 daemon 之前报 EXIT_USAGE。"""
+    import json as _json
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：scene-change 非法 timeout 时不应连 daemon")
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
+    monkeypatch.setattr(
+        sys, "argv", ["godot-cli-control", "scene-change", "res://ok.tscn", "--timeout", bad_timeout]
+    )
 
     with pytest.raises(SystemExit) as exc:
         main()
