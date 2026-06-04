@@ -2441,6 +2441,33 @@ def test_argparse_literal_text_after_dashdash_still_emits_json_envelope(
     assert payload["error"]["code"] == -1003
 
 
+def test_argparse_peek_parse_failure_no_extra_usage_on_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`get --text=x`（store_const 不接受显式值）：peek parser 自身解析失败时
+    不得往 stderr 追加它自己的 usage/error 行，stderr 只保留真 parser 的
+    单段 usage；stdout 的 -1003 信封契约不变（#118）。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["get", "--text=x", "/root/Foo", "name"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    out_lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+    assert len(out_lines) == 1, f"stdout 应为单行 JSON 信封: {captured.out!r}"
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    # stderr 只允许真 parser 打的一段 usage；peek parser 的不该出现
+    assert captured.err.count("usage:") == 1, (
+        f"stderr 出现 peek parser 的冗余 usage/error 行: {captured.err!r}"
+    )
+
+
 def test_argparse_text_mode_real_bypass_no_json_on_stdout(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
