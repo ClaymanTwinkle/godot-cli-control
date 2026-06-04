@@ -2416,6 +2416,46 @@ def test_argparse_text_mode_error_no_json_on_stdout(
     assert captured.err.strip(), "stderr 应有错误信息"
 
 
+def test_argparse_literal_text_after_dashdash_still_emits_json_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`combo -- --text extra`：`--text` 是 `--` 之后的位置参数值，不是旗标。
+
+    argparse 触发 unrecognized arguments 错误，此时 peek-parse 应把 `--text`
+    视为位置参数（`--` 终止符之后），故 _is_text_mode=False，
+    stdout 必须有单行 -1003 JSON 信封 + exit 64。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["combo", "--", "--text", "extra"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    out_lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+    assert len(out_lines) == 1, f"stdout 应为单行 JSON 信封（字面 --text 不是旗标）: {captured.out!r}"
+    payload = _json.loads(out_lines[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def test_argparse_text_mode_real_bypass_no_json_on_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`get --text`（缺参）：真 --text 旗路 → stdout 空 + stderr 有错 + exit 64。"""
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["--text", "get"])
+    assert exc_info.value.code == 64
+
+    captured = capsys.readouterr()
+    assert not captured.out.strip(), f"真 --text 旁路 stdout 不应有 JSON: {captured.out!r}"
+    assert captured.err.strip(), "stderr 应有错误信息"
+
+
 # ── Task A2: run/daemon 前置失败拆分 ─────────────────────────────────────────
 
 

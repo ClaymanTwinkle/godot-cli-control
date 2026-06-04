@@ -1687,12 +1687,12 @@ class _EnvelopeArgumentParser(argparse.ArgumentParser):
     时读同一份（类变量跨实例共享，整个 parse_args 栈只有一次顶层调用）。
     """
 
-    _last_argv: "list[str]" = []
+    _last_argv: list[str] = []
 
     def parse_args(  # type: ignore[override]
         self,
-        args: "list[str] | None" = None,
-        namespace: "argparse.Namespace | None" = None,
+        args: list[str] | None = None,
+        namespace: argparse.Namespace | None = None,
     ) -> argparse.Namespace:
         # 顶层 parse_args 调用时更新类变量；子 parser 不会再调用 parse_args，
         # 所以这里只会被根 parser 调到，子 parser error() 读的是同一份。
@@ -1703,8 +1703,19 @@ class _EnvelopeArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
-        # --text / --no-json 旁路：只打人类可读错误到 stderr，不打 JSON
-        if "--text" not in _EnvelopeArgumentParser._last_argv and "--no-json" not in _EnvelopeArgumentParser._last_argv:
+        # --text / --no-json 旁路判定：用 peek-parse 而非 token 扫描，
+        # 避免 `--` 之后的字面量 --text 被误判为 text 模式旗标。
+        # peek parser 是普通 ArgumentParser（非 _EnvelopeArgumentParser），避免递归。
+        _peek = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+        _add_output_format_flags(_peek)
+        _is_text_mode = False
+        try:
+            _opts, _ = _peek.parse_known_args(_EnvelopeArgumentParser._last_argv)
+            _is_text_mode = getattr(_opts, "output_format", OUTPUT_JSON) == OUTPUT_TEXT
+        except SystemExit:
+            # peek 解析异常（如 --text=x 等非法形式），保守回落到 JSON 信封（契约默认值）
+            _is_text_mode = False
+        if not _is_text_mode:
             _emit_error_payload(CLIENT_CODE_USAGE, f"{self.prog}: {message}")
         else:
             print(f"{self.prog}: error: {message}", file=sys.stderr)
