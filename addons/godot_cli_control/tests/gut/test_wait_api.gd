@@ -228,3 +228,46 @@ func test_wait_property_without_setup_returns_internal_error() -> void:
 	assert_has(result, "error", "未 setup 的 WaitApi 应返回 error 信封")
 	assert_eq(int(result.error.code), -32603,
 		"未 setup 应报 -32603 internal error，实际 code=%d" % [int(result.error.code)])
+
+
+# ── issue #110：wait_signal reason 字段 ──
+
+func test_wait_signal_timeout_has_reason_timeout() -> void:
+	## 真超时 → {"emitted": false, "reason": "timeout"}
+	var emitter := Node.new()
+	emitter.add_user_signal("never_fires_2")
+	add_child_autofree(emitter)
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "never_fires_2", "timeout": 0.1,
+	})
+	assert_false(result["emitted"])
+	assert_has(result, "reason", "超时应有 reason 字段")
+	assert_eq(result["reason"], "timeout")
+
+
+func test_wait_signal_node_freed_has_reason_node_freed() -> void:
+	## 等待中把目标节点 free() → {"emitted": false, "reason": "node_freed"}
+	var emitter := Node.new()
+	emitter.add_user_signal("fleeting_sig")
+	add_child_autofree(emitter)
+	# 50ms 后释放节点，timeout 留足余量确保先 free 后 timeout
+	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.free())
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "fleeting_sig", "timeout": 2.0,
+	})
+	assert_false(result["emitted"])
+	assert_has(result, "reason", "节点释放应有 reason 字段")
+	assert_eq(result["reason"], "node_freed")
+
+
+func test_wait_signal_emitted_has_no_reason() -> void:
+	## 命中信号 → {"emitted": true, "args": [...]} 不含 reason 字段（对齐 wait_property matched 时无 reason）
+	var emitter := Node.new()
+	emitter.add_user_signal("fires_soon", [{"name": "n", "type": TYPE_INT}])
+	add_child_autofree(emitter)
+	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.emit_signal("fires_soon", 7))
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "fires_soon", "timeout": 2.0,
+	})
+	assert_true(result["emitted"])
+	assert_does_not_have(result, "reason", "命中信号时不应有 reason 字段")

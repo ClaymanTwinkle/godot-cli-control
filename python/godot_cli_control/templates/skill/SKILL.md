@@ -182,7 +182,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 - `wait-node <path> [timeout]` — block until node appears (exit 0=found, 1=timeout)
 - `wait-time <seconds>` — wait N in-game seconds (matters for `--write-movie`). Server bounds: `0 ≤ seconds ≤ 3600`; passing out-of-range gets `-32602 "seconds must be ..."`. Client short-circuits `seconds <= 0` without an RPC.
 - `wait-prop <path> <prop> <json-value> [--op eq|ne|gt|lt|ge|le] [--timeout N] [--tolerance N]` — block until property satisfies condition (exit 0=matched, 1=timeout). Example: `wait-prop /root/Player position:x 500 --op gt`. Default `--op eq`, `--timeout 5.0`, `--tolerance 0.0`.
-- `wait-signal <path> <signal> [--timeout N]` — block until signal fires (exit 0=emitted, 1=timeout). Result: `{"emitted": bool, "args": [...]}`.
+- `wait-signal <path> <signal> [--timeout N]` — block until signal fires (exit 0=emitted, 1=timeout). Result on success: `{"emitted": true, "args": [...]}`. Result on miss: `{"emitted": false, "reason": "timeout"|"node_freed"}` — `"timeout"` means the signal never fired within the deadline; `"node_freed"` means the target node was freed during the wait (use this to distinguish a race from a stale path).
 - `wait-frames <N> [--physics]` — advance exactly N process frames (or physics frames with `--physics`). Result: `{"success": true, "frames": N}`.
 
 **Render:**
@@ -250,6 +250,10 @@ godot-cli-control call /root/Game start 42 easy --text-value # ✓ calls with ("
 ```
 
 Use this when generating commands from a template — it removes the three-quote escaping headache (`'"null"'`).
+
+### Variant encoding depth limit
+
+`get` encodes property values recursively. Containers (Arrays, Dictionaries) nested deeper than **64 levels**, or self-referencing containers, are replaced with the sentinel string `"<max-depth-exceeded>"` rather than causing an error or hang. The sentinel is a diagnostic signal — not game data. If you see it, narrow your read: use a sub-path (`get /root/Node mydict:somekey`) or restructure your property access to avoid deeply nested containers.
 
 ### Tree truncation
 
