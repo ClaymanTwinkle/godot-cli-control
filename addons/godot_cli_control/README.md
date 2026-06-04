@@ -95,6 +95,9 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `screenshot()` | `png_bytes = await client.screenshot()` |
 | `wait_for_node(path, timeout)` | `await client.wait_for_node("/root/Boss", timeout=10.0)` |
 | `wait_game_time(seconds)` | `await client.wait_game_time(2.5)` |
+| `wait_property(path, prop, value, op, timeout, tolerance)` | `await client.wait_property("/root/Player", "position:x", 500, op="gt", timeout=3.0)` |
+| `wait_signal(path, signal, timeout)` | `await client.wait_signal("/root/Game", "level_complete", timeout=10.0)` |
+| `wait_frames(frames, physics)` | `await client.wait_frames(4)` |
 | `action_press(action)` | `await client.action_press("jump")` |
 | `action_release(action)` | `await client.action_release("jump")` |
 | `action_tap(action, duration)` | `await client.action_tap("attack", 0.1)` |
@@ -125,6 +128,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1004` | server | Combo already in progress (call `combo-cancel` to retry) |
 | `1005` | server | Scene tree too large (lower `depth` or pass `--max-nodes`) |
 | `1006` | server | Resource transiently unavailable (e.g. screenshot during scene transition). Rare under normal use — GameBridge waits for viewport first-frame before listening, and `screenshot` retries internally. Safe to retry if you do hit it. |
+| `1007` | server | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` or `children` to find valid signals. |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold) |
@@ -158,8 +162,8 @@ Semantic exit codes so `if godot-cli-control exists /root/Foo; then …` works i
 
 | Code | Meaning |
 |---|---|
-| 0 | Success (or boolean true for `exists` / `visible`, node found for `wait-node`) |
-| 1 | RPC error; also `exists`/`visible`=false, `wait-node` timeout, `daemon status`=stopped |
+| 0 | Success (or boolean true for `exists` / `visible`, node found for `wait-node`, condition matched for `wait-prop` / `wait-signal`) |
+| 1 | RPC error; also `exists`/`visible`=false, `wait-node`/`wait-prop`/`wait-signal` timeout, `daemon status`=stopped |
 | 2 | Connection / IO error, or `daemon stop` ffmpeg-transcode failure |
 | 3 | `daemon stop --all` partial failure (≥1 daemon failed to stop) |
 | 64 | Usage error on an RPC subcommand — bad argparse args, a pre-flight reject (`combo` with no steps / malformed `--steps-json`), a non-numeric `tap`/`wait-time` arg, or a `set`/`call` value that fails JSON parsing. These all carry client code `-1003` and now consistently exit 64 (#82; a few previously exited 2). |
