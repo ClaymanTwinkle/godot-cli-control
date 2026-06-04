@@ -806,3 +806,38 @@ func test_get_properties_rejects_empty_or_non_string() -> void:
 		})
 		assert_has(result, "error", "properties=%s 应报错" % [bad])
 		assert_eq(int(result.error.code), -32602)
+
+
+# ── get_properties 边界：sub-path 缺失项 + 重复属性（review 遗留）──
+
+func test_get_properties_missing_sub_path_names_full_key() -> void:
+	# 缺失项是 sub-path 形式时，1002 error message 必须点全名（含 ":"）。
+	# 回归：早期实现只校验 top-level 名，message 里丢掉了 sub-path 后半部分，
+	# 让 agent 无法直接从 message 得知是哪个完整 key 出了问题。
+	var node := Node2D.new()
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_get_properties({
+		"path": str(node.get_path()),
+		"properties": ["position", "nope:x"],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1002)
+	# message 必须含完整的 "nope:x"，而不是只有 "nope"
+	assert_string_contains(str(result.error.message), "nope:x")
+
+
+func test_get_properties_duplicate_property_deduped_by_dict() -> void:
+	# 重复属性（["position", "position"]）行为锁定：Dictionary key 语义去重，
+	# values 里 "position" 只有一个 entry（有意行为，和 JSON Dict 的 key-uniqueness 对齐）。
+	# 注意：这是锁定已有行为，而非新增功能——改动此断言前请确认变更是有意而为之。
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(5.0, 6.0)
+	var result: Dictionary = _api.handle_get_properties({
+		"path": str(node.get_path()),
+		"properties": ["position", "position"],
+	})
+	assert_false(result.has("error"), "重复属性不应报错")
+	var values: Dictionary = result["values"]
+	# Dictionary 赋值重复 key 只保留最后一次，故 values 恰好有 1 个 key
+	assert_eq(values.size(), 1, "重复 key 在 Dictionary 语义下去重为 1 条（有意行为）")
