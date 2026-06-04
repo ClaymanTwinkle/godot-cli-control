@@ -20,7 +20,6 @@ const GameBridgeScript := preload("res://addons/godot_cli_control/bridge/game_br
 const LowLevelApiScript := preload("res://addons/godot_cli_control/bridge/low_level_api.gd")
 const InputSimulationApiScript := preload("res://addons/godot_cli_control/bridge/input_simulation_api.gd")
 const WaitApiScript := preload("res://addons/godot_cli_control/bridge/wait_api.gd")
-const TimeApiScript := preload("res://addons/godot_cli_control/bridge/time_api.gd")
 
 
 # ── 子类：捕获 _send_json 出站 + 跳过 peer 状态检查 ──────────────────
