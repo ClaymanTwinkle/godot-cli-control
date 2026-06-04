@@ -65,6 +65,8 @@ _methods["step_frames"] = {"callable": _time_api.step_frames_async, "kind": "asy
    （message 给出正确用法：「pause first, then step-frames」）
 4. 执行：`paused = false` → `await get_tree().physics_frame / process_frame` ×N
    → `paused = true` → 返回 `{"stepped": N, "paused": true}`
+   （结尾的 `paused = true` 无条件写——即使推进期间外力改了 paused 状态，
+   step_frames 返回时也恒保证停在 paused）
 5. `await process_frame` 是 SceneTree 信号、不依赖节点 process_mode，
    GUT 环境下也能真测
 
@@ -73,9 +75,11 @@ _methods["step_frames"] = {"callable": _time_api.step_frames_async, "kind": "asy
 - `static func parse_cmdline_time_scale(args: PackedStringArray) -> float`：
   解析 `--cli-time-scale=<x>`，无该参数 / 非数字 / 越界（(0,100] 外）返回 `-1.0`
   ——静态纯函数，GUT 可单测
-- GameBridge `_ready`（激活判定之后）调用它（读取路径对齐 `--cli-control`
-  现有实现），返回值 > 0 则 `Engine.time_scale = x`；非法值 `printerr` 警告
-  并忽略，**不挡启动**
+- GameBridge `_ready`（激活判定之后）调用它（读取路径对齐 `_parse_port_from_args`
+  / `_has_cli_flag` 现有同构实现），返回值 > 0 则 `Engine.time_scale = x`；
+  非法值 `printerr` 警告并忽略，**不挡启动**
+- 调用位置必须在 `_ready` 的 `await _wait_first_frame_ready()` **之前**
+  （否则第 0 帧已过，「启动即生效」承诺失效）
 
 ### 2. 错误码
 
