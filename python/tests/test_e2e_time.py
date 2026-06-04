@@ -97,18 +97,22 @@ def daemon(demo_project: Path) -> Any:
 
 
 def test_pause_freezes_and_step_frames_advances_physics(daemon: Any) -> None:
-    """pause 冻结物理 → step-frames --physics 确定性推进 → unpause。
+    """pause 冻结物理 → 空中传送 → step-frames --physics 确定性下落 → unpause。
 
-    Headless Godot 跑得极快（0.05s 内 player 已落地），所以点 Start 后立即 pause，
-    不加任何 wait-time，确保捕捉到 mid-fall 状态（player starts at y=80, ground ≈y=280）。
+    去竞态设计：不依赖「pause 抢在落地前」——pause 后用 set 把 player 传送回
+    空中（paused 下属性写照常生效），step 的重力下落就与机器速度无关。
     """
     project = daemon
     assert _run_cli(project, "wait-node", "/root/Main/UI/StartButton")["result"]["found"]
-    # 点 Start 让 player 激活；立即 pause，截住下落中途（不加 wait-time）
     assert _run_cli(project, "click", "/root/Main/UI/StartButton")["ok"]
+    assert _run_cli(project, "wait-node", "/root/Main/World/Player")["result"]["found"]
     assert _run_cli(project, "pause")["result"]["paused"] is True
+    # 传送回空中（y=80 远离地面 y≈280），paused 下 set 直接写属性
+    assert _run_cli(project, "set", "/root/Main/World/Player", "position", "[320, 80]")["ok"]
     y1 = _run_cli(project, "get", "/root/Main/World/Player", "position:y")["result"]["value"]
-    _run_cli(project, "wait-time", "0.3")  # 墙钟流逝，但树已 pause
+    assert y1 == 80.0, f"传送后应在空中：{y1}"
+    # paused 下墙钟流逝，位置必须冻结
+    _run_cli(project, "wait-time", "0.3")
     y2 = _run_cli(project, "get", "/root/Main/World/Player", "position:y")["result"]["value"]
     assert y2 == y1, f"paused 下位置不得变化：{y1} -> {y2}"
     # 确定性推进 10 个物理帧：重力必须使 y 增大
