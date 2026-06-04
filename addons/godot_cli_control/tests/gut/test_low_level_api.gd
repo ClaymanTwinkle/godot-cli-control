@@ -841,3 +841,26 @@ func test_get_properties_duplicate_property_deduped_by_dict() -> void:
 	var values: Dictionary = result["values"]
 	# Dictionary 赋值重复 key 只保留最后一次，故 values 恰好有 1 个 key
 	assert_eq(values.size(), 1, "重复 key 在 Dictionary 语义下去重为 1 条（有意行为）")
+
+
+# ── issue #96：wait_frames ──
+
+func test_wait_frames_advances_n_process_frames() -> void:
+	var start: int = Engine.get_process_frames()
+	var result: Dictionary = await _api.wait_frames_async({"frames": 3})
+	assert_eq(result, {"success": true, "frames": 3})
+	assert_gte(Engine.get_process_frames() - start, 3)
+
+
+func test_wait_frames_physics_mode() -> void:
+	var start: int = Engine.get_physics_frames()
+	var result: Dictionary = await _api.wait_frames_async({"frames": 2, "physics": true})
+	assert_eq(result, {"success": true, "frames": 2})
+	assert_gte(Engine.get_physics_frames() - start, 2)
+
+
+func test_wait_frames_rejects_bad_input() -> void:
+	for bad: Variant in [null, 0, -1, 3601, "x"]:
+		var result: Dictionary = await _api.wait_frames_async({"frames": bad})
+		assert_has(result, "error", "frames=%s 应报错" % [bad])
+		assert_eq(int(result.error.code), -32602)
