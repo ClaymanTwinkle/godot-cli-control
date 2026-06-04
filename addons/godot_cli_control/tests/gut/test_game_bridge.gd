@@ -19,6 +19,7 @@ extends GutTest
 const GameBridgeScript := preload("res://addons/godot_cli_control/bridge/game_bridge.gd")
 const LowLevelApiScript := preload("res://addons/godot_cli_control/bridge/low_level_api.gd")
 const InputSimulationApiScript := preload("res://addons/godot_cli_control/bridge/input_simulation_api.gd")
+const WaitApiScript := preload("res://addons/godot_cli_control/bridge/wait_api.gd")
 
 
 # ── 子类：捕获 _send_json 出站 + 跳过 peer 状态检查 ──────────────────
@@ -32,21 +33,27 @@ class TestableGameBridge:
 		captured_frames.append(data)
 
 
-# ── 桩 LowLevelApi：sync / async handler 各覆盖 1 个，返回值由测试预置 ──
+# ── 桩 LowLevelApi：sync handler 覆盖 1 个，返回值由测试预置 ──
 
 class StubLowLevelApi:
 	extends LowLevelApi
 	# 每个 handler 的预置返回值 + 调用记录
 	var click_return: Dictionary = {"success": true}
 	var click_calls: Array = []
-	# 父类签名 -> Dictionary 是静态类型契约，override 不能放宽到 Variant；
-	# async type-guard（返回非 dict）由测试通过外部 Callable 注入到 _methods。
-	var wait_for_node_return: Dictionary = {"found": true}
-	var wait_for_node_calls: Array = []
 
 	func handle_click(params: Dictionary) -> Dictionary:
 		click_calls.append(params)
 		return click_return
+
+
+# ── 桩 WaitApi：async handler 覆盖 1 个，返回值由测试预置 ──
+
+class StubWaitApi:
+	extends WaitApi
+	# 父类签名 -> Dictionary 是静态类型契约，override 不能放宽到 Variant；
+	# async type-guard（返回非 dict）由测试通过外部 Callable 注入到 _methods。
+	var wait_for_node_return: Dictionary = {"found": true}
+	var wait_for_node_calls: Array = []
 
 	func wait_for_node_async(params: Dictionary) -> Dictionary:
 		wait_for_node_calls.append(params)
@@ -96,6 +103,7 @@ class StubInputSimulationApi:
 var _bridge: TestableGameBridge
 var _low: StubLowLevelApi
 var _input: StubInputSimulationApi
+var _wait: StubWaitApi
 
 
 func before_each() -> void:
@@ -111,8 +119,13 @@ func before_each() -> void:
 	_input.name = "InputSimulationApi"
 	add_child_autofree(_input)
 
+	_wait = StubWaitApi.new()
+	_wait.name = "WaitApi"
+	add_child_autofree(_wait)
+
 	_bridge._low_level_api = _low
 	_bridge._input_sim_api = _input
+	_bridge._wait_api = _wait
 	# InputSim 的 callback：bridge 的 _on_async_response 把 (id, result) 转回 dispatch
 	_input.setup(_bridge._on_async_response)
 	_bridge._register_methods()
@@ -277,7 +290,7 @@ func test_sync_handler_error_dict_emits_error_frame() -> void:
 # ── async 路径 ────────────────────────────────────────────────────
 
 func test_async_handler_success_emits_result_frame() -> void:
-	_low.wait_for_node_return = {"found": true}
+	_wait.wait_for_node_return = {"found": true}
 	_send('{"id": "wait1", "method": "wait_for_node", "params": {"path": "/X", "timeout": 1.0}}')
 	# stub 的 await get_tree().process_frame 让响应延后一帧；推两帧足够
 	await get_tree().process_frame
@@ -290,7 +303,7 @@ func test_async_handler_success_emits_result_frame() -> void:
 
 func _async_returning_null(_params: Dictionary) -> Variant:
 	# 故意返回非 Dictionary 触发 _run_async 的 type-guard。
-	# 父类 LowLevelApi.wait_for_node_async 签名锁死 -> Dictionary，没法在 stub 里
+	# 父类 WaitApi.wait_for_node_async 签名锁死 -> Dictionary，没法在 stub 里
 	# 直接 override 类型放宽，绕道：测试通过 Callable 注入 _methods 项。
 	await get_tree().process_frame
 	return null
