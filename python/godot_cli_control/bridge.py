@@ -78,6 +78,26 @@ class GameBridge:
         """等待节点出现。"""
         return self._run(self._client.wait_for_node(path, timeout=timeout))
 
+    def wait_property(
+        self,
+        path: str,
+        prop: str,
+        value: Any,
+        op: str = "eq",
+        timeout: float = 5.0,
+        tolerance: float = 0.0,
+    ) -> dict:
+        """逐帧轮询直到属性满足条件（issue #96）。返回 {"matched": bool, ...}，超时不抛。"""
+        return self._run(self._client.wait_property(path, prop, value, op=op, timeout=timeout, tolerance=tolerance))
+
+    def wait_signal(self, path: str, signal: str, timeout: float = 5.0) -> dict:
+        """等信号发射（issue #96）。返回 {"emitted": bool, "args": [...]}，超时不抛。"""
+        return self._run(self._client.wait_signal(path, signal, timeout=timeout))
+
+    def wait_frames(self, frames: int, physics: bool = False) -> dict:
+        """等 N 帧（issue #96）。确定性帧推进，替代短 sleep。"""
+        return self._run(self._client.wait_frames(frames, physics=physics))
+
     # ── UI 交互 ──
 
     def click(self, path: str) -> dict:

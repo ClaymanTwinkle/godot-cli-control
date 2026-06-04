@@ -333,6 +333,41 @@ class GameClient:
         )
         return result.get("found", False)
 
+    async def wait_property(
+        self,
+        path: str,
+        prop: str,
+        value: Any,
+        op: str = "eq",
+        timeout: float = 5.0,
+        tolerance: float = 0.0,
+    ) -> dict:
+        """等属性满足条件（issue #96）。返回 {"matched": bool, ...}，超时不抛。"""
+        return await self.request(
+            "wait_property",
+            {
+                "path": path, "property": prop, "value": value,
+                "op": op, "timeout": timeout, "tolerance": tolerance,
+            },
+            timeout=timeout + 5.0,
+        )
+
+    async def wait_signal(self, path: str, signal: str, timeout: float = 5.0) -> dict:
+        """等信号发射（issue #96）。返回 {"emitted": bool, "args": [...]}，超时不抛。"""
+        return await self.request(
+            "wait_signal",
+            {"path": path, "signal": signal, "timeout": timeout},
+            timeout=timeout + 5.0,
+        )
+
+    async def wait_frames(self, frames: int, physics: bool = False) -> dict:
+        """等 N 帧（issue #96）。client wall-time 按最低 10fps 估算 + 10s grace。"""
+        return await self.request(
+            "wait_frames",
+            {"frames": frames, "physics": physics},
+            timeout=max(30.0, frames / 10.0 + 10.0),
+        )
+
     async def wait_game_time(self, seconds: float) -> dict:
         """按 Godot game time 等待 N 秒。
 
