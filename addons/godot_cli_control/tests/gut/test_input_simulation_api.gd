@@ -8,6 +8,21 @@ const InputSimulationApiScript := preload("res://addons/godot_cli_control/bridge
 
 var _api: Node
 
+
+## 事件管线探针：记录 _input / _unhandled_input 收到的 InputEventAction（issue #97）
+class EventProbe:
+	extends Node
+	var input_actions: Array = []
+	var unhandled_actions: Array = []
+
+	func _input(event: InputEvent) -> void:
+		if event is InputEventAction:
+			input_actions.append(event)
+
+	func _unhandled_input(event: InputEvent) -> void:
+		if event is InputEventAction:
+			unhandled_actions.append(event)
+
 # combo / hold 状态机测试用占位 action。InputMap 不预设这些，由 fixture 注册。
 const _FIXTURE_ACTIONS: Array[String] = ["a", "b", "alpha", "beta"]
 
@@ -241,3 +256,43 @@ func test_list_input_actions_returns_sorted() -> void:
 
 	for name in ["zzz_act", "aaa_act", "mmm_act"]:
 		InputMap.erase_action(name)
+
+
+# ── issue #97：press/release 必须走事件管线（_input / _unhandled_input 可见） ──
+
+func test_press_feeds_input_event_pipeline() -> void:
+	var probe := EventProbe.new()
+	add_child_autofree(probe)
+	_api.handle_action_press({"action": "ui_accept"})
+	# parse_input_event 注入的事件在输入泵分发；等两帧确保送达
+	await wait_frames(2)
+	assert_gt(probe.input_actions.size(), 0, "_input 应收到 InputEventAction")
+	var ev: InputEventAction = probe.input_actions[0]
+	assert_eq(String(ev.action), "ui_accept")
+	assert_true(ev.pressed, "press 注入的事件应为 pressed=true")
+	assert_eq(ev.strength, 1.0)
+	assert_gt(probe.unhandled_actions.size(), 0, "_unhandled_input 也应收到 InputEventAction")
+	_api.handle_action_release({"action": "ui_accept"})
+
+
+func test_release_feeds_release_event() -> void:
+	var probe := EventProbe.new()
+	add_child_autofree(probe)
+	_api.handle_action_press({"action": "ui_accept"})
+	await wait_frames(2)
+	probe.input_actions.clear()
+	_api.handle_action_release({"action": "ui_accept"})
+	await wait_frames(2)
+	assert_gt(probe.input_actions.size(), 0, "release 也应产生事件")
+	var ev: InputEventAction = probe.input_actions[0]
+	assert_false(ev.pressed, "release 注入的事件应为 pressed=false")
+
+
+func test_press_still_updates_polling_state() -> void:
+	# 轮询路径不回归：parse_input_event(InputEventAction) 同样更新 action 状态位
+	_api.handle_action_press({"action": "ui_accept"})
+	Input.flush_buffered_events()
+	assert_true(Input.is_action_pressed("ui_accept"), "is_action_pressed 应感知 press")
+	_api.handle_action_release({"action": "ui_accept"})
+	Input.flush_buffered_events()
+	assert_false(Input.is_action_pressed("ui_accept"), "release 后应清除")

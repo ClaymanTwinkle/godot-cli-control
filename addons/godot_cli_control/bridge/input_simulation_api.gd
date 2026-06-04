@@ -270,14 +270,27 @@ func _process(delta: float) -> void:
 
 # ── 底层输入操作 ──
 
+## issue #97：走 Input.parse_input_event 而非 Input.action_press——
+## InputEventAction 经输入泵进 SceneTree 事件管线（_input / _unhandled_input
+## 可见），同时仍更新 action 状态位（is_action_pressed / get_vector 不回归）。
+## 注意：InputEventAction 无坐标，依赖鼠标位置的 _gui_input 控件请用 click。
 func _do_press(action: String) -> void:
-	if InputMap.has_action(action):
-		Input.action_press(action)
+	if not InputMap.has_action(action):
+		return
+	var ev: InputEventAction = InputEventAction.new()
+	ev.action = action
+	ev.pressed = true
+	ev.strength = 1.0
+	Input.parse_input_event(ev)
 
 
 func _do_release(action: String) -> void:
-	if InputMap.has_action(action):
-		Input.action_release(action)
+	if not InputMap.has_action(action):
+		return
+	var ev: InputEventAction = InputEventAction.new()
+	ev.action = action
+	ev.pressed = false
+	Input.parse_input_event(ev)
 
 
 func _err(code: int, message: String) -> Dictionary:
