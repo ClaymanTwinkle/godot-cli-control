@@ -1018,3 +1018,17 @@ func test_wait_signal_timeout_string_is_minus_32602() -> void:
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602,
 		"timeout='abc' 应报 -32602 INVALID_PARAMS，实际 code=%d" % [int(result.error.code)])
+
+
+func test_wait_property_tolerance_string_is_minus_32602() -> void:
+	## wait_property 传 tolerance="abc" 必须被拒绝（-32602），对齐 timeout 同款拒绝。
+	## tolerance 是 float 参数；字符串不应被静默当 0.0 使用。
+	var node := Node2D.new()
+	add_child_autofree(node)
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "visible", "value": true,
+		"tolerance": "abc", "timeout": 0.5,
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602,
+		"tolerance='abc' 应报 -32602 INVALID_PARAMS，实际 code=%d" % [int(result.error.code)])
