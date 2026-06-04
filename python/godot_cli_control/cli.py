@@ -1678,10 +1678,43 @@ def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
+class _EnvelopeArgumentParser(argparse.ArgumentParser):
+    """覆写 argparse 的 error() —— 把用法错统一进 JSON 信封 + exit 64。
+
+    不覆写 exit()，保住 --help 的 exit(0)。
+
+    在 parse_args 调用时把 argv 存入类变量 _last_argv，子 parser 调用 error()
+    时读同一份（类变量跨实例共享，整个 parse_args 栈只有一次顶层调用）。
+    """
+
+    _last_argv: "list[str]" = []
+
+    def parse_args(  # type: ignore[override]
+        self,
+        args: "list[str] | None" = None,
+        namespace: "argparse.Namespace | None" = None,
+    ) -> argparse.Namespace:
+        # 顶层 parse_args 调用时更新类变量；子 parser 不会再调用 parse_args，
+        # 所以这里只会被根 parser 调到，子 parser error() 读的是同一份。
+        _EnvelopeArgumentParser._last_argv = (
+            list(args) if args is not None else sys.argv[1:]
+        )
+        return super().parse_args(args, namespace)
+
+    def error(self, message: str) -> "NoReturn":
+        self.print_usage(sys.stderr)
+        # --text / --no-json 旁路：只打人类可读错误到 stderr，不打 JSON
+        if "--text" not in _EnvelopeArgumentParser._last_argv and "--no-json" not in _EnvelopeArgumentParser._last_argv:
+            _emit_error_payload(CLIENT_CODE_USAGE, f"{self.prog}: {message}")
+        else:
+            print(f"{self.prog}: error: {message}", file=sys.stderr)
+        raise SystemExit(EXIT_USAGE)
+
+
 def build_parser() -> argparse.ArgumentParser:
     from . import _version
 
-    parser = argparse.ArgumentParser(
+    parser = _EnvelopeArgumentParser(
         prog="godot-cli-control",
         description="Godot CLI Control —— 通过命令行远程驱动 Godot 项目",
         epilog=_TOP_EPILOG,
