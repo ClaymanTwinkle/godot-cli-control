@@ -393,18 +393,20 @@ def test_scene_text_formatters() -> None:
         "scene changed: res://main.tscn (root: Main)"
 ```
 
-（preflight 校验超时参数的负例也补一条：`scene-reload --timeout -1` → 64，同 monkeypatch 模式。注：`test_scene_specs_registered` 断言两个 spec 都有 preflight——本计划给 scene-reload 也配了 timeout preflight（Task 4 Step 3 ①），与该断言自洽；这是对 spec「仅 scene-change 做前缀校验」的轻微超出，理由是契约 5（用法错必须在连接前报）对 timeout 同样适用，且对齐 wait-prop 先例。）
+（preflight 校验超时参数的负例也补一条：`scene-reload --timeout -1` → 64（timeout=0 同样越界），同 monkeypatch 模式。注：`test_scene_specs_registered` 断言两个 spec 都有 preflight——本计划给 scene-reload 也配了 timeout preflight（Task 4 Step 3 ①），与该断言自洽；这是对 spec「仅 scene-change 做前缀校验」的轻微超出，理由是契约 5（用法错必须在连接前报）对 timeout 同样适用，且对齐 wait-prop 先例。）
 
 - [ ] **Step 2: 跑 test_cli.py 新用例确认失败**（KeyError: 'scene-reload'）
 
 - [ ] **Step 3: 实现** —— cli.py 四处：
 
 ```python
-# ① preflight（_preflight_wait_frames 之后）：
+# ① preflight（_preflight_wait_frames 之后）。
+# 注意边界：服务端 _parse_timeout 拒收 0（场景切换至少需一帧，0 恒超时是陷阱，
+# review I-1 已改为 t <= 0 → -32602），preflight 同样用 0 < timeout <= 3600：
 def _preflight_scene_reload(ns: argparse.Namespace) -> None:
     timeout = _require_float(ns.timeout, "scene-reload", "timeout")
-    if not 0 <= timeout <= 3600:
-        raise ValueError(f"scene-reload: timeout 必须在 0..3600 秒，收到 {timeout}")
+    if not 0 < timeout <= 3600:
+        raise ValueError(f"scene-reload: timeout 必须 > 0 且 <= 3600 秒，收到 {timeout}")
 
 
 def _preflight_scene_change(ns: argparse.Namespace) -> None:
@@ -413,8 +415,8 @@ def _preflight_scene_change(ns: argparse.Namespace) -> None:
             f"scene-change: 场景路径必须以 res:// 或 uid:// 开头，收到 {ns.scene_path!r}"
         )
     timeout = _require_float(ns.timeout, "scene-change", "timeout")
-    if not 0 <= timeout <= 3600:
-        raise ValueError(f"scene-change: timeout 必须在 0..3600 秒，收到 {timeout}")
+    if not 0 < timeout <= 3600:
+        raise ValueError(f"scene-change: timeout 必须 > 0 且 <= 3600 秒，收到 {timeout}")
 
 
 # ② handler（cmd_wait_frames 之后）：
@@ -429,13 +431,13 @@ async def cmd_scene_change(client: GameClient, ns: argparse.Namespace) -> dict:
 # ③ extra_args（_register_wait_frames_args 之后）：
 def _register_scene_reload_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--timeout", default="10",
-                   help="等新场景 ready 的超时秒（0..3600，默认 10）")
+                   help="等新场景 ready 的超时秒（>0 且 <=3600，默认 10）")
 
 
 def _register_scene_change_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("scene_path", help="目标场景资源路径（res:// 或 uid://）")
     p.add_argument("--timeout", default="10",
-                   help="等新场景 ready 的超时秒（0..3600，默认 10）")
+                   help="等新场景 ready 的超时秒（>0 且 <=3600，默认 10）")
 
 
 # ④ RPC_SPECS（wait-frames 条目之后插入）：
