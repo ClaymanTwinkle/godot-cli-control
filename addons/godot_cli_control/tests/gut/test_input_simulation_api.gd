@@ -10,8 +10,7 @@ var _api: Node
 
 
 ## 事件管线探针：记录 _input / _unhandled_input 收到的 InputEventAction（issue #97）
-class EventProbe:
-	extends Node
+class _EventProbe extends Node:
 	var input_actions: Array = []
 	var unhandled_actions: Array = []
 
@@ -39,6 +38,7 @@ func before_each() -> void:
 
 
 func after_each() -> void:
+	_api.release_all()
 	for name in _FIXTURE_ACTIONS:
 		if InputMap.has_action(name):
 			InputMap.erase_action(name)
@@ -261,7 +261,7 @@ func test_list_input_actions_returns_sorted() -> void:
 # ── issue #97：press/release 必须走事件管线（_input / _unhandled_input 可见） ──
 
 func test_press_feeds_input_event_pipeline() -> void:
-	var probe := EventProbe.new()
+	var probe := _EventProbe.new()
 	add_child_autofree(probe)
 	_api.handle_action_press({"action": "ui_accept"})
 	# parse_input_event 注入的事件在输入泵分发；等两帧确保送达
@@ -276,7 +276,7 @@ func test_press_feeds_input_event_pipeline() -> void:
 
 
 func test_release_feeds_release_event() -> void:
-	var probe := EventProbe.new()
+	var probe := _EventProbe.new()
 	add_child_autofree(probe)
 	_api.handle_action_press({"action": "ui_accept"})
 	await wait_frames(2)
