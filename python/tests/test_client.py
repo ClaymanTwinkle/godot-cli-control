@@ -794,6 +794,7 @@ async def test_time_scale_no_arg_sends_empty_params() -> None:
         client_mod.GameClient.request = orig
     assert captured["method"] == "time_scale"
     assert captured["params"] == {}, "无参时 params 必须是空字典，不得含 'value' 键"
+    assert captured["timeout"] == 30.0, "time_scale 不应传自定义 RPC timeout（用默认值）"
     assert result == {"time_scale": 1.0}
 
 

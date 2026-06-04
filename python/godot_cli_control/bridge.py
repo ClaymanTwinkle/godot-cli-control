@@ -107,7 +107,7 @@ class GameBridge:
         return self._run(self._client.scene_change(path, timeout=timeout))
 
     def time_scale(self, value: float | None = None) -> dict:
-        """读 / 写 Engine.time_scale（issue #102）。value=None 纯读，返回 {"time_scale": x}。"""
+        """读 / 写 Engine.time_scale（issue #102）。value=None 纯读，返回 {"time_scale": x}；越界（<=0 或 >100）→ -32602。"""
         return self._run(self._client.time_scale(value))
 
     def pause(self) -> dict:
@@ -119,7 +119,7 @@ class GameBridge:
         return self._run(self._client.unpause())
 
     def step_frames(self, frames: int, physics: bool = False) -> dict:
-        """paused 前置下确定性推进 N 帧再停（issue #102）。返回 {"stepped": N, "paused": True}。"""
+        """paused 前置下确定性推进 N 帧再停（issue #102）。未 pause → 1009；返回 {"stepped": N, "paused": True}。"""
         return self._run(self._client.step_frames(frames, physics=physics))
 
     # ── UI 交互 ──
