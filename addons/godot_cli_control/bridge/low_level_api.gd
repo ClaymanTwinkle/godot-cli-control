@@ -17,6 +17,8 @@ const _BUILD_TREE_MAX_NODES: int = 5000
 const _MAX_WAIT_SECONDS: float = 3600.0
 # wait_frames 防呆上限：60fps 下 1 分钟。要等更久用 wait_game_time / wait_property。
 const _MAX_WAIT_FRAMES: int = 3600
+# wait_property 支持的比较操作符列表
+const _WAIT_PROP_OPS: PackedStringArray = ["eq", "ne", "gt", "lt", "ge", "le"]
 # take_screenshot_async 循环上限：常态下 GameBridge 启动 gate 已保证 viewport
 # ready（issue #61 H 部分），这个循环只兜动态 transient（scene transition、
 # 窗口 resize 一瞬）。30 帧 ~500ms @ 60fps，超时报 1006 给 client 兜底。
@@ -507,6 +509,92 @@ func wait_game_time_async(params: Dictionary) -> Dictionary:
 		return {"success": true}
 	await get_tree().create_timer(seconds).timeout
 	return {"success": true}
+
+
+## issue #96：逐帧轮询等属性满足条件。超时不报错——返回 matched=false +
+## reason（timeout / node_not_found / property_not_found，按最后一次轮询状态）
+## + value（最后一次读到的编码值），容忍节点/属性中途出现，typo 靠 reason 诊断。
+func wait_property_async(params: Dictionary) -> Dictionary:
+	var path: String = params.get("path", "") as String
+	var property: String = params.get("property", "") as String
+	if property.is_empty():
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'property' parameter")
+	var op: String = params.get("op", "eq") as String
+	if not op in _WAIT_PROP_OPS:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "op must be one of: %s" % ", ".join(_WAIT_PROP_OPS))
+	var timeout: float = params.get("timeout", 5.0) as float
+	if timeout < 0.0 or timeout > _MAX_WAIT_SECONDS:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "timeout must be 0..%s" % _MAX_WAIT_SECONDS)
+	var tolerance: float = params.get("tolerance", 0.0) as float
+	if tolerance < 0.0:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "tolerance must be >= 0")
+	var expected: Variant = params.get("value", null)
+	if not (expected is int or expected is float) and not op in ["eq", "ne"]:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "op '%s' requires a numeric value; compound/string values only support eq/ne" % op)
+	var start_ms: int = Time.get_ticks_msec()
+	var reason: String = "timeout"
+	var last_value: Variant = null
+	while true:
+		var node: Node = get_tree().root.get_node_or_null(path)
+		if node == null:
+			reason = "node_not_found"
+			last_value = null
+		else:
+			var read: Dictionary = _read_property(node, property)
+			if read.has("error"):
+				reason = "property_not_found"
+				last_value = null
+			else:
+				reason = "timeout"
+				last_value = CliControlVariantCodec.encode_value(read["value"])
+				if _wait_compare(last_value, expected, op, tolerance):
+					return {
+						"matched": true,
+						"value": last_value,
+						"waited": float(Time.get_ticks_msec() - start_ms) / 1000.0,
+					}
+		if float(Time.get_ticks_msec() - start_ms) / 1000.0 >= timeout:
+			break
+		await get_tree().process_frame
+	return {"matched": false, "reason": reason, "value": last_value}
+
+
+## 编码后值比较。数值走 6 op（eq/ne 带 tolerance）；其余类型仅 eq/ne 深比较
+## （数组逐元素，数值元素同样吃 tolerance）。ordering op + 非数值 actual →
+## false（继续轮询直到 timeout，reason 诊断）。
+func _wait_compare(actual: Variant, expected: Variant, op: String, tolerance: float) -> bool:
+	if (actual is int or actual is float) and (expected is int or expected is float):
+		var a: float = float(actual)
+		var b: float = float(expected)
+		match op:
+			"eq": return absf(a - b) <= tolerance
+			"ne": return absf(a - b) > tolerance
+			"gt": return a > b
+			"lt": return a < b
+			"ge": return a >= b
+			"le": return a <= b
+		return false
+	var equal: bool = _deep_equal(actual, expected, tolerance)
+	if op == "eq":
+		return equal
+	if op == "ne":
+		return not equal
+	return false
+
+
+func _deep_equal(a: Variant, b: Variant, tolerance: float) -> bool:
+	if (a is int or a is float) and (b is int or b is float):
+		return absf(float(a) - float(b)) <= tolerance
+	if a is Array and b is Array:
+		var aa: Array = a as Array
+		var ba: Array = b as Array
+		if aa.size() != ba.size():
+			return false
+		for i in aa.size():
+			if not _deep_equal(aa[i], ba[i], tolerance):
+				return false
+		return true
+	return a == b  # String / bool / null / Dictionary（引擎深比较）
 
 
 ## issue #96：等 N 帧（确定性帧推进）。physics=true 等 physics_frame。
