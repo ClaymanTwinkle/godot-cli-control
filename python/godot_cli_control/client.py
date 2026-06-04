@@ -381,7 +381,8 @@ class GameClient:
     async def scene_change(self, path: str, timeout: float = 10.0) -> dict:
         """切换到指定场景并等新场景 ready（issue #98）。
 
-        path 须为 res:// 或 uid:// 资源路径；不存在/加载失败/超时 → 1008。
+        成功返回 {"scene_path": ..., "name": ...}；path 须为 res:// 或
+        uid:// 资源路径，不存在/加载失败/超时 → 1008，会抛异常。
         """
         return await self.request(
             "scene_change", {"path": path, "timeout": timeout}, timeout=timeout + 5.0
