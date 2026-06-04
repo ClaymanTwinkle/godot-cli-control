@@ -180,7 +180,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 **Wait:**
 - `wait-node <path> [timeout]` — block until node appears (exit 0=found, 1=timeout)
 - `wait-time <seconds>` — wait N in-game seconds (matters for `--write-movie`). Server bounds: `0 ≤ seconds ≤ 3600`; passing out-of-range gets `-32602 "seconds must be ..."`. Client short-circuits `seconds <= 0` without an RPC.
-- `wait-prop <path> <prop> <json-value> [--op eq|ne|gt|ge|lt|le] [--timeout N] [--tolerance N] [--physics]` — block until property satisfies condition (exit 0=matched, 1=timeout). Example: `wait-prop /root/Player position:x 500 --op gt`. Default `--op eq`, `--timeout 5.0`, `--tolerance 0.0`.
+- `wait-prop <path> <prop> <json-value> [--op eq|ne|gt|lt|ge|le] [--timeout N] [--tolerance N]` — block until property satisfies condition (exit 0=matched, 1=timeout). Example: `wait-prop /root/Player position:x 500 --op gt`. Default `--op eq`, `--timeout 5.0`, `--tolerance 0.0`.
 - `wait-signal <path> <signal> [--timeout N]` — block until signal fires (exit 0=emitted, 1=timeout). Result: `{"emitted": bool, "args": [...]}`.
 - `wait-frames <N> [--physics]` — advance exactly N process frames (or physics frames with `--physics`). Result: `{"success": true, "frames": N}`.
 
