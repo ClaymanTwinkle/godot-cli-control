@@ -2088,6 +2088,39 @@ def test_daemon_start_idle_timeout_default_is_zero() -> None:
     assert ns.idle_timeout == "0"
 
 
+def test_daemon_start_time_scale_flag_parses() -> None:
+    """daemon start --time-scale 2.5 → ns.time_scale == 2.5（float）。"""
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "start", "--time-scale", "2.5"])
+    assert ns.time_scale == 2.5
+
+
+def test_daemon_start_time_scale_default_is_none() -> None:
+    """不传 --time-scale 时 ns.time_scale is None。"""
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "start"])
+    assert ns.time_scale is None
+
+
+@pytest.mark.parametrize("bad_value", ["abc", "0", "-1", "101"])
+def test_daemon_start_time_scale_rejects_bad_value(
+    bad_value: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon start --time-scale <bad> → exit 64 + -1003 信封（argparse type 校验）。"""
+    import json as _json
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "daemon", "start", "--time-scale", bad_value])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
 def test_tree_accepts_max_nodes_flag() -> None:
     from godot_cli_control.cli import build_parser
 

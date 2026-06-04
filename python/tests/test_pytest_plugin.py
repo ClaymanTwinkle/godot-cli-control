@@ -441,3 +441,88 @@ def test_fresh_scene_fixture(pytester: pytest.Pytester) -> None:
     output = result.stdout.str()
     # 两个测试各调 1 次 scene_reload，合计 2 次
     assert "RELOAD_COUNT=[1, 1]" in output, f"expected 2 reloads, got: {output}"
+
+
+# ---------------------------------------------------------------------------
+# --godot-cli-time-scale 选项透传（#102）
+# ---------------------------------------------------------------------------
+
+
+def test_time_scale_option_registered_in_help(pytester: pytest.Pytester) -> None:
+    """--godot-cli-time-scale 出现在 --help 的 godot-cli-control 组。"""
+    result = pytester.runpytest("--help")
+    result.stdout.fnmatch_lines(["*--godot-cli-time-scale*"])
+
+
+def test_godot_daemon_passes_time_scale_to_start(pytester: pytest.Pytester) -> None:
+    """--godot-cli-time-scale 3 → daemon.start(time_scale=3.0)。"""
+    pytester.makeconftest(
+        """
+        import godot_cli_control.pytest_plugin as plugin
+
+        OBSERVED: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return False
+            def start(self, **kw): OBSERVED.append(kw.get("time_scale"))
+            def stop(self): return 0
+            def current_port(self): return 5555
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_sessionfinish(session, exitstatus):
+            assert OBSERVED[0] == 3.0, f"expected time_scale=3.0, got {OBSERVED}"
+        """
+    )
+    pytester.makepyfile(
+        test_x="""
+        def test_x(godot_daemon, bridge): pass
+        """
+    )
+    result = pytester.runpytest("-v", "--godot-cli-time-scale", "3")
+    assert result.ret == 0
+
+
+def test_godot_daemon_passes_time_scale_none_when_not_given(
+    pytester: pytest.Pytester,
+) -> None:
+    """不传 --godot-cli-time-scale → daemon.start(time_scale=None)。"""
+    pytester.makeconftest(
+        """
+        import godot_cli_control.pytest_plugin as plugin
+
+        OBSERVED: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return False
+            def start(self, **kw): OBSERVED.append(kw.get("time_scale"))
+            def stop(self): return 0
+            def current_port(self): return 5555
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_sessionfinish(session, exitstatus):
+            assert OBSERVED[0] is None, f"expected time_scale=None, got {OBSERVED}"
+        """
+    )
+    pytester.makepyfile(
+        test_x="""
+        def test_x(godot_daemon, bridge): pass
+        """
+    )
+    result = pytester.runpytest("-v")
+    assert result.ret == 0

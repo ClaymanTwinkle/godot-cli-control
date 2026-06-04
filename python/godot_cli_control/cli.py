@@ -1176,6 +1176,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             fps=ns.fps,
             port=ns.port,
             idle_timeout=idle_seconds,
+            time_scale=getattr(ns, "time_scale", None),
         )
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
@@ -1753,6 +1754,17 @@ _TOP_EPILOG = """\
 """
 
 
+def _time_scale_arg(raw: str) -> float:
+    """argparse type：daemon start --time-scale 的域校验（错误走 -1003 + 64）。"""
+    try:
+        v = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"必须是数字，收到 {raw!r}")
+    if not 0 < v <= 100:
+        raise argparse.ArgumentTypeError(f"必须 > 0 且 <= 100，收到 {v}")
+    return v
+
+
 def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--record",
@@ -1935,6 +1947,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="启动 Godot daemon 并写入 .cli_control/{godot.pid,port}。",
     )
     _add_daemon_flags(start_p)
+    start_p.add_argument(
+        "--time-scale",
+        type=_time_scale_arg,
+        default=None,
+        help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 倒速用",
+    )
     _add_output_format_flags(start_p)
 
     stop_p = daemon_subs.add_parser(

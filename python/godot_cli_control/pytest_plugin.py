@@ -16,6 +16,7 @@ CLI 选项：
   --godot-cli-port            GameBridge 端口（默认 0 = OS 自动分配）
   --godot-cli-no-headless     带窗口跑（默认 headless）
   --godot-cli-project-root    指定 Godot 项目根（默认 pytest rootdir）
+  --godot-cli-time-scale      Engine.time_scale（整套 suite 加速用，如 5）
 """
 
 from __future__ import annotations
@@ -50,6 +51,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Godot project root (default: pytest rootdir).",
     )
+    group.addoption(
+        "--godot-cli-time-scale",
+        action="store",
+        default=None,
+        help="Engine.time_scale applied at daemon startup (e.g. 5 to speed up the whole suite).",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -71,11 +78,14 @@ def godot_daemon(request: pytest.FixtureRequest) -> Iterator[Daemon]:
         else Path(str(config.rootpath)).resolve()
     )
 
+    raw_scale = config.getoption("--godot-cli-time-scale")
+    time_scale = float(raw_scale) if raw_scale is not None else None
+
     daemon = Daemon(project_root)
     started_by_us = False
     if not daemon.is_running():
         try:
-            daemon.start(headless=headless, port=port)
+            daemon.start(headless=headless, port=port, time_scale=time_scale)
         except DaemonError as e:
             pytest.fail(f"无法启动 Godot daemon：{e}", pytrace=False)
         started_by_us = True
