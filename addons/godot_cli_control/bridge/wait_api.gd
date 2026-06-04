@@ -232,17 +232,19 @@ func wait_signal_async(params: Dictionary) -> Dictionary:
 	var cb: Callable = capture.callable_for(argc)
 	node.connect(signal_name, cb, CONNECT_ONE_SHOT)
 	var start_ms: int = Time.get_ticks_msec()
+	var reason: String = "timeout"
 	while not capture.fired:
 		if float(Time.get_ticks_msec() - start_ms) / 1000.0 >= timeout:
 			break
 		await get_tree().process_frame
 		if not is_instance_valid(node):
+			reason = "node_freed"
 			break  # 节点被释放：连接随之失效，按未命中处理
 	if not capture.fired:
 		# one-shot 未触发时连接仍挂着，必须显式清理（防悬挂 Callable 泄漏）
 		if is_instance_valid(node) and node.is_connected(signal_name, cb):
 			node.disconnect(signal_name, cb)
-		return {"emitted": false}
+		return {"emitted": false, "reason": reason}
 	var encoded_args: Array = []
 	for arg: Variant in capture.args:
 		encoded_args.append(CliControlVariantCodec.encode(arg))

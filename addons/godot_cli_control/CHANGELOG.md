@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **#110 `wait_signal` 超时与节点释放可区分**：未命中时返回体新增 `reason` 字段，值为 `"timeout"`（信号在超时前未发射）或 `"node_freed"`（等待期间目标节点被释放）。命中路径（`emitted: true`）不含 `reason`，对齐 `wait_property` matched 时无 reason 的约定。非 BREAKING（新增可选字段）。
+
 ### Fixed (BREAKING — exit code changes)
 
 - **#111 argparse 用法错 exit 2 → exit 64**: 所有 argparse 层错误（缺位置参数、非法 choices、未知子命令等）现在统一输出 `-1003` 信封并以 exit 64 退出。之前是 exit 2（argparse 默认）。影响：脚本若用 `[ $? -eq 2 ]` 判 argparse 错需改为 `[ $? -eq 64 ]`。

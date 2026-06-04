@@ -96,7 +96,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `wait_for_node(path, timeout)` | `await client.wait_for_node("/root/Boss", timeout=10.0)` |
 | `wait_game_time(seconds)` | `await client.wait_game_time(2.5)` |
 | `wait_property(path, prop, value, op, timeout, tolerance)` | `await client.wait_property("/root/Player", "position:x", 500, op="gt", timeout=3.0)` |
-| `wait_signal(path, signal, timeout)` | `await client.wait_signal("/root/Game", "level_complete", timeout=10.0)` |
+| `wait_signal(path, signal, timeout)` | `await client.wait_signal("/root/Game", "level_complete", timeout=10.0)` — miss result includes `reason: "timeout"\|"node_freed"` |
 | `wait_frames(frames, physics)` | `await client.wait_frames(4)` |
 | `action_press(action)` | `await client.action_press("jump")` |
 | `action_release(action)` | `await client.action_release("jump")` |
@@ -115,6 +115,10 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 > **Event pipeline**: `press` / `tap` / `hold` / `combo` inject an `InputEventAction` through the engine's event pipeline — both polling (`is_action_pressed`, `get_vector`) **and** event callbacks (`_input`, `_unhandled_input`) see the input. `InputEventAction` carries no mouse coordinates; position-dependent `_gui_input` widgets need `click` instead.
 
 > **No-arg `GameClient()` / `GameBridge()`**: with no `port` argument they auto-discover the daemon's port from `.cli_control/port` (falling back to `9877`), so a single-connection script connects to a running daemon without hardcoding a port.
+
+### Variant encoding depth limit
+
+`get` encodes property values recursively. Containers nested deeper than **64 levels**, or self-referencing containers, are replaced with the sentinel string `"<max-depth-exceeded>"`. If you see it, narrow your read using a sub-path (`get /root/Node mydict:somekey`).
 
 ### Error codes
 
