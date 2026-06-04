@@ -1301,6 +1301,78 @@ def test_daemon_start_rejects_record_with_explicit_headless(
     assert "headless" in payload["error"]["message"]
 
 
+def test_scene_change_preflight_rejects_bad_prefix(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """scene-change 非 res://、uid:// 路径：连 daemon 前 -1003 + exit 64。
+
+    main() 不接参数（读 sys.argv、以 sys.exit 退出）——必须用
+    test_cli.py 现有 preflight 测试的 monkeypatch+SystemExit 模式。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    monkeypatch.setattr(
+        sys, "argv", ["godot-cli-control", "scene-change", "second.tscn"]
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == EXIT_USAGE  # 64
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "res://" in payload["error"]["message"]
+
+
+def test_scene_specs_registered() -> None:
+    from godot_cli_control.cli import RPC_BY_NAME
+
+    for name in ("scene-reload", "scene-change"):
+        spec = RPC_BY_NAME[name]
+        assert spec.preflight is not None
+        assert spec.text_formatter({"scene_path": "res://m.tscn", "name": "M"})
+
+
+def test_scene_text_formatters() -> None:
+    from godot_cli_control.cli import RPC_BY_NAME
+
+    r = {"scene_path": "res://main.tscn", "name": "Main"}
+    assert RPC_BY_NAME["scene-reload"].text_formatter(r) == \
+        "scene reloaded: res://main.tscn (root: Main)"
+    assert RPC_BY_NAME["scene-change"].text_formatter(r) == \
+        "scene changed: res://main.tscn (root: Main)"
+
+
+@pytest.mark.parametrize("bad_timeout", ["-1", "0"])
+def test_scene_reload_preflight_rejects_bad_timeout(
+    bad_timeout: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """scene-reload --timeout <=0 必须在连 daemon 之前报 EXIT_USAGE。"""
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：scene-reload 非法 timeout 时不应连 daemon")
+
+    import godot_cli_control.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "scene-reload", "--timeout", bad_timeout])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "timeout" in payload["error"]["message"]
+
+
 def test_daemon_stop_emits_json_envelope(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
