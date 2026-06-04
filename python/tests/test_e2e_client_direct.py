@@ -252,3 +252,53 @@ async def test_client_request_get_property_has_type_field(daemon_port: Any) -> N
         assert len(result["value"]) == 2, result
         # type 字段存在且是 "Vector2"
         assert result.get("type") == "Vector2", result
+
+
+@pytest.mark.asyncio
+async def test_client_wait_frames(daemon_port: Any) -> None:
+    """client.wait_frames(2) 返回 {"success": True, "frames": 2}（issue #96 直连覆盖）。"""
+    _, port = daemon_port
+    async with GameClient(port=port) as client:
+        result = await client.wait_frames(2)
+        assert isinstance(result, dict), result
+        assert result.get("success") is True, result
+        assert result.get("frames") == 2, result
+
+
+@pytest.mark.asyncio
+async def test_client_wait_property_immediate_match_and_timeout(daemon_port: Any) -> None:
+    """wait_property 直连测试：立即命中路径 + 超时路径（issue #96）。
+
+    先 set_property 一个已知值，再 wait eq → matched=True（立即命中）。
+    然后等一个永远不成立的条件 timeout=0.5 → matched=False, reason='timeout'。
+    """
+    _, port = daemon_port
+    async with GameClient(port=port) as client:
+        # 写 counter = 42，然后立即等 counter == 42 → 应立即命中
+        await client.set_property("/root/Main", "counter", 42)
+        result_match = await client.wait_property(
+            "/root/Main", "counter", 42, op="eq", timeout=2.0
+        )
+        assert isinstance(result_match, dict), result_match
+        assert result_match.get("matched") is True, result_match
+
+        # 等 counter > 9999（永远不成立）超时
+        result_timeout = await client.wait_property(
+            "/root/Main", "counter", 9999, op="gt", timeout=0.5
+        )
+        assert isinstance(result_timeout, dict), result_timeout
+        assert result_timeout.get("matched") is False, result_timeout
+        assert result_timeout.get("reason") == "timeout", result_timeout
+
+
+@pytest.mark.asyncio
+async def test_client_wait_signal_timeout_path(daemon_port: Any) -> None:
+    """wait_signal 超时路径：等一个不会发射的内置信号 renamed（issue #96）。
+
+    emitted=False 且超时时间合理（0.5s）。
+    """
+    _, port = daemon_port
+    async with GameClient(port=port) as client:
+        result = await client.wait_signal("/root/Main/Player", "renamed", timeout=0.5)
+        assert isinstance(result, dict), result
+        assert result.get("emitted") is False, result
