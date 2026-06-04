@@ -1203,8 +1203,8 @@ def cmd_run(ns: argparse.Namespace) -> int:
     退出码：
       0  脚本成功（且 daemon stop 成功）
       1  脚本运行失败（RPC 错语义；envelope `ok=false` 时也走这里）
-      2  基础设施 / 用法错（脚本路径不存在、daemon 起不来、idle_timeout 之外的解析）
-      64 argparse 用法错（idle_timeout 解析失败等"明显参数写错"）
+      2  基础设施前置失败（daemon 起不来等，code -1006 PRECONDITION）
+      64 用法错（脚本路径不存在、缺 run(bridge)、idle_timeout 解析失败等，code -1003）
     """
     from .daemon import Daemon, DaemonError
 
