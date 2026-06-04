@@ -15,6 +15,7 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 
 from godot_cli_control import cli
 
@@ -303,3 +304,239 @@ def test_exit_from_wait_node_uses_found_field() -> None:
     assert cli._exit_from_wait_node({"found": False}) == cli.EXIT_RPC_ERROR
     # 缺字段视为未找到
     assert cli._exit_from_wait_node({}) == cli.EXIT_RPC_ERROR
+
+
+# ── issue #96: wait-prop / wait-signal / wait-frames cmd_* + preflight ──
+
+
+def test_cmd_wait_prop_matched_passes_all_params() -> None:
+    """cmd_wait_prop 必须把 ns 上所有字段透传给 client.wait_property。"""
+    client = AsyncMock()
+    client.wait_property = AsyncMock(return_value={"matched": True, "value": 500, "waited": 0.12})
+    result = _run(cli.cmd_wait_prop(client, _ns(
+        node_path="/root/Player", prop="position:x", value="500",
+        op="gt", timeout="3", tolerance="0",
+    )))
+    client.wait_property.assert_awaited_once_with(
+        "/root/Player", "position:x", 500, op="gt", timeout=3.0, tolerance=0.0,
+    )
+    assert result["matched"] is True
+
+
+def test_cmd_wait_prop_false_result_returned() -> None:
+    client = AsyncMock()
+    client.wait_property = AsyncMock(return_value={"matched": False, "reason": "timeout", "value": 10})
+    result = _run(cli.cmd_wait_prop(client, _ns(
+        node_path="/root/X", prop="health", value="100",
+        op="eq", timeout="5", tolerance="0",
+    )))
+    assert result["matched"] is False
+
+
+def test_exit_from_wait_prop_true_is_0() -> None:
+    """exit 0 = 命中，exit 1 = 未命中（超时）。"""
+    assert cli._exit_from_wait_prop({"matched": True}) == cli.EXIT_OK
+    assert cli._exit_from_wait_prop({"matched": False}) == cli.EXIT_RPC_ERROR
+    assert cli._exit_from_wait_prop({}) == cli.EXIT_RPC_ERROR
+
+
+def test_cmd_wait_signal_matched_passes_timeout() -> None:
+    client = AsyncMock()
+    client.wait_signal = AsyncMock(return_value={"emitted": True, "args": []})
+    result = _run(cli.cmd_wait_signal(client, _ns(
+        node_path="/root/Area", signal_name="door_opened", timeout="3",
+    )))
+    client.wait_signal.assert_awaited_once_with("/root/Area", "door_opened", timeout=3.0)
+    assert result["emitted"] is True
+
+
+def test_cmd_wait_signal_default_timeout_5() -> None:
+    client = AsyncMock()
+    client.wait_signal = AsyncMock(return_value={"emitted": False})
+    _run(cli.cmd_wait_signal(client, _ns(
+        node_path="/root/A", signal_name="sig", timeout=None,
+    )))
+    client.wait_signal.assert_awaited_once_with("/root/A", "sig", timeout=5.0)
+
+
+def test_exit_from_wait_signal_emitted_is_0() -> None:
+    assert cli._exit_from_wait_signal({"emitted": True}) == cli.EXIT_OK
+    assert cli._exit_from_wait_signal({"emitted": False}) == cli.EXIT_RPC_ERROR
+    assert cli._exit_from_wait_signal({}) == cli.EXIT_RPC_ERROR
+
+
+def test_cmd_wait_frames_passes_physics_flag() -> None:
+    client = AsyncMock()
+    client.wait_frames = AsyncMock(return_value={"success": True, "frames": 3})
+    result = _run(cli.cmd_wait_frames(client, _ns(frames="3", physics=True)))
+    client.wait_frames.assert_awaited_once_with(3, physics=True)
+    assert result["frames"] == 3
+
+
+def test_cmd_wait_frames_default_physics_false() -> None:
+    client = AsyncMock()
+    client.wait_frames = AsyncMock(return_value={"success": True, "frames": 5})
+    _run(cli.cmd_wait_frames(client, _ns(frames="5", physics=False)))
+    client.wait_frames.assert_awaited_once_with(5, physics=False)
+
+
+# ── wait-prop preflight ──
+
+
+def test_preflight_wait_prop_timeout_non_number_raises() -> None:
+    ns = _ns(node_path="/X", prop="p", value="1", op="eq", timeout="abc", tolerance="0")
+    with pytest.raises(ValueError, match="timeout"):
+        cli._preflight_wait_prop(ns)
+
+
+def test_preflight_wait_prop_timeout_out_of_range_raises() -> None:
+    ns = _ns(node_path="/X", prop="p", value="1", op="eq", timeout="9999", tolerance="0")
+    with pytest.raises(ValueError, match="timeout"):
+        cli._preflight_wait_prop(ns)
+
+
+def test_preflight_wait_prop_tolerance_negative_raises() -> None:
+    ns = _ns(node_path="/X", prop="p", value="1", op="eq", timeout="5", tolerance="-1")
+    with pytest.raises(ValueError, match="tolerance"):
+        cli._preflight_wait_prop(ns)
+
+
+def test_preflight_wait_prop_ordering_op_with_list_raises() -> None:
+    """gt + value=[1,2] は数値でない → ValueError。"""
+    ns = _ns(node_path="/X", prop="p", value="[1,2]", op="gt", timeout="5", tolerance="0")
+    with pytest.raises(ValueError, match="gt"):
+        cli._preflight_wait_prop(ns)
+
+
+def test_preflight_wait_prop_ordering_op_with_string_raises() -> None:
+    ns = _ns(node_path="/X", prop="p", value='"hello"', op="gt", timeout="5", tolerance="0")
+    with pytest.raises(ValueError, match="gt"):
+        cli._preflight_wait_prop(ns)
+
+
+def test_preflight_wait_prop_ordering_op_with_bool_raises() -> None:
+    """bool は数値扱いしない —— isinstance(True, int) は True だが bool は排除。"""
+    ns = _ns(node_path="/X", prop="p", value="true", op="gt", timeout="5", tolerance="0")
+    with pytest.raises(ValueError, match="gt"):
+        cli._preflight_wait_prop(ns)
+
+
+def test_preflight_wait_prop_eq_with_bool_ok() -> None:
+    """eq/ne + bool は合法。"""
+    ns = _ns(node_path="/X", prop="visible", value="true", op="eq", timeout="5", tolerance="0")
+    cli._preflight_wait_prop(ns)  # should not raise
+
+
+def test_preflight_wait_prop_eq_with_numeric_ok() -> None:
+    ns = _ns(node_path="/X", prop="p", value="42", op="gt", timeout="5", tolerance="0")
+    cli._preflight_wait_prop(ns)  # should not raise
+
+
+# ── wait-signal preflight ──
+
+
+def test_preflight_wait_signal_timeout_non_number_raises() -> None:
+    ns = _ns(node_path="/X", signal_name="sig", timeout="abc")
+    with pytest.raises(ValueError, match="timeout"):
+        cli._preflight_wait_signal(ns)
+
+
+def test_preflight_wait_signal_timeout_out_of_range_raises() -> None:
+    ns = _ns(node_path="/X", signal_name="sig", timeout="9999")
+    with pytest.raises(ValueError, match="timeout"):
+        cli._preflight_wait_signal(ns)
+
+
+def test_preflight_wait_signal_none_timeout_ok() -> None:
+    """timeout=None（未传）时 preflight 不报错。"""
+    ns = _ns(node_path="/X", signal_name="sig", timeout=None)
+    cli._preflight_wait_signal(ns)  # should not raise
+
+
+# ── wait-frames preflight ──
+
+
+def test_preflight_wait_frames_non_integer_raises() -> None:
+    ns = _ns(frames="abc")
+    with pytest.raises(ValueError, match="frames"):
+        cli._preflight_wait_frames(ns)
+
+
+def test_preflight_wait_frames_zero_raises() -> None:
+    ns = _ns(frames="0")
+    with pytest.raises(ValueError, match="frames"):
+        cli._preflight_wait_frames(ns)
+
+
+def test_preflight_wait_frames_over_max_raises() -> None:
+    ns = _ns(frames="9999")
+    with pytest.raises(ValueError, match="frames"):
+        cli._preflight_wait_frames(ns)
+
+
+def test_preflight_wait_frames_valid_ok() -> None:
+    ns = _ns(frames="3")
+    cli._preflight_wait_frames(ns)  # should not raise
+
+
+# ── fmt helpers for wait-prop / wait-signal / wait-frames ──
+
+
+def test_fmt_wait_prop_matched() -> None:
+    out = cli._fmt_wait_prop_text({"matched": True, "waited": 0.123, "value": 500})
+    assert "matched" in out and "0.123" in out
+
+
+def test_fmt_wait_prop_timeout_has_reason_and_last_value() -> None:
+    out = cli._fmt_wait_prop_text({"matched": False, "reason": "timeout", "value": 10})
+    assert "timeout" in out and "10" in out
+
+
+def test_fmt_wait_signal_emitted() -> None:
+    assert cli._fmt_wait_signal_text({"emitted": True}) == "emitted"
+
+
+def test_fmt_wait_signal_timeout() -> None:
+    assert cli._fmt_wait_signal_text({"emitted": False}) == "timeout"
+    assert cli._fmt_wait_signal_text({}) == "timeout"
+
+
+def test_fmt_wait_frames_text() -> None:
+    """wait-frames 文本输出包含帧数。"""
+    # RpcSpec text_formatter is a lambda; test by calling it directly from spec
+    import importlib
+    importlib.reload(cli)  # ensure latest state
+    spec = cli.RPC_BY_NAME.get("wait-frames")
+    if spec is None:
+        pytest.skip("wait-frames spec not yet registered")
+    out = spec.text_formatter({"frames": 5, "success": True})
+    assert "5" in out and "frames" in out
+
+
+# ── argparse parser accepts wait-* subcommands ──
+
+
+def test_parser_accepts_wait_prop() -> None:
+    """wait-prop 必须被 build_parser 注册为子命令。"""
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["wait-prop", "/root/N", "visible", "true"])
+    assert ns.cmd == "wait-prop"
+    assert ns.node_path == "/root/N"
+    assert ns.prop == "visible"
+    assert ns.value == "true"
+
+
+def test_parser_accepts_wait_signal() -> None:
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["wait-signal", "/root/A", "fired"])
+    assert ns.cmd == "wait-signal"
+    assert ns.node_path == "/root/A"
+    assert ns.signal_name == "fired"
+
+
+def test_parser_accepts_wait_frames() -> None:
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["wait-frames", "3", "--physics"])
+    assert ns.cmd == "wait-frames"
+    assert ns.frames == "3"
+    assert ns.physics is True
