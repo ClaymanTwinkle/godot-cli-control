@@ -134,9 +134,10 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold) |
 | `-1001` | client | Connection failure (daemon not running, port wrong, proxy hijacking localhost) |
 | `-1002` | client | Timeout waiting for response |
-| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `set`/`call` value that fails JSON parsing, …). From an RPC subcommand this always exits **64** (#82); top-level `run`/`daemon` precondition failures also use `-1003` but exit 2. |
+| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `set`/`call` value that fails JSON parsing, script path not found, or script missing `run(bridge)`). Always exits **64** (#82 / #111). |
 | `-1004` | client | Local file IO error (e.g. screenshot can't write the destination) |
 | `-1005` | client | `run <script>` user script raised an uncaught exception — fix the script |
+| `-1006` | client | Infra pre-condition failure (`daemon start`/`stop`/`run` auto-start failed at OS level — port conflict, Godot binary not found, etc.). Always exits **2** (#92). |
 | `-1099` | client | Internal CLI bug — please file an issue |
 
 For full retry guidance see the SKILL.md shipped by `godot-cli-control init` (`.claude/skills/godot-cli-control/SKILL.md` in the target project).
@@ -164,9 +165,9 @@ Semantic exit codes so `if godot-cli-control exists /root/Foo; then …` works i
 |---|---|
 | 0 | Success (or boolean true for `exists` / `visible`, node found for `wait-node`, condition matched for `wait-prop` / `wait-signal`) |
 | 1 | RPC error; also `exists`/`visible`=false, `wait-node`/`wait-prop`/`wait-signal` timeout, `daemon status`=stopped |
-| 2 | Connection / IO error, or `daemon stop` ffmpeg-transcode failure |
+| 2 | Connection / IO error, infra pre-condition failure (`daemon start`/`stop` system error, carry `-1006`), or `daemon stop` ffmpeg-transcode failure |
 | 3 | `daemon stop --all` partial failure (≥1 daemon failed to stop) |
-| 64 | Usage error on an RPC subcommand — bad argparse args, a pre-flight reject (`combo` with no steps / malformed `--steps-json`), a non-numeric `tap`/`wait-time` arg, or a `set`/`call` value that fails JSON parsing. These all carry client code `-1003` and now consistently exit 64 (#82; a few previously exited 2). |
+| 64 | Usage error — argparse parse failure, a pre-flight reject (`combo` with no steps / malformed `--steps-json`), a non-numeric `tap`/`wait-time` arg, a `set`/`call` value that fails JSON parsing, `run <script>` with a non-existent path or missing `run(bridge)`. All carry client code `-1003` and exit 64 (#82 / #111). |
 
 ## Activation Modes
 

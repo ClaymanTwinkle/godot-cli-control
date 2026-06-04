@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed (BREAKING — exit code changes)
+
+- **#111 argparse 用法错 exit 2 → exit 64**: 所有 argparse 层错误（缺位置参数、非法 choices、未知子命令等）现在统一输出 `-1003` 信封并以 exit 64 退出。之前是 exit 2（argparse 默认）。影响：脚本若用 `[ $? -eq 2 ]` 判 argparse 错需改为 `[ $? -eq 64 ]`。
+- **#92 `run <script>` 前置错误拆分**:
+  - 脚本路径不存在 / 脚本缺 `run(bridge)` 函数：由旧的 exit 2（或 exit 1）改为 exit 64，错误码由 `-1003` 保持不变。这是用法错，应修正调用而非重试。
+  - `daemon start`（`run` 自动启停 / `daemon start` 命令）/ `daemon stop` 系统级失败（端口冲突、找不到 Godot binary、PID 文件丢失等）：错误码由 `-1003` 改为 **新码 `-1006` (PRECONDITION)**，exit code 保持 exit 2。影响：`run`/`daemon` 失败时，通过 `error.code` 区分用法错（`-1003` → 修调用）与基础设施错（`-1006` → 修环境）现在变得无歧义。
+
 ### Added
 - **feat(wait): `wait-prop` / `wait-signal` / `wait-frames` 条件等待原语 + 错误码 1007（#96）**: 三个新 CLI 子命令。`wait-prop <path> <prop> <value> [--op eq|ne|gt|lt|ge|le] [--timeout] [--tolerance]` 等属性满足条件（exit 0=matched, 1=timeout）；`wait-signal <path> <signal> [--timeout]` 等信号发射（exit 0=emitted, 1=timeout）；`wait-frames <N> [--physics]` 推进 N 帧。服务端错误码 1007 SIGNAL_NOT_FOUND（wait-signal 传未知信号名，永久性 schema 错，不应 retry）。Python `GameClient` 对应方法：`wait_property` / `wait_signal` / `wait_frames`。
 
