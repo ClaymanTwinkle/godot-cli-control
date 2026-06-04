@@ -85,6 +85,10 @@ func wait_game_time_async(params: Dictionary) -> Dictionary:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "seconds must be <= %s" % _MAX_WAIT_SECONDS)
 	if seconds == 0.0:
 		return {"success": true}
+	# create_timer 的 process_always 默认 true：tree paused 时计时器照常走
+	# （e2e 依赖此语义在 paused 下用 wait-time 验证冻结）；它同时跟随
+	# Engine.time_scale（time-scale 调大 → wait 语义不变、墙钟变快，#102）。
+	# 别"优化"成显式 process_always=false——paused 下 wait-time 会永久挂死。
 	await get_tree().create_timer(seconds).timeout
 	return {"success": true}
 

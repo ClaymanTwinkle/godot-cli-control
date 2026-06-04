@@ -6,6 +6,10 @@
   - time-scale 读写往返正确
   - daemon start --time-scale 2 → 连上即读到 2.0（第 0 帧生效）
 
+非显然前置：wait-time 内部是 process_always=true 的 SceneTree 计时器，
+paused 下按墙钟照常计时——所以「pause 后 wait-time 再断言位置不变」是合法
+序列，不是 bug（见 wait_api.gd 的 wait_game_time_async 注释）。
+
 需要真实 Godot 4：PATH 里有 godot（或设 GODOT_BIN），否则整文件 skip。
 """
 
@@ -144,7 +148,11 @@ def test_time_scale_roundtrip(daemon: Any) -> None:
 
 
 def test_daemon_start_time_scale_applies_at_startup(demo_project: Path) -> None:
-    """daemon start --time-scale 2：连上即读到 2.0（第 0 帧生效路径）。"""
+    """daemon start --time-scale 2：连上即读到 2.0（第 0 帧生效路径）。
+
+    不用 daemon fixture：本用例要以 --time-scale 2 启动，fixture 不传该参数，
+    故直接依赖 demo_project 自管 start/stop（finally 兜底）。
+    """
     project = demo_project
     start = _run_cli(project, "daemon", "start", "--headless", "--time-scale", "2", timeout=90)
     assert start["ok"] is True and start["result"]["started"], start
