@@ -18,6 +18,7 @@ const _WAIT_PROP_OPS: PackedStringArray = ["eq", "ne", "gt", "lt", "ge", "le"]
 var _read_property_fn: Callable = Callable()
 
 
+## 必须在任何 wait_property_async 调用之前执行；不调用则 _read_property_fn 无效。
 func setup(read_property: Callable) -> void:
 	_read_property_fn = read_property
 
@@ -114,6 +115,8 @@ func wait_property_async(params: Dictionary) -> Dictionary:
 	var expected: Variant = params.get("value", null)
 	if not (expected is int or expected is float) and not op in ["eq", "ne"]:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "op '%s' requires a numeric value; compound/string values only support eq/ne" % op)
+	if not _read_property_fn.is_valid():
+		return _err(-32603, "WaitApi not wired: read_property unavailable")
 	var start_ms: int = Time.get_ticks_msec()
 	var reason: String = "timeout"
 	var last_value: Variant = null

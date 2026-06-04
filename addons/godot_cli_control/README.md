@@ -72,7 +72,7 @@ GODOT_BIN=/path/to/godot ./addons/godot_cli_control/tests/run_gut.sh
 GODOT_BIN=/path/to/godot python addons/godot_cli_control/tests/run_gut.py
 ```
 
-The runner builds a throwaway Godot project, `git clone`s a pinned [GUT](https://github.com/bitwes/Gut) release into `addons/gut/`, copies this plugin in, and runs the test files under `addons/godot_cli_control/tests/gut/`. Coverage today is `LowLevelApi` handler boundaries (blacklist, missing-property, node-not-found) and `InputSimulationApi` state machine (combo / press / release / tap / release_all).
+The runner builds a throwaway Godot project, `git clone`s a pinned [GUT](https://github.com/bitwes/Gut) release into `addons/gut/`, copies this plugin in, and runs the test files under `addons/godot_cli_control/tests/gut/`. Coverage today is `LowLevelApi` handler boundaries (blacklist, missing-property, node-not-found), `InputSimulationApi` state machine (combo / press / release / tap / release_all), and `WaitApi` wait primitives (frames, property polling, signal capture, setup-guard).
 
 GUT itself is **not** vendored into the repo or shipped with the wheel/AssetLib zip — it's a dev-only dependency.
 

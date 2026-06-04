@@ -212,3 +212,19 @@ func test_wait_property_tolerance_string_is_minus_32602() -> void:
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602,
 		"tolerance='abc' 应报 -32602 INVALID_PARAMS，实际 code=%d" % [int(result.error.code)])
+
+
+# ── I1 review fix：_read_property_fn 未 setup 时的守卫 ──
+
+func test_wait_property_without_setup_returns_internal_error() -> void:
+	## WaitApi 不调 setup() 直接调 wait_property_async 必须返回 -32603 error 信封，
+	## 而不是抛 SCRIPT ERROR（裸 Callable().call() 崩溃），对齐 InputSimulationApi
+	## 注入 Callable 的 is_valid() 防御约定。
+	var unwired: WaitApi = WaitApiScript.new()
+	add_child_autofree(unwired)
+	var result: Dictionary = await unwired.wait_property_async({
+		"path": "/root", "property": "name", "value": "root", "timeout": 0.1,
+	})
+	assert_has(result, "error", "未 setup 的 WaitApi 应返回 error 信封")
+	assert_eq(int(result.error.code), -32603,
+		"未 setup 应报 -32603 internal error，实际 code=%d" % [int(result.error.code)])
