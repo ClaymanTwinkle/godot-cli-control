@@ -31,7 +31,7 @@ import traceback
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from .client import DEFAULT_PORT, GameClient, RpcError
 
@@ -1701,7 +1701,7 @@ class _EnvelopeArgumentParser(argparse.ArgumentParser):
         )
         return super().parse_args(args, namespace)
 
-    def error(self, message: str) -> "NoReturn":
+    def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         # --text / --no-json 旁路：只打人类可读错误到 stderr，不打 JSON
         if "--text" not in _EnvelopeArgumentParser._last_argv and "--no-json" not in _EnvelopeArgumentParser._last_argv:
