@@ -82,16 +82,17 @@ def test_exec_user_script_registers_module_for_dataclass_lookup(
     assert rc == 0
 
 
-def test_exec_user_script_returns_1_on_missing_run(
+def test_exec_user_script_returns_usage_on_missing_run(
     tmp_path: Path, stub_bridge: None
 ) -> None:
+    """缺 run(bridge) 函数 → EXIT_USAGE(64)（#92 修复：用法错归 64）。"""
     script = tmp_path / "user_script.py"
     _write(script, "x = 1\n")
 
-    from godot_cli_control.cli import _exec_user_script
+    from godot_cli_control.cli import EXIT_USAGE, _exec_user_script
 
     rc = _exec_user_script(script, port=9999)
-    assert rc == 1
+    assert rc == EXIT_USAGE
 
 
 def test_exec_user_script_friendly_error_on_connection_failure(
@@ -440,17 +441,17 @@ def test_exec_user_script_json_error_on_runtime_exception(
 def test_exec_user_script_json_error_on_missing_run(
     tmp_path: Path, stub_bridge: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """缺 run() → ``-1003`` (CLIENT_CODE_USAGE) envelope。"""
+    """缺 run() → ``-1003`` (CLIENT_CODE_USAGE) envelope + EXIT_USAGE(64)（#92 修复）。"""
     import json as _json
 
-    from godot_cli_control.cli import _exec_user_script
+    from godot_cli_control.cli import EXIT_USAGE, _exec_user_script
 
     script = tmp_path / "user_script.py"
     _write(script, "x = 1\n")
 
     rc = _exec_user_script(script, port=9999, output_format="json")
     out = capsys.readouterr().out.strip()
-    assert rc == 1
+    assert rc == EXIT_USAGE
     payload = _json.loads(out)
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003
@@ -493,11 +494,11 @@ def test_cmd_run_emits_envelope_when_script_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``godot-cli-control run nonexistent.py --json`` → 单行 error envelope +
-    EXIT_INFRA_ERROR(2)。用户传错路径按 CLAUDE.md 契约 3 归入"用法错=2"。"""
+    EXIT_USAGE(64)。用户传错路径是"用法错"→ -1003 + 64（#92 修复）。"""
     import argparse
     import json as _json
 
-    from godot_cli_control.cli import EXIT_INFRA_ERROR, OUTPUT_JSON, cmd_run
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, cmd_run
 
     ns = argparse.Namespace(
         script=str(tmp_path / "does-not-exist.py"),
@@ -512,7 +513,7 @@ def test_cmd_run_emits_envelope_when_script_missing(
     )
     rc = cmd_run(ns)
     out = capsys.readouterr().out.strip()
-    assert rc == EXIT_INFRA_ERROR
+    assert rc == EXIT_USAGE
     payload = _json.loads(out)
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003
@@ -616,8 +617,8 @@ def test_cmd_run_emits_envelope_on_daemon_start_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """daemon.start raise DaemonError → envelope + EXIT_INFRA_ERROR(2)。
-    遗漏过的 review P2 #4 case：单测之前只覆盖了"脚本不存在""idle 解析失败"。"""
+    """daemon.start raise DaemonError → envelope (-1006 PRECONDITION) + EXIT_INFRA_ERROR(2)。
+    daemon 起不来是 infra 前置失败 → -1006 + exit 2（#92 修复）。"""
     import argparse
     import json as _json
 
@@ -651,7 +652,7 @@ def test_cmd_run_emits_envelope_on_daemon_start_failure(
     assert rc == EXIT_INFRA_ERROR
     payload = _json.loads(out)
     assert payload["ok"] is False
-    assert payload["error"]["code"] == -1003
+    assert payload["error"]["code"] == -1006
     assert "port already bound" in payload["error"]["message"]
 
 
@@ -2413,3 +2414,76 @@ def test_argparse_text_mode_error_no_json_on_stdout(
     assert not captured.out.strip(), f"--text 模式 stdout 不应有 JSON: {captured.out!r}"
     # stderr 应有错误信息
     assert captured.err.strip(), "stderr 应有错误信息"
+
+
+# ── Task A2: run/daemon 前置失败拆分 ─────────────────────────────────────────
+
+
+def test_cmd_daemon_start_daemonerror_exits_infra_with_1006(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """cmd_daemon_start DaemonError → -1006 (PRECONDITION) + EXIT_INFRA_ERROR(2)（#92）。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_INFRA_ERROR, OUTPUT_JSON, cmd_daemon_start
+
+    (tmp_path / "project.godot").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    def _fake_start(self: Any, **__: Any) -> None:
+        raise daemon_mod.DaemonError("cannot find godot binary")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "start", _fake_start)
+    monkeypatch.setattr("godot_cli_control.daemon.find_godot_binary", lambda: None)
+
+    ns = __import__("argparse").Namespace(
+        record=False,
+        movie_path=None,
+        headless=True,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_start(ns)
+    out = capsys.readouterr().out.strip()
+    assert rc == EXIT_INFRA_ERROR
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1006
+    assert "cannot find godot binary" in payload["error"]["message"]
+
+
+def test_cmd_daemon_stop_single_project_daemonerror_exits_infra_with_1006(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """cmd_daemon_stop 单项目 DaemonError → -1006 + EXIT_INFRA_ERROR(2)（#92）。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_INFRA_ERROR, OUTPUT_JSON, cmd_daemon_stop
+
+    def _fake_stop(self: Any) -> int:
+        raise daemon_mod.DaemonError("pid file not found")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _fake_stop)
+
+    ns = __import__("argparse").Namespace(
+        all=False,
+        project=None,
+        output_format=OUTPUT_JSON,
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = cmd_daemon_stop(ns)
+    out = capsys.readouterr().out.strip()
+    assert rc == EXIT_INFRA_ERROR
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1006
+    assert "pid file not found" in payload["error"]["message"]
