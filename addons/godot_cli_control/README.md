@@ -107,6 +107,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `release_all()` | `await client.release_all()` |
 | `get_pressed()` | `await client.get_pressed()` |
 | `list_input_actions(include_builtin=False)` | `await client.list_input_actions()` |
+| `scene_reload(timeout)` | `await client.scene_reload(timeout=10.0)` — reload current scene, block until ready; CLI: `scene-reload [--timeout N]` |
+| `scene_change(path, timeout)` | `await client.scene_change("res://levels/l2.tscn", timeout=10.0)` — switch scene, block until ready; CLI: `scene-change <res://path.tscn> [--timeout N]` |
 
 > **CLI note**: as a shell subcommand, `screenshot` **requires an output path** — `godot-cli-control screenshot /tmp/shot.png` — and writes the PNG to that file. Returning base64 over stdout is intentionally unsupported, to keep large binary payloads out of an automating agent's context window.
 
@@ -133,6 +135,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1005` | server | Scene tree too large (lower `depth` or pass `--max-nodes`) |
 | `1006` | server | Resource transiently unavailable (e.g. screenshot during scene transition). Rare under normal use — GameBridge waits for viewport first-frame before listening, and `screenshot` retries internally. Safe to retry if you do hit it. |
 | `1007` | server | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` or `children` to find valid signals. |
+| `1008` | server | Scene unavailable (`scene-reload` / `scene-change`): no current scene, scene file missing / failed to load, or timed out waiting for the new scene to become ready. Fix the path (permanent) or inspect the daemon log (timeout). |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold) |
