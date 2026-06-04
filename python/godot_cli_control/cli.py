@@ -302,6 +302,25 @@ def _preflight_scene_change(ns: argparse.Namespace) -> None:
         raise ValueError(f"scene-change: timeout 必须 > 0 且 <= 3600 秒，收到 {timeout}")
 
 
+def _preflight_time_scale(ns: argparse.Namespace) -> None:
+    if ns.value is None:
+        return  # 无参 = 读当前值，无需校验
+    v = _require_float(ns.value, "time-scale", "value")
+    if not 0 < v <= 100:
+        raise ValueError(
+            f"time-scale: value 必须 > 0 且 <= 100，收到 {v}（要冻结游戏用 pause，别用 0）"
+        )
+
+
+def _preflight_step_frames(ns: argparse.Namespace) -> None:
+    try:
+        frames = int(ns.frames)
+    except (TypeError, ValueError):
+        raise ValueError(f"step-frames: frames 必须是整数，收到 {ns.frames!r}")
+    if not 1 <= frames <= 3600:
+        raise ValueError(f"step-frames: frames 必须在 1..3600，收到 {frames}")
+
+
 def _combo_total_duration(steps: list[dict]) -> float:
     """combo 全部 step 的累计 game-time（给 ``--wait`` 算阻塞时长，issue #90）。
 
@@ -490,6 +509,23 @@ async def cmd_scene_change(client: GameClient, ns: argparse.Namespace) -> dict:
     return await client.scene_change(ns.scene_path, timeout=float(ns.timeout))
 
 
+async def cmd_time_scale(client: GameClient, ns: argparse.Namespace) -> dict:
+    value = float(ns.value) if ns.value is not None else None
+    return await client.time_scale(value)
+
+
+async def cmd_pause(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.pause()
+
+
+async def cmd_unpause(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.unpause()
+
+
+async def cmd_step_frames(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.step_frames(int(ns.frames), physics=ns.physics)
+
+
 async def cmd_pressed(
     client: GameClient, ns: argparse.Namespace
 ) -> list[str]:
@@ -669,6 +705,17 @@ def _register_scene_change_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("scene_path", help="目标场景资源路径（res:// 或 uid://）")
     p.add_argument("--timeout", default="10",
                    help="等新场景 ready 的超时秒（>0 且 <=3600，默认 10）")
+
+
+def _register_time_scale_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("value", nargs="?", default=None,
+                   help="新倍速（>0 且 <=100）；省略则读当前值")
+
+
+def _register_step_frames_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("frames", help="推进帧数（1..3600）")
+    p.add_argument("--physics", action="store_true",
+                   help="推进 physics_frame（默认 process_frame）")
 
 
 def _register_set_args(p: argparse.ArgumentParser) -> None:
@@ -1004,6 +1051,49 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         extra_args=_register_scene_change_args,
         preflight=_preflight_scene_change,
         text_formatter=lambda r: f"scene changed: {r.get('scene_path')} (root: {r.get('name')})",
+    ),
+    RpcSpec(
+        name="time-scale",
+        handler=cmd_time_scale,
+        description=(
+            "读 / 写 Engine.time_scale（无参 = 读）。wait-time 按 game time 计，"
+            "倍速后语义不变、墙钟变快。合法域 (0, 100]。注意：--record 下仍生效，"
+            "录出的是加速画面。"
+        ),
+        positionals=(),  # 由 extra_args 注册
+        example="time-scale 5",
+        extra_args=_register_time_scale_args,
+        preflight=_preflight_time_scale,
+        text_formatter=lambda r: f"time_scale = {r.get('time_scale')}",
+    ),
+    RpcSpec(
+        name="pause",
+        handler=cmd_pause,
+        description="暂停 SceneTree（get_tree().paused = true）。幂等。",
+        positionals=(),
+        example="pause",
+        text_formatter=lambda r: f"paused: {r.get('paused')}",
+    ),
+    RpcSpec(
+        name="unpause",
+        handler=cmd_unpause,
+        description="恢复 SceneTree。幂等。",
+        positionals=(),
+        example="unpause",
+        text_formatter=lambda r: f"paused: {r.get('paused')}",
+    ),
+    RpcSpec(
+        name="step-frames",
+        handler=cmd_step_frames,
+        description=(
+            "paused 状态下确定性推进 N 帧再停（物理断言银弹：推 N 个物理帧后状态"
+            "必然确定）。必须先 pause，否则报 1009，exit 1。"
+        ),
+        positionals=(),  # 由 extra_args 注册
+        example="step-frames 3 --physics",
+        extra_args=_register_step_frames_args,
+        preflight=_preflight_step_frames,
+        text_formatter=lambda r: f"stepped {r.get('stepped')} frames (still paused)",
     ),
     RpcSpec(
         name="pressed",
