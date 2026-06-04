@@ -69,6 +69,46 @@ const _ARRAY_PASSTHROUGH_SAFE_TYPES: Array[int] = [
 ]
 
 
+## wait_signal 的参数捕获器（issue #96）。GDScript 无变参 Callable，
+## 按信号声明 argc（get_signal_list）从 0..MAX_ARGS 选对应 cap 函数。
+class _SignalCapture:
+	extends RefCounted
+
+	const MAX_ARGS: int = 8
+
+	var fired: bool = false
+	var args: Array = []
+
+	func cap0() -> void: _hit([])
+	func cap1(a1: Variant) -> void: _hit([a1])
+	func cap2(a1: Variant, a2: Variant) -> void: _hit([a1, a2])
+	func cap3(a1: Variant, a2: Variant, a3: Variant) -> void: _hit([a1, a2, a3])
+	func cap4(a1: Variant, a2: Variant, a3: Variant, a4: Variant) -> void: _hit([a1, a2, a3, a4])
+	func cap5(a1: Variant, a2: Variant, a3: Variant, a4: Variant, a5: Variant) -> void: _hit([a1, a2, a3, a4, a5])
+	func cap6(a1: Variant, a2: Variant, a3: Variant, a4: Variant, a5: Variant, a6: Variant) -> void: _hit([a1, a2, a3, a4, a5, a6])
+	func cap7(a1: Variant, a2: Variant, a3: Variant, a4: Variant, a5: Variant, a6: Variant, a7: Variant) -> void: _hit([a1, a2, a3, a4, a5, a6, a7])
+	func cap8(a1: Variant, a2: Variant, a3: Variant, a4: Variant, a5: Variant, a6: Variant, a7: Variant, a8: Variant) -> void: _hit([a1, a2, a3, a4, a5, a6, a7, a8])
+
+	func callable_for(argc: int) -> Callable:
+		match argc:
+			0: return cap0
+			1: return cap1
+			2: return cap2
+			3: return cap3
+			4: return cap4
+			5: return cap5
+			6: return cap6
+			7: return cap7
+			8: return cap8
+		return Callable()
+
+	func _hit(captured: Array) -> void:
+		if fired:
+			return
+		fired = true
+		args = captured
+
+
 func _ready() -> void:
 	_property_blacklist = _merge_extra(_property_blacklist, SETTING_PROPERTY_BLACKLIST_EXTRA)
 	_method_blacklist = _merge_extra(_method_blacklist, SETTING_METHOD_BLACKLIST_EXTRA)
@@ -612,6 +652,52 @@ func wait_frames_async(params: Dictionary) -> Dictionary:
 		else:
 			await get_tree().process_frame
 	return {"success": true, "frames": frames}
+
+
+## issue #96：等信号发射（带超时）。竞态注意（SKILL.md pitfall）：必须先挂
+## 等待再触发动作——信号在 connect 之前发射不会被捕获。
+func wait_signal_async(params: Dictionary) -> Dictionary:
+	var path: String = params.get("path", "") as String
+	var node: Node = get_tree().root.get_node_or_null(path)
+	if node == null:
+		return _node_not_found(path)
+	var signal_name: String = params.get("signal", "") as String
+	if signal_name.is_empty():
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'signal' parameter")
+	if not node.has_signal(signal_name):
+		return _err(CliControlErrorCodes.SIGNAL_NOT_FOUND, "Signal not found: %s" % signal_name)
+	var timeout: float = params.get("timeout", 5.0) as float
+	if timeout < 0.0 or timeout > _MAX_WAIT_SECONDS:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "timeout must be 0..%s" % _MAX_WAIT_SECONDS)
+	var argc: int = 0
+	for sig: Dictionary in node.get_signal_list():
+		if sig["name"] == signal_name:
+			argc = (sig["args"] as Array).size()
+			break
+	if argc > _SignalCapture.MAX_ARGS:
+		return _err(
+			CliControlErrorCodes.INVALID_PARAMS,
+			"signal '%s' has %d args (max %d supported)" % [signal_name, argc, _SignalCapture.MAX_ARGS],
+		)
+	var capture: _SignalCapture = _SignalCapture.new()
+	var cb: Callable = capture.callable_for(argc)
+	node.connect(signal_name, cb, CONNECT_ONE_SHOT)
+	var start_ms: int = Time.get_ticks_msec()
+	while not capture.fired:
+		if float(Time.get_ticks_msec() - start_ms) / 1000.0 >= timeout:
+			break
+		await get_tree().process_frame
+		if not is_instance_valid(node):
+			break  # 节点被释放：连接随之失效，按未命中处理
+	if not capture.fired:
+		# one-shot 未触发时连接仍挂着，必须显式清理（防悬挂 Callable 泄漏）
+		if is_instance_valid(node) and node.is_connected(signal_name, cb):
+			node.disconnect(signal_name, cb)
+		return {"emitted": false}
+	var encoded_args: Array = []
+	for arg: Variant in capture.args:
+		encoded_args.append(CliControlVariantCodec.encode(arg))
+	return {"emitted": true, "args": encoded_args}
 
 
 func _get_node_or_error(params: Dictionary) -> Node:
