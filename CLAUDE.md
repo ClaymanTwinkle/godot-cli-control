@@ -85,4 +85,4 @@ release.sh                  # 发版脚本
 
 ## 已知遗留 issue（PR 路过时顺手修）
 
-*（截至 2026-05-16，AI 友好性 review 列出的 7 项 + SKILL/-h vs 代码对齐 review（退出码 3、daemon ls / stop --all / status stopped 字段、1003 含 InputMap action、wait-time 0..3600、ffmpeg 失败传染、screenshot retry 帧数等）已全部 land。下次 review 发现新坑请补到这里。）*
+*（截至 2026-06-04，已 land：#96/#97/#99/#100 三连 PR（wait 原语/codec/多属性读）、#111/#92 退出码语义统一、#108 wait_api 拆分、#110 wait_signal reason 字段、#112 get 路径打磨、#107 codec 深度哨兵文档、#113 probe fixture scope。仍 open：#109（KIV）；#98/#101/#102/#103（feature backlog）；#88、#18。下次 review 发现新坑请补到这里。）*
