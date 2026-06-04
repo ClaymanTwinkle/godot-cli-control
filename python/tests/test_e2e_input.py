@@ -232,8 +232,8 @@ def test_press_reaches_unhandled_input_callback(probe_project: Path) -> None:
 
         payload = _run_cli(probe_project, "get", "/root/Main", "saw_jump_event")
         assert payload["ok"] is True, payload
-        # PR1 阶段 get 仍是旧编码（裸值）；PR2 落地后此断言改 result["value"]
-        assert payload["result"] is True, (
+        # PR2 已迁移：get 信封透传 RPC result，result["value"] 取裸值
+        assert payload["result"]["value"] is True, (
             f"_unhandled_input 应收到 press 事件并置 saw_jump_event=true，实际 result={payload['result']!r}"
         )
     finally:
