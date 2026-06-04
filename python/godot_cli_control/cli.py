@@ -254,6 +254,17 @@ def _require_float(raw: Any, cmd: str, field: str) -> float:
         raise ValueError(f"{cmd}: {field} 必须是数字，收到 {raw!r}")
 
 
+def _require_frames(raw: Any, cmd: str) -> int:
+    """frames 参数校验：整数 + 1..3600（wait-frames / step-frames 共用）。"""
+    try:
+        frames = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{cmd}: frames 必须是整数，收到 {raw!r}")
+    if not 1 <= frames <= 3600:
+        raise ValueError(f"{cmd}: frames 必须在 1..3600，收到 {frames}")
+    return frames
+
+
 def _preflight_wait_prop(ns: argparse.Namespace) -> None:
     timeout = _require_float(ns.timeout, "wait-prop", "timeout")
     if not 0 <= timeout <= 3600:
@@ -278,12 +289,7 @@ def _preflight_wait_signal(ns: argparse.Namespace) -> None:
 
 
 def _preflight_wait_frames(ns: argparse.Namespace) -> None:
-    try:
-        frames = int(ns.frames)
-    except (TypeError, ValueError):
-        raise ValueError(f"wait-frames: frames 必须是整数，收到 {ns.frames!r}")
-    if not 1 <= frames <= 3600:
-        raise ValueError(f"wait-frames: frames 必须在 1..3600，收到 {frames}")
+    _require_frames(ns.frames, "wait-frames")
 
 
 def _preflight_scene_reload(ns: argparse.Namespace) -> None:
@@ -313,12 +319,7 @@ def _preflight_time_scale(ns: argparse.Namespace) -> None:
 
 
 def _preflight_step_frames(ns: argparse.Namespace) -> None:
-    try:
-        frames = int(ns.frames)
-    except (TypeError, ValueError):
-        raise ValueError(f"step-frames: frames 必须是整数，收到 {ns.frames!r}")
-    if not 1 <= frames <= 3600:
-        raise ValueError(f"step-frames: frames 必须在 1..3600，收到 {frames}")
+    _require_frames(ns.frames, "step-frames")
 
 
 def _combo_total_duration(steps: list[dict]) -> float:
@@ -1069,7 +1070,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
         name="pause",
         handler=cmd_pause,
-        description="暂停 SceneTree（get_tree().paused = true）。幂等。",
+        description='暂停 SceneTree（get_tree().paused = true）。幂等；返回 {"paused": true}。',
         positionals=(),
         example="pause",
         text_formatter=lambda r: f"paused: {r.get('paused')}",
@@ -1077,7 +1078,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
         name="unpause",
         handler=cmd_unpause,
-        description="恢复 SceneTree。幂等。",
+        description='恢复 SceneTree（paused = false）。幂等；返回 {"paused": false}。',
         positionals=(),
         example="unpause",
         text_formatter=lambda r: f"paused: {r.get('paused')}",

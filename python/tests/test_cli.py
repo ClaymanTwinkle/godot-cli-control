@@ -1461,6 +1461,7 @@ def test_time_scale_preflight_rejects_bad_value(
     payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003
+    assert "value" in payload["error"]["message"]
 
 
 @pytest.mark.parametrize("bad_frames", ["0", "3601", "abc"])
@@ -1488,6 +1489,7 @@ def test_step_frames_preflight_rejects_bad_frames(
     payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1003
+    assert "frames" in payload["error"]["message"]
 
 
 def test_daemon_stop_emits_json_envelope(
