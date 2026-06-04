@@ -321,8 +321,8 @@ def test_init_subcommand_accepts_skills_no_clobber() -> None:
 @pytest.mark.parametrize(
     "argv,expected_attrs",
     [
-        # 读
-        (["get", "/root/Main", "position"], {"node_path": "/root/Main", "prop": "position"}),
+        # 读（get props 改为 nargs='+'，ns.props 是 list）
+        (["get", "/root/Main", "position"], {"node_path": "/root/Main", "props": ["position"]}),
         (["text", "/root/Main/Title"], {"node_path": "/root/Main/Title"}),
         (["exists", "/root/Foo"], {"node_path": "/root/Foo"}),
         (["visible", "/root/Hud"], {"node_path": "/root/Hud"}),
@@ -1536,6 +1536,169 @@ def test_run_rpc_text_mode_uses_text_formatter(
 
     assert rc == 0
     assert capsys.readouterr().out.strip() == "true"
+
+
+# ── get 命令：多属性 + 信封透传（issue #99 / #100）──
+
+
+def test_get_single_prop_envelope_passthrough(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """单属性 get 必须透传 RPC result（含 type），不拆包裸值。
+
+    信封 result = {"value": [...], "type": "Vector2"}。
+    agent 用 type 字段消歧，这是 issue #99 的核心契约。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["get"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Player", props=["position"]
+    )
+
+    mock_client = AsyncMock()
+    # client.request 直接返回服务端 result dict（{"value": ..., "type": ...}）
+    mock_client.request = AsyncMock(
+        return_value={"value": [1.0, 2.0], "type": "Vector2"}
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload == {
+        "ok": True,
+        "result": {"value": [1.0, 2.0], "type": "Vector2"},
+    }
+    # 必须走 client.request，不走 client.get_property（裸值便捷层）
+    mock_client.request.assert_awaited_once_with(
+        "get_property", {"path": "/root/Player", "property": "position"}
+    )
+
+
+def test_get_multi_prop_envelope_passthrough(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """多属性 get 必须发 get_properties，信封 result = {"values": {...}}。
+
+    这是 issue #100 的原子读契约。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["get"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Enemy", props=["position", "health"]
+    )
+
+    mock_result = {
+        "values": {
+            "position": {"value": [3.0, 4.0], "type": "Vector2"},
+            "health": {"value": 80, "type": "int"},
+        }
+    }
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=mock_result)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload == {"ok": True, "result": mock_result}
+    mock_client.request.assert_awaited_once_with(
+        "get_properties",
+        {"path": "/root/Enemy", "properties": ["position", "health"]},
+    )
+
+
+def test_get_single_prop_text_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--text 下单属性打印裸 value（保持旧 text 行为，只把 value 取出渲染）。"""
+    from godot_cli_control.cli import OUTPUT_TEXT, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["get"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Player", props=["position"]
+    )
+
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        return_value={"value": [1.5, -2.0], "type": "Vector2"}
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_TEXT))
+
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    # value 是 list → JSON 序列化
+    assert out == "[1.5, -2.0]"
+
+
+def test_get_multi_prop_text_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--text 下多属性每行输出 ``prop = value``。"""
+    from godot_cli_control.cli import OUTPUT_TEXT, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["get"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Enemy", props=["position", "health"]
+    )
+
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        return_value={
+            "values": {
+                "position": {"value": [3.0, 4.0], "type": "Vector2"},
+                "health": {"value": 80, "type": "int"},
+            }
+        }
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_TEXT))
+
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    assert "position = [3.0, 4.0]" in out
+    assert "health = 80" in out
+
+
+def test_get_parses_multiple_props_from_argv() -> None:
+    """argparse 层面 props nargs='+' 能解析 2+ 属性。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["get", "/root/Node", "position", "visible"])
+    assert ns.cmd == "get"
+    assert ns.node_path == "/root/Node"
+    assert ns.props == ["position", "visible"]
+
+
+def test_get_parses_single_prop_from_argv() -> None:
+    """argparse 层面 props nargs='+' 能解析单个属性。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["get", "/root/Node", "health"])
+    assert ns.props == ["health"]
 
 
 def test_daemon_ls_empty(

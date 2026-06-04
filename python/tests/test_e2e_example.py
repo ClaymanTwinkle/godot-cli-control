@@ -113,11 +113,12 @@ def test_demo_drives_jump_and_move(daemon: Any) -> None:
 
     jump = _run_cli(project, "get", "/root/Main/World/Player", "jump_count")
     assert jump["ok"] is True, jump
-    assert jump["result"] == 1, f"期望恰好跳 1 次，实际 {jump['result']}"
+    # PR2 后 get result 透传 RPC shape: {"value": ..., "type": ...}
+    assert jump["result"]["value"] == 1, f"期望恰好跳 1 次，实际 {jump['result']}"
 
     # 向右跑 1s，moved_right 应被置真。
     assert _run_cli(project, "hold", "move_right", "1.0")["ok"]
     _run_cli(project, "wait-time", "0.2")
     moved = _run_cli(project, "get", "/root/Main/World/Player", "moved_right")
     assert moved["ok"] is True, moved
-    assert moved["result"] is True, f"期望 moved_right=true，实际 {moved['result']}"
+    assert moved["result"]["value"] is True, f"期望 moved_right=true，实际 {moved['result']}"
