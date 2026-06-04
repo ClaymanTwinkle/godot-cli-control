@@ -128,6 +128,11 @@ def test_scene_change_missing_scene_returns_1008(daemon: Any) -> None:
     r = _run_cli(project, "scene-change", "res://__missing__.tscn")
     assert r["ok"] is False
     assert r["error"]["code"] == 1008
+    # 路径校验在碰场景之前（ResourceLoader.exists 先行）：
+    # 1008 后 daemon 仍存活、当前场景不变
+    assert _run_cli(project, "exists", "/root/Main")["result"] is True, (
+        "scene-change 失败不应破坏当前场景"
+    )
 
 
 def test_bridge_scene_reload_roundtrip(daemon: Any) -> None:
