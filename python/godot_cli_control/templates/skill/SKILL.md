@@ -60,6 +60,7 @@ fi
 
 ```bash
 godot-cli-control daemon start             # boot daemon for cwd project
+godot-cli-control daemon start --time-scale 5  # start at 5× game speed (applies Engine.time_scale from frame 0)
 godot-cli-control daemon status            # exit 0 = running, 1 = stopped
 godot-cli-control daemon stop              # stop cwd-project daemon (rc 0; rc 2 = ffmpeg transcode failed)
 godot-cli-control daemon stop --project /path/to/other/godot/project
@@ -71,6 +72,7 @@ godot-cli-control daemon ls                # list all running daemons (cross-pro
 - **`daemon status` payload when stopped**: `{"state": "stopped"}`. If the previous launch wrote `.cli_control/godot.log` or recorded an exit code, the envelope also includes `"last_log": "<path>"` and/or `"last_exit_code": <int>` — use these to diagnose why the daemon died without manually grepping under `.cli_control/`.
 - **`daemon ls` payload**: `{"daemons": [{"project_root", "pid", "port", "started_at", "godot_bin", "log_path"}, ...]}`. Dead records (PID gone) are auto-pruned on each call, so this is the canonical list of *actually-alive* daemons across all projects on the machine.
 - **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-project stop result; the top-level `rc` is the aggregate exit code.
+- **`daemon start --time-scale N`**: sets `Engine.time_scale = N` (range `(0, 100]`) from the very first frame of the Godot process. Useful to run an entire test suite at e.g. 5× speed. **Asymmetry**: `run <script>` mode does not support `--time-scale` as a startup flag — inside the script call `bridge.time_scale(5)` on the first line instead; or use `daemon start --time-scale 5` beforehand and connect the script to the already-running daemon.
 
 ## JSON envelope examples
 
@@ -127,6 +129,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `1006` | Resource transiently unavailable (e.g. screenshot during scene transition / window resize). Rare under normal use: GameBridge waits for viewport first-frame before accepting connections, and `screenshot` retries internally up to ~30 frames (~500ms at 60 fps, ~1s at 30 fps, longer when `--write-movie` lowers the fixed fps). If you still see this, retry after `wait-time 0.05` or similar. |
 | `1007` | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` to list available signals. |
 | `1008` | Scene unavailable (`scene-reload` / `scene-change`): no current scene, scene file missing / failed to load, or timed out waiting for the new scene to become ready. Missing file is permanent — fix the path; timeout usually means the scene itself fails to load — inspect the daemon log. |
+| `1009` | NOT_PAUSED: `step-frames` was called while the scene tree is not paused. This is a state precondition error, not a parameter error — the frames value is valid, but the world state doesn't satisfy the prerequisite. Call `pause` first, then `step-frames`. Don't confuse with `-32602` (bad param value) or `-1003` (CLI usage error). |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 
@@ -189,6 +192,11 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 **Scene:**
 - `scene-reload [--timeout N]` — reload the current scene and block until the new instance is ready (per-test isolation primitive). All previously cached node paths become stale after it returns.
 - `scene-change <res://path.tscn> [--timeout N]` — switch to another scene and block until ready. Path must start with `res://` or `uid://` (checked before connecting). `--timeout` must be > 0 and <= 3600 (default 10).
+
+**Time:**
+- `time-scale [value]` — read (no arg) or set `Engine.time_scale`. Valid range `(0, 100]`. `wait-time` counts game time, so a higher scale speeds up the whole suite without changing wait semantics.
+- `pause` / `unpause` — freeze / resume the scene tree (`get_tree().paused`). Idempotent. Returns `{"paused": true/false}`.
+- `step-frames <n> [--physics]` — while paused, advance exactly N frames (1..3600) then stop (deterministic stepping for physics assertions). Requires `pause` first — otherwise error `1009`, exit 1. Returns `{"stepped": N, "paused": true}`.
 
 **Render:**
 - `screenshot <path>` — write PNG (path is **required** as of 0.2.0)
@@ -363,6 +371,10 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | `await client.release_all()` | `release-all` |
 | `await client.get_pressed()` | `pressed` |
 | `await client.list_input_actions(include_builtin)` | `actions [--all]` |
+| `await client.time_scale(value=None)` | `time-scale [value]` — `value=None` reads current; pass a float to set |
+| `await client.pause()` | `pause` |
+| `await client.unpause()` | `unpause` |
+| `await client.step_frames(frames, physics=False)` | `step-frames <n> [--physics]` — requires tree to be paused (error `1009` otherwise) |
 
 ## `def run(bridge)` script mode
 
@@ -415,6 +427,7 @@ Pytest CLI options the plugin adds:
 | `--godot-cli-port` | `(auto)` | GameBridge port. Default: read from `.cli_control/port` (which the daemon writes when it starts). |
 | `--godot-cli-no-headless` | off (i.e. headless) | Drop `--headless`, open a real Godot window |
 | `--godot-cli-project-root` | `pytest rootdir` | Override the Godot project root |
+| `--godot-cli-time-scale` | `None` (engine default = 1.0) | Set `Engine.time_scale` at daemon startup (e.g. `5` to run the whole suite at 5× speed). Passed as `--cli-time-scale=N` to Godot; valid range `(0, 100]`. |
 
 If the entry-point isn't picking up automatically (rare — usually means an editable install glitch), fall back to listing it in `conftest.py`:
 
@@ -456,6 +469,9 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Python API (`bridge.get_property` / `bridge.get_properties`) returns bare values only — no `type` field.** These convenience methods strip the `type` from the server response to reduce boilerplate. When you need the `type` field (e.g. to distinguish `Vector2` from a plain 2-element array), go through `client.request("get_property", {"path": ..., "property": ...})` directly.
 - **After `scene-change` / `scene-reload`, all node paths from the previous scene are stale** — re-locate nodes with `wait-node` before touching them. The new scene root is a brand-new tree; any path cached from the old scene will return `1001 "node not found"`.
 - **`scene-reload` returning means the OLD scene instance was freed — never reuse node references/paths cached before the reload.** The command blocks until the new scene is ready, but the path strings that were valid in the old scene may now point to different nodes or nothing at all. Always re-query after a reload.
+- **`step-frames` requires `pause` first (error `1009`) — the intended pattern is `pause` → `step-frames` → assert → `unpause`.** Error `1009` means the precondition (tree is paused) was not met; it is distinct from `-32602` (bad param value) and `-1003` (CLI usage error). If you get `1009`, call `pause` before `step-frames`.
+- **`time-scale` also shortens the wall-clock duration of `wait-time` (game-time semantics unchanged) — don't "compensate" wait times after scaling.** `wait-time 1.0` always waits 1 in-game second regardless of `Engine.time_scale`. At `time_scale=5`, that 1 game-second completes in 0.2 wall-clock seconds — don't multiply your wait values, they're already correct.
+- **With `--record` (Movie Maker fixed-FPS), `time_scale` still applies — the captured video plays back sped-up.** Don't combine `--record` with a high `time_scale` unless you intentionally want a fast-forward video. Movie Maker records at wall-clock time at the configured `--fps`, so raising `time_scale` compresses the animation into fewer frames.
 
 ---
 
