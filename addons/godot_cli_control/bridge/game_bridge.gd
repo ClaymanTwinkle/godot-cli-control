@@ -176,6 +176,7 @@ func _register_methods() -> void:
 	# 低层 API（同步）
 	_methods["click"] = {"callable": _low_level_api.handle_click, "kind": "sync"}
 	_methods["get_property"] = {"callable": _low_level_api.handle_get_property, "kind": "sync"}
+	_methods["get_properties"] = {"callable": _low_level_api.handle_get_properties, "kind": "sync"}
 	_methods["set_property"] = {"callable": _low_level_api.handle_set_property, "kind": "sync"}
 	_methods["call_method"] = {"callable": _low_level_api.handle_call_method, "kind": "sync"}
 	_methods["get_text"] = {"callable": _low_level_api.handle_get_text, "kind": "sync"}
