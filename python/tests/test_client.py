@@ -738,6 +738,7 @@ async def test_scene_reload_custom_timeout_sends_correct_rpc_params() -> None:
         await client.scene_reload(timeout=3.0)
     finally:
         client_mod.GameClient.request = orig
+    assert captured["method"] == "scene_reload"
     assert captured["params"] == {"timeout": 3.0}
     assert captured["timeout"] == 3.0 + 5.0
 
