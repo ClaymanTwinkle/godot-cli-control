@@ -1755,7 +1755,10 @@ _TOP_EPILOG = """\
 
 
 def _time_scale_arg(raw: str) -> float:
-    """argparse type：daemon start --time-scale 的域校验（错误走 -1003 + 64）。"""
+    """argparse type：daemon start --time-scale 的域校验（错误走 -1003 + 64）。
+
+    # 域 (0, 100] 与 _preflight_time_scale / daemon.start 校验对齐，改动需三处同步
+    """
     try:
         v = float(raw)
     except ValueError:
@@ -1951,7 +1954,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--time-scale",
         type=_time_scale_arg,
         default=None,
-        help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 倒速用",
+        help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 提速用",
     )
     _add_output_format_flags(start_p)
 

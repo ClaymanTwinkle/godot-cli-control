@@ -54,6 +54,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--godot-cli-time-scale",
         action="store",
+        type=float,
         default=None,
         help="Engine.time_scale applied at daemon startup (e.g. 5 to speed up the whole suite).",
     )
@@ -78,8 +79,7 @@ def godot_daemon(request: pytest.FixtureRequest) -> Iterator[Daemon]:
         else Path(str(config.rootpath)).resolve()
     )
 
-    raw_scale = config.getoption("--godot-cli-time-scale")
-    time_scale = float(raw_scale) if raw_scale is not None else None
+    time_scale: float | None = config.getoption("--godot-cli-time-scale")
 
     daemon = Daemon(project_root)
     started_by_us = False

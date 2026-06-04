@@ -526,3 +526,13 @@ def test_godot_daemon_passes_time_scale_none_when_not_given(
     )
     result = pytester.runpytest("-v")
     assert result.ret == 0
+
+
+def test_time_scale_invalid_float_gives_usage_error(pytester: pytest.Pytester) -> None:
+    """--godot-cli-time-scale abc → pytest 以 usage error（exit 4）退出，
+    stderr 含 'invalid float value'（由 argparse type=float 触发，不再进 fixture 内部）。
+    """
+    result = pytester.runpytest("--godot-cli-time-scale", "abc")
+    # pytest argparse usage error 退出码为 4
+    assert result.ret == 4
+    result.stderr.fnmatch_lines(["*invalid float value*"])

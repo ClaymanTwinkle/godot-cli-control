@@ -108,7 +108,7 @@ class Daemon:
             )
         if time_scale is not None and not 0 < time_scale <= 100:
             raise DaemonError(
-                f"--time-scale 必须 > 0 且 <= 100，收到 {time_scale}"
+                f"--time-scale 必须 > 0 且 <= 100，收到 {time_scale} "
                 "（要暂停游戏用 pause RPC，不要 time-scale 0）"
             )
 
