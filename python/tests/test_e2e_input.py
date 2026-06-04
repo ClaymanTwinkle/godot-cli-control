@@ -1,4 +1,4 @@
-"""端到端回归：真实 Godot daemon 下的输入持续性（issue #70）。
+"""端到端回归：真实 Godot daemon 下的输入持续性（issue #70）及事件回调链路（issue #97）。
 
 拦的回归：CLI 每条子命令都是独立连接、跑完即「干净关闭」。曾经 GameBridge
 在断连时无条件 release_all，导致 ``hold`` 的定时器没倒计时就被清掉（只生效
@@ -65,6 +65,28 @@ _MAIN_TSCN = """\
 [gd_scene format=3]
 
 [node name="Main" type="Node"]
+"""
+
+
+# ── issue #97：事件回调式游戏（_unhandled_input）能看到 press 注入的事件 ──────────
+
+_EVENT_PROBE_GD = """\
+extends Node
+
+var saw_jump_event: bool = false
+
+func _unhandled_input(event: InputEvent) -> void:
+    if event is InputEventAction and event.action == "jump" and event.is_pressed():
+        saw_jump_event = true
+"""
+
+_MAIN_WITH_PROBE_TSCN = """\
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://probe.gd" id="1"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1")
 """
 
 
@@ -176,3 +198,44 @@ def test_abnormal_disconnect_releases_held_inputs(daemon: Any) -> None:
             break
         time.sleep(0.2)
     assert _pressed(project) == [], "异常掉线应触发 release_all 清掉持有输入"
+
+
+@pytest.fixture
+def probe_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """带 probe.gd（_unhandled_input 探针）的独立 Godot 项目，用于 issue #97 e2e。"""
+    proj = tmp_path_factory.mktemp("gcc_e2e_probe")
+    (proj / "addons").mkdir()
+    shutil.copytree(_ADDON_SRC, proj / "addons" / "godot_cli_control")
+    (proj / "project.godot").write_text(_PROJECT_GODOT)
+    (proj / "probe.gd").write_text(_EVENT_PROBE_GD)
+    (proj / "main.tscn").write_text(_MAIN_WITH_PROBE_TSCN)
+
+    imp = subprocess.run(
+        [_GODOT_BIN, "--headless", "--editor", "--quit", "--path", str(proj)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert imp.returncode == 0, f"Godot 导入失败：{imp.stdout}\n{imp.stderr}"
+    return proj
+
+
+def test_press_reaches_unhandled_input_callback(probe_project: Path) -> None:
+    """press 注入的事件必须经由事件管线送达 _unhandled_input（issue #97 核心链路）。"""
+    start = _run_cli(probe_project, "daemon", "start", "--headless", timeout=90)
+    assert start["ok"] is True and start["result"]["started"], start
+    try:
+        pressed = _run_cli(probe_project, "press", "jump")
+        assert pressed["ok"] is True, pressed
+
+        _run_cli(probe_project, "wait-time", "0.2")
+
+        payload = _run_cli(probe_project, "get", "/root/Main", "saw_jump_event")
+        assert payload["ok"] is True, payload
+        # PR1 阶段 get 仍是旧编码（裸值）；PR2 落地后此断言改 result["value"]
+        assert payload["result"] is True, (
+            f"_unhandled_input 应收到 press 事件并置 saw_jump_event=true，实际 result={payload['result']!r}"
+        )
+    finally:
+        _run_cli(probe_project, "release-all")
+        _run_cli(probe_project, "daemon", "stop", timeout=30)
