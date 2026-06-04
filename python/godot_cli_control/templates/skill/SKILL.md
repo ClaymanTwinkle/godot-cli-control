@@ -84,6 +84,18 @@ $ godot-cli-control click /root/DoesNotExist
 $ godot-cli-control --text exists /root/Main
 true
 
+$ godot-cli-control get /root/Player position
+{"ok": true, "result": {"value": [-2480.0, 1400.0], "type": "Vector2"}}
+
+$ godot-cli-control get /root/Player visible
+{"ok": true, "result": {"value": true}}
+
+$ godot-cli-control get /root/Player position:x
+{"ok": true, "result": {"value": -2480.0}}
+
+$ godot-cli-control get /root/Player position health
+{"ok": true, "result": {"values": {"position": {"value": [-2480.0, 1400.0], "type": "Vector2"}, "health": {"value": 80}}}}
+
 $ godot-cli-control init
 {"ok": true, "result": {"project_root": "/path/to/proj", "plugin_copied": true, "plugin_overwritten": false, "project_godot_changes": ["autoload/GameBridgeNode", "editor_plugins/enabled"], "godot_bin": "/usr/bin/godot", "skills_written": [".../SKILL.md", ".../SKILL.md"], "gitignore_added": [".cli_control/"], "skills_only": false, "write_skills": true}}
 
@@ -138,7 +150,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 ## Command catalogue
 
 **Read:**
-- `get <path> <prop>` — read a node property
+- `get <path> <prop> [<prop2> ...]` — read one or more node properties in a single atomic frame. Single-property result: `{"value": <encoded>, "type": "<GodotType>"}` (type field present only for compound Variants — Vector2, Color, etc.; absent for primitives like `bool`/`int`/`float`/`String`). Multi-property result: `{"values": {"<prop>": {"value": ..., "type"?: ...}, ...}}`. Sub-path form: `get <path> position:x` reads a scalar leaf of a compound Variant (e.g. returns `{"value": 1.5}` with no type field). Security note: sub-path reading can reach write-blacklisted nested attributes (e.g. `script:source_code`) — read-only diagnostic capability, intentional under localhost-only + debug-build gate.
 - `text <path>` — read Label / Button text
 - `exists <path>` — boolean existence check (exit-code-as-result)
 - `visible <path>` — boolean visibility check (exit-code-as-result)
@@ -313,7 +325,8 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | Method | CLI equivalent |
 |---|---|
 | `await client.click(path)` | `click <path>` |
-| `await client.get_property(path, prop)` | `get <path> <prop>` |
+| `await client.get_property(path, prop)` | `get <path> <prop>` — returns bare value only (no type field); use `client.request("get_property", ...)` to get `{"value", "type"}` shape |
+| `await client.get_properties(path, props)` | `get <path> <prop1> <prop2> ...` — returns `{prop: bare_value, ...}` dict (no type fields); use `client.request("get_properties", ...)` for full shape |
 | `await client.set_property(path, prop, value)` | `set <path> <prop> <json-value>` |
 | `await client.call_method(path, method, args)` | `call <path> <method> [json-args...]` |
 | `await client.get_text(path)` | `text <path>` |
@@ -408,6 +421,10 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **`run <script>` opens a window even though stdout is piped** — by design. `run` grep's the script for `screenshot` and force-flips to GUI when found, so `bridge.screenshot(...)` doesn't 1006-fail under the dummy renderer. Pass `--no-gui-auto` to disable detection; explicit `--headless` always wins. See issue #65.
 - **`screenshot` used to fail with `1006` on the first call** — fixed. GameBridge now waits for the viewport's first frame before opening the port, so `connect succeeded` implies `viewport has rendered ≥ once`. The magic `bridge.wait(1.5)` before the first screenshot in older example scripts is no longer needed.
 - **`press`/`tap`/`hold`/`combo` inject `InputEventAction` (no mouse coordinates) — position-dependent `_gui_input` widgets need `click` instead.** These commands route through the engine's event pipeline, so `_input` / `_unhandled_input` callbacks receive the event; however, `InputEventAction` does not carry a screen position. UI controls that rely on cursor position (e.g. `TextureButton` with a custom shape, `TouchScreenButton`) won't fire `_gui_input` correctly — use `click <path>` for those.
+- **`get` on a compound Variant returns an array + type — you can round-trip it straight into `set`.** `get /root/Player position` returns `{"value": [-2480.0, 1400.0], "type": "Vector2"}`. That `value` array is the exact format `set` accepts: `set /root/Player position '[-2480.0, 1400.0]'`. No conversion needed.
+- **Arrays/Dicts nested inside compound Variants encode as arrays but carry no `type` field — use a sub-path to read a typed leaf.** For example, a `Dictionary` property that happens to contain a `Vector3` will give you an untyped array. If you need the type, use `get <node> mydict:somekey` to read the leaf directly and get its type.
+- **Sub-path reading a non-existent leaf returns `null` — indistinguishable from a real `null` value (typo only detected at the top-level name).** `get /root/Node position:typo` returns `{"value": null}` with no error — the `":" `suffix is not validated beyond checking that `"position"` exists as a top-level property. Verify your leaf name carefully; the only error you'll get is `1002` if the part before `":"` itself doesn't exist.
+- **Python API (`bridge.get_property` / `bridge.get_properties`) returns bare values only — no `type` field.** These convenience methods strip the `type` from the server response to reduce boilerplate. When you need the `type` field (e.g. to distinguish `Vector2` from a plain 2-element array), go through `client.request("get_property", {"path": ..., "property": ...})` directly.
 
 ---
 

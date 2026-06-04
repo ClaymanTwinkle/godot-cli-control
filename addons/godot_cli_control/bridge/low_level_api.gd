@@ -126,7 +126,8 @@ func handle_get_property(params: Dictionary) -> Dictionary:
 ## 读单个属性，支持 sub-path（"position:x"，与 set 侧对称走 get_indexed）。
 ## 返回 {"value": Variant} 或 {"error": ...}。
 ## sub-path 的 leaf 非法时 get_indexed 返回 null——与「真 null 值」无法区分，
-## SKILL.md 已声明该边界；这里只校验 ":" 前的 top-level 名存在（1002 兜底 typo）。
+## SKILL.md 已声明该边界（pitfalls 中「Sub-path reading a non-existent leaf」一条）；
+## 这里只校验 ":" 前的 top-level 名存在（1002 兜底 typo）。
 func _read_property(node: Node, property: String) -> Dictionary:
 	if property.is_empty():
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'property' parameter")

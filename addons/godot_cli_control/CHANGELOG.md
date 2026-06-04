@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING** `get` 复合 Variant 返回从旧版 `"(x, y)"` 字符串改为 set-schema 数组 + type 字段；信封 result 从裸值变 `{"value": <array-or-scalar>, "type"?: "<GodotType>"}` 对象（#99）。写侧 `set` 接受的 Array layout 完全一致，get→set round-trip 无需转换。Python API `get_property` / `get_properties` 只返回裸 value（type 已剥离），要拿 type 字段走 CLI `get` 或底层 `client.request("get_property", ...)`。
+
+### Added
+- **feat: `get_properties` 多属性同帧原子读 + `get` 多属性形式（#100）**：`get <path> <prop1> <prop2>` 一次 RPC 同帧读取多个属性，不存在部分新鲜/部分旧数据的竞态；任一属性缺失整体失败（1002，message 点名所有缺失项）。sub-path 形式（`position:x`）在多属性列表中也支持。
+
 ### Fixed
 - **#52 `set` 走 JSON Array 喂 Vector/Color/Rect 时静默失败**：`set zoom '[1.8, 1.8]'` 等价于 `node.set("zoom", [1.8, 1.8])`，Godot 隐式构造失败 → 实际值是 `Vector2(0,0)` 或被 clamp 到 `0.00001`，但服务端仍返 `{success: true}`。`handle_set_property` 现在查 `get_property_list()` 拿声明类型，把 numeric Array 转成对应 Variant。长度不匹配或元素非数字时 fail-loud 返 `-32602 "value type mismatch ..."`，不再 silent corruption。
 - **sub-path 标量赋值现在真的会写入**：之前 `set <node> position:x 1.8` 调的是 `Object.set("position:x", 1.8)`，Godot 4 的 `Object.set` 把整串当字面属性名找不到就 silent no-op（依旧返 `{success: true}` 但 `position.x` 不变）。改用 `Object.set_indexed(NodePath, value)` 才会按 sub-path 写入。是 #54 review 阶段被新加的 `test_set_subpath_scalar_still_works` 捕获的隐藏 silent-fail。
