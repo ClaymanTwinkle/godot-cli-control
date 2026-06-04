@@ -114,6 +114,23 @@ class _StubClient:
     async def get_children(self, path: str, type_filter: str = "") -> list[dict]:
         return self._record("get_children", (path,), {"type_filter": type_filter})
 
+    async def wait_property(
+        self,
+        path: str,
+        prop: str,
+        value: Any,
+        op: str = "eq",
+        timeout: float = 5.0,
+        tolerance: float = 0.0,
+    ) -> dict:
+        return self._record("wait_property", (path, prop, value), {"op": op, "timeout": timeout, "tolerance": tolerance})
+
+    async def wait_signal(self, path: str, signal: str, timeout: float = 5.0) -> dict:
+        return self._record("wait_signal", (path, signal), {"timeout": timeout})
+
+    async def wait_frames(self, frames: int, physics: bool = False) -> dict:
+        return self._record("wait_frames", (frames,), {"physics": physics})
+
 
 @pytest.fixture
 def stub_client(monkeypatch: pytest.MonkeyPatch) -> _StubClient:
@@ -484,4 +501,49 @@ def test_runtime_error_propagates(stub_client: dict) -> None:
     c.raises["screenshot"] = RuntimeError("disconnected")
     with pytest.raises(RuntimeError, match="disconnected"):
         b.screenshot()
+    b.close()
+
+
+# ── issue #96: wait_property / wait_signal / wait_frames bridge 委托 ──
+
+
+def test_wait_property_delegates_all_params(stub_client: dict) -> None:
+    """bridge.wait_property 必须把所有参数（含 op/tolerance）委托给 client.wait_property。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["wait_property"] = {"matched": True, "value": 10, "waited": 0.05}
+    result = b.wait_property("/root/Player", "health", 100, op="ge", timeout=3.0, tolerance=0.1)
+    assert c.calls[-1] == (
+        "wait_property",
+        ("/root/Player", "health", 100),
+        {"op": "ge", "timeout": 3.0, "tolerance": 0.1},
+    )
+    assert result == {"matched": True, "value": 10, "waited": 0.05}
+    b.close()
+
+
+def test_wait_signal_delegates_params(stub_client: dict) -> None:
+    """bridge.wait_signal 把 path/signal/timeout 委托给 client.wait_signal。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["wait_signal"] = {"emitted": True, "args": [42]}
+    result = b.wait_signal("/root/Area", "door_opened", timeout=2.0)
+    assert c.calls[-1] == (
+        "wait_signal",
+        ("/root/Area", "door_opened"),
+        {"timeout": 2.0},
+    )
+    assert result == {"emitted": True, "args": [42]}
+    b.close()
+
+
+def test_wait_frames_delegates_params(stub_client: dict) -> None:
+    """bridge.wait_frames 把 frames/physics 委托给 client.wait_frames。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["wait_frames"] = {"success": True, "frames": 5}
+    result = b.wait_frames(5, physics=True)
+    assert c.calls[-1] == (
+        "wait_frames",
+        (5,),
+        {"physics": True},
+    )
+    assert result == {"success": True, "frames": 5}
     b.close()

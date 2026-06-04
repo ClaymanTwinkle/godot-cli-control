@@ -595,3 +595,95 @@ async def test_connect_locks_ws_ping_keepalive() -> None:
             "GameClient.connect() must lock ping_interval (ws keepalive)"
         assert kwargs.get("ping_timeout") == 20, \
             "GameClient.connect() must lock ping_timeout (ws keepalive)"
+
+
+# ---- issue #96: wait_property / wait_signal / wait_frames client 包装 ----
+
+
+@pytest.mark.asyncio
+async def test_wait_property_sends_correct_rpc_params() -> None:
+    """wait_property 必须发出 method="wait_property"，参数全部透传（含 op/tolerance）。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"matched": True, "value": 500, "waited": 0.12}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.wait_property(
+            "/root/Player", "position:x", 500,
+            op="gt", timeout=3.0, tolerance=0.5,
+        )
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "wait_property"
+    assert captured["params"] == {
+        "path": "/root/Player", "property": "position:x", "value": 500,
+        "op": "gt", "timeout": 3.0, "tolerance": 0.5,
+    }
+    # client 侧 timeout = server timeout + 5s grace
+    assert captured["timeout"] == 3.0 + 5.0
+    assert result == {"matched": True, "value": 500, "waited": 0.12}
+
+
+@pytest.mark.asyncio
+async def test_wait_signal_sends_correct_rpc_params() -> None:
+    """wait_signal 必须发出 method="wait_signal"，超时 = server timeout + 5s。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"emitted": True, "args": []}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.wait_signal("/root/Area", "door_opened", timeout=4.0)
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "wait_signal"
+    assert captured["params"] == {"path": "/root/Area", "signal": "door_opened", "timeout": 4.0}
+    assert captured["timeout"] == 4.0 + 5.0
+    assert result == {"emitted": True, "args": []}
+
+
+@pytest.mark.asyncio
+async def test_wait_frames_sends_correct_rpc_params_and_calculates_timeout() -> None:
+    """wait_frames 的 client timeout = max(30, frames/10 + 10)。"""
+    import godot_cli_control.client as client_mod
+
+    captured: list = []
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured.append({"method": method, "params": params, "timeout": timeout})
+        return {"success": True, "frames": params.get("frames", 0)}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        # 3 frames: max(30, 3/10+10)=max(30, 10.3)=30
+        await client.wait_frames(3)
+        # 300 frames: max(30, 300/10+10)=max(30, 40)=40
+        await client.wait_frames(300, physics=True)
+    finally:
+        client_mod.GameClient.request = orig
+
+    assert captured[0]["method"] == "wait_frames"
+    assert captured[0]["params"] == {"frames": 3, "physics": False}
+    assert captured[0]["timeout"] == 30.0
+
+    assert captured[1]["params"] == {"frames": 300, "physics": True}
+    assert captured[1]["timeout"] == 40.0
