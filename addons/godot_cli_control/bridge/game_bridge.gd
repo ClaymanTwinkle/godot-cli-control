@@ -187,6 +187,7 @@ func _register_methods() -> void:
 	# 低层 API（异步）
 	_methods["wait_for_node"] = {"callable": _low_level_api.wait_for_node_async, "kind": "async"}
 	_methods["wait_game_time"] = {"callable": _low_level_api.wait_game_time_async, "kind": "async"}
+	_methods["wait_frames"] = {"callable": _low_level_api.wait_frames_async, "kind": "async"}
 	_methods["screenshot"] = {"callable": _wrap_screenshot, "kind": "async"}
 	# 输入模拟（同步）
 	_methods["input_action_press"] = {

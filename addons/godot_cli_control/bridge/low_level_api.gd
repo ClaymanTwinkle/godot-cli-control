@@ -15,6 +15,8 @@ const _BUILD_TREE_DEFAULT_MAX_DEPTH: int = 50
 const _BUILD_TREE_MAX_NODES: int = 5000
 # wait_game_time_async 防呆上限：防止误传 1e9 之类的数值挂死 session
 const _MAX_WAIT_SECONDS: float = 3600.0
+# wait_frames 防呆上限：60fps 下 1 分钟。要等更久用 wait_game_time / wait_property。
+const _MAX_WAIT_FRAMES: int = 3600
 # take_screenshot_async 循环上限：常态下 GameBridge 启动 gate 已保证 viewport
 # ready（issue #61 H 部分），这个循环只兜动态 transient（scene transition、
 # 窗口 resize 一瞬）。30 帧 ~500ms @ 60fps，超时报 1006 给 client 兜底。
@@ -505,6 +507,23 @@ func wait_game_time_async(params: Dictionary) -> Dictionary:
 		return {"success": true}
 	await get_tree().create_timer(seconds).timeout
 	return {"success": true}
+
+
+## issue #96：等 N 帧（确定性帧推进）。physics=true 等 physics_frame。
+func wait_frames_async(params: Dictionary) -> Dictionary:
+	var frames_raw: Variant = params.get("frames", null)
+	if not (frames_raw is int or frames_raw is float):
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "'frames' must be an integer")
+	var frames: int = int(frames_raw)
+	if frames < 1 or frames > _MAX_WAIT_FRAMES:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "frames must be 1..%d (got %d)" % [_MAX_WAIT_FRAMES, frames])
+	var physics: bool = bool(params.get("physics", false))
+	for _i in frames:
+		if physics:
+			await get_tree().physics_frame
+		else:
+			await get_tree().process_frame
+	return {"success": true, "frames": frames}
 
 
 func _get_node_or_error(params: Dictionary) -> Node:
