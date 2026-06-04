@@ -105,6 +105,7 @@ var _low: StubLowLevelApi
 var _input: StubInputSimulationApi
 var _wait: StubWaitApi
 var _scene: SceneApi
+var _time: TimeApi
 
 
 func before_each() -> void:
@@ -128,10 +129,15 @@ func before_each() -> void:
 	_scene.name = "SceneApi"
 	add_child_autofree(_scene)
 
+	_time = TimeApi.new()
+	_time.name = "TimeApi"
+	add_child_autofree(_time)
+
 	_bridge._low_level_api = _low
 	_bridge._input_sim_api = _input
 	_bridge._wait_api = _wait
 	_bridge._scene_api = _scene
+	_bridge._time_api = _time
 	# InputSim 的 callback：bridge 的 _on_async_response 把 (id, result) 转回 dispatch
 	_input.setup(_bridge._on_async_response)
 	_bridge._register_methods()
@@ -506,3 +512,13 @@ func test_registry_has_scene_methods() -> void:
 	assert_eq(str(_bridge._methods["scene_reload"]["kind"]), "async")
 	assert_true(_bridge._methods.has("scene_change"), "scene_change 应已注册")
 	assert_eq(str(_bridge._methods["scene_change"]["kind"]), "async")
+
+
+# ── 注册表完整性：time API（issue #102） ─────────────────────────────
+
+func test_registry_has_time_methods() -> void:
+	for m: String in ["time_scale", "pause", "unpause"]:
+		assert_true(_bridge._methods.has(m), "%s 应已注册" % m)
+		assert_eq(str(_bridge._methods[m]["kind"]), "sync")
+	assert_true(_bridge._methods.has("step_frames"), "step_frames 应已注册")
+	assert_eq(str(_bridge._methods["step_frames"]["kind"]), "async")

@@ -1372,3 +1372,85 @@ def test_start_registers_in_global_registry(
 
     daemon.stop()
     assert not record_file.exists(), "stop() 后注册表 JSON 应被 unregister 删掉"
+
+
+# ── time_scale 透传（#102）──
+
+
+def _make_popen_capture(pid: int) -> tuple[dict, Any]:
+    """返回 (captured, _FakeProc class)，_FakeProc.pid = pid。"""
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.pid = pid
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured["args"] = args
+        return _FakeProc()
+
+    return captured, _record_popen
+
+
+def _patch_start_env_for_time_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> "Daemon":
+    """共用的 monkeypatch 设置，返回 Daemon 实例。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot_ts"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+    monkeypatch.setattr("godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin))
+    monkeypatch.setattr("godot_cli_control.daemon._ensure_imported", lambda *a, **k: None)
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr("godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True)
+    return Daemon(tmp_path)
+
+
+def test_start_passes_time_scale_to_popen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """daemon.start(time_scale=2.5) → Popen argv 含 --cli-time-scale=2.5。"""
+    daemon = _patch_start_env_for_time_scale(tmp_path, monkeypatch)
+    captured, record_popen = _make_popen_capture(999_999_200)
+    monkeypatch.setattr("godot_cli_control.daemon.subprocess.Popen", record_popen)
+    daemon.start(port=0, time_scale=2.5)
+    assert "--cli-time-scale=2.5" in captured["args"], \
+        f"argv 应含 --cli-time-scale=2.5（实际：{captured['args']}）"
+
+
+def test_start_omits_time_scale_when_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不传 time_scale 时 argv 不含 --cli-time-scale 前缀。"""
+    daemon = _patch_start_env_for_time_scale(tmp_path, monkeypatch)
+    captured, record_popen = _make_popen_capture(999_999_201)
+    monkeypatch.setattr("godot_cli_control.daemon.subprocess.Popen", record_popen)
+    daemon.start(port=0)
+    assert not any(a.startswith("--cli-time-scale=") for a in captured["args"]), \
+        f"不传 time_scale 时 argv 不应含 --cli-time-scale=（实际：{captured['args']}）"
+
+
+def test_start_rejects_time_scale_zero(tmp_path: Path) -> None:
+    """time_scale=0 → 抛 DaemonError（spawn 前域校验）。"""
+    from godot_cli_control.daemon import DaemonError
+
+    _touch_godot_project(tmp_path)
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="time-scale"):
+        daemon.start(time_scale=0)
+
+
+def test_start_rejects_time_scale_above_max(tmp_path: Path) -> None:
+    """time_scale=101 → 抛 DaemonError（spawn 前域校验）。"""
+    from godot_cli_control.daemon import DaemonError
+
+    _touch_godot_project(tmp_path)
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="time-scale"):
+        daemon.start(time_scale=101)

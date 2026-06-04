@@ -79,6 +79,7 @@ class Daemon:
         port: int = 0,  # 0 = OS 自动分配；显式 --port 9877 仍可固定
         wait_seconds: int = 30,
         idle_timeout: int = 0,
+        time_scale: float | None = None,
     ) -> int:
         """启动 Godot daemon，等端口就绪后返回 PID。"""
         # 项目根校验：拒绝在非 Godot 项目目录跑，避免 Godot 用 --path .
@@ -104,6 +105,11 @@ class Daemon:
                 "录制与 --headless 冲突：Godot Movie Maker 需要真实渲染器，"
                 "headless dummy renderer 拿不到 viewport texture，add_frame() 会"
                 " SIGSEGV。去掉 --headless（默认/非 TTY 会自动开窗）或显式 --gui。"
+            )
+        if time_scale is not None and not 0 < time_scale <= 100:
+            raise DaemonError(
+                f"--time-scale 必须 > 0 且 <= 100，收到 {time_scale} "
+                "（要暂停游戏用 pause RPC，不要 time-scale 0）"
             )
 
         bin_path = (
@@ -155,6 +161,8 @@ class Daemon:
             args.append("--headless")
         if idle_timeout > 0:
             args.append(f"--game-bridge-idle-timeout={idle_timeout}")
+        if time_scale is not None:
+            args.append(f"--cli-time-scale={time_scale}")
 
         env = os.environ.copy()
         if record:

@@ -85,4 +85,4 @@ release.sh                  # 发版脚本
 
 ## 已知遗留 issue（PR 路过时顺手修）
 
-*（截至 2026-06-04，已 land：#96/#97/#99/#100 三连 PR（wait 原语/codec/多属性读）、#111/#92 退出码语义统一、#108 wait_api 拆分、#110 wait_signal reason 字段、#112 get 路径打磨、#107 codec 深度哨兵文档、#113 probe fixture scope。仍 open：#109（KIV）；#98/#101/#102/#103（feature backlog）；#88、#18。下次 review 发现新坑请补到这里。）*
+*（截至 2026-06-05，已 land：#96/#97/#99/#100 三连（wait 原语/codec/多属性读）、#111/#92 退出码统一、#108 wait_api 拆分、#110/#112/#107/#113 收尾批、#118/#119 review 快修（PR #120）、#98 场景隔离 scene-reload/scene-change + fresh_scene（PR #121）、#102 时间控制 time-scale/pause/step-frames + 1009（本批）。仍 open：#109（KIV）；#101/#103（feature backlog）；#88、#18（需 maintainer 操作）；#122（fresh_scene 无场景启动态 pitfall 文档）、#123（GUT wait_frames deprecation）、#124（pause/time_scale 跨用例泄漏兜底，见 #102 最终 review）。下次 review 发现新坑请补到这里。）*

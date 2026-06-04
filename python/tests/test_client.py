@@ -767,3 +767,134 @@ async def test_scene_change_sends_correct_rpc_params() -> None:
     assert captured["params"] == {"path": "res://a.tscn", "timeout": 3.0}
     assert captured["timeout"] == 3.0 + 5.0
     assert result == {"scene_path": "res://a.tscn", "name": "A"}
+
+
+# ---- issue #102: time_scale / pause / unpause / step_frames client 包装 ----
+
+
+@pytest.mark.asyncio
+async def test_time_scale_no_arg_sends_empty_params() -> None:
+    """time_scale() 无参时 params 必须是 {}（不带 "value" 键）——GDScript 用 has("value") 区分读写。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"time_scale": 1.0}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.time_scale()
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "time_scale"
+    assert captured["params"] == {}, "无参时 params 必须是空字典，不得含 'value' 键"
+    assert captured["timeout"] == 30.0, "time_scale 不应传自定义 RPC timeout（用默认值）"
+    assert result == {"time_scale": 1.0}
+
+
+@pytest.mark.asyncio
+async def test_time_scale_with_value_sends_value_param() -> None:
+    """time_scale(2.5) 发出 params={"value": 2.5}。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"time_scale": 2.5}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.time_scale(2.5)
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "time_scale"
+    assert captured["params"] == {"value": 2.5}
+
+
+@pytest.mark.asyncio
+async def test_pause_sends_correct_rpc() -> None:
+    """pause() 发出 method="pause"，params={}。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"paused": True}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.pause()
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "pause"
+    assert captured["params"] == {}
+    assert result == {"paused": True}
+
+
+@pytest.mark.asyncio
+async def test_unpause_sends_correct_rpc() -> None:
+    """unpause() 发出 method="unpause"，params={}。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"paused": False}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.unpause()
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "unpause"
+    assert captured["params"] == {}
+    assert result == {"paused": False}
+
+
+@pytest.mark.asyncio
+async def test_step_frames_sends_correct_params_and_calculates_timeout() -> None:
+    """step_frames 的 client timeout = max(30, frames/10 + 10)。"""
+    import godot_cli_control.client as client_mod
+
+    captured: list = []
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured.append({"method": method, "params": params, "timeout": timeout})
+        return {"stepped": params.get("frames", 0), "paused": True}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        # 5 frames: max(30, 5/10+10)=max(30, 10.5)=30
+        await client.step_frames(5)
+        # 600 frames: max(30, 600/10+10)=max(30, 70)=70
+        await client.step_frames(600, physics=True)
+    finally:
+        client_mod.GameClient.request = orig
+
+    assert captured[0]["method"] == "step_frames"
+    assert captured[0]["params"] == {"frames": 5, "physics": False}
+    assert captured[0]["timeout"] == 30.0
+
+    assert captured[1]["method"] == "step_frames"
+    assert captured[1]["params"] == {"frames": 600, "physics": True}
+    assert captured[1]["timeout"] == 70.0

@@ -29,6 +29,7 @@ var _low_level_api: LowLevelApi = null
 var _input_sim_api: InputSimulationApi = null
 var _wait_api: WaitApi = null
 var _scene_api: SceneApi = null
+var _time_api: TimeApi = null
 # 方法注册表：{method_name: {"callable": Callable, "kind": "sync"|"async"|"async_with_id"}}
 # - sync: handler(params) -> Dictionary，dispatcher 立即 send response
 # - async: handler(params) -> await Dictionary，dispatcher await 后 send response
@@ -63,6 +64,15 @@ func _ready() -> void:
 	_scene_api = SceneApi.new()
 	_scene_api.name = "SceneApi"
 	add_child(_scene_api)
+	_time_api = TimeApi.new()
+	_time_api.name = "TimeApi"
+	add_child(_time_api)
+	# 启动倍速（issue #102）：非法值 parse 内已 printerr + 忽略，不挡启动
+	# 必须在 await _wait_first_frame_ready() 之前，保证「第 0 帧即倍速」
+	var startup_scale: float = TimeApi.parse_cmdline_time_scale(OS.get_cmdline_args())
+	if startup_scale > 0.0:
+		Engine.time_scale = startup_scale
+		print("GameBridge: Engine.time_scale = %s (from --cli-time-scale)" % startup_scale)
 	# 构建统一方法注册表
 	_register_methods()
 	# 缓存 outbound buffer 大小（ProjectSettings 可覆盖默认 10MB，至少 1MB）
@@ -222,6 +232,11 @@ func _register_methods() -> void:
 	# Scene API（异步）
 	_methods["scene_reload"] = {"callable": _scene_api.scene_reload_async, "kind": "async"}
 	_methods["scene_change"] = {"callable": _scene_api.scene_change_async, "kind": "async"}
+	# Time API（issue #102）
+	_methods["time_scale"] = {"callable": _time_api.handle_time_scale, "kind": "sync"}
+	_methods["pause"] = {"callable": _time_api.handle_pause, "kind": "sync"}
+	_methods["unpause"] = {"callable": _time_api.handle_unpause, "kind": "sync"}
+	_methods["step_frames"] = {"callable": _time_api.step_frames_async, "kind": "async"}
 
 
 # screenshot wrapper：take_screenshot_async 不接 params，统一签名为 (params) -> Dictionary

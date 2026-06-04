@@ -26,6 +26,9 @@ func before_each() -> void:
 # ── issue #96：wait_frames ──
 
 func test_wait_frames_advances_n_process_frames() -> void:
+	# 帧边界防御：前驱 async 测试可能结束在 process_frame 发射周期内，
+	# 此时下一个 await 同帧立即解析，会让帧差测量少算 1（await-during-emission 语义）
+	await get_tree().process_frame
 	var start: int = Engine.get_process_frames()
 	var result: Dictionary = await _api.wait_frames_async({"frames": 3})
 	assert_eq(result, {"success": true, "frames": 3})
@@ -33,6 +36,8 @@ func test_wait_frames_advances_n_process_frames() -> void:
 
 
 func test_wait_frames_physics_mode() -> void:
+	# 帧边界防御，同上——本用例测物理帧差，跨 physics_frame 边界才对齐
+	await get_tree().physics_frame
 	var start: int = Engine.get_physics_frames()
 	var result: Dictionary = await _api.wait_frames_async({"frames": 2, "physics": true})
 	assert_eq(result, {"success": true, "frames": 2})

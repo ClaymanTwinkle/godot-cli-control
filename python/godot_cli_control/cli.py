@@ -254,6 +254,17 @@ def _require_float(raw: Any, cmd: str, field: str) -> float:
         raise ValueError(f"{cmd}: {field} 必须是数字，收到 {raw!r}")
 
 
+def _require_frames(raw: Any, cmd: str) -> int:
+    """frames 参数校验：整数 + 1..3600（wait-frames / step-frames 共用）。"""
+    try:
+        frames = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{cmd}: frames 必须是整数，收到 {raw!r}")
+    if not 1 <= frames <= 3600:
+        raise ValueError(f"{cmd}: frames 必须在 1..3600，收到 {frames}")
+    return frames
+
+
 def _preflight_wait_prop(ns: argparse.Namespace) -> None:
     timeout = _require_float(ns.timeout, "wait-prop", "timeout")
     if not 0 <= timeout <= 3600:
@@ -278,12 +289,7 @@ def _preflight_wait_signal(ns: argparse.Namespace) -> None:
 
 
 def _preflight_wait_frames(ns: argparse.Namespace) -> None:
-    try:
-        frames = int(ns.frames)
-    except (TypeError, ValueError):
-        raise ValueError(f"wait-frames: frames 必须是整数，收到 {ns.frames!r}")
-    if not 1 <= frames <= 3600:
-        raise ValueError(f"wait-frames: frames 必须在 1..3600，收到 {frames}")
+    _require_frames(ns.frames, "wait-frames")
 
 
 def _preflight_scene_reload(ns: argparse.Namespace) -> None:
@@ -300,6 +306,20 @@ def _preflight_scene_change(ns: argparse.Namespace) -> None:
     timeout = _require_float(ns.timeout, "scene-change", "timeout")
     if not 0 < timeout <= 3600:
         raise ValueError(f"scene-change: timeout 必须 > 0 且 <= 3600 秒，收到 {timeout}")
+
+
+def _preflight_time_scale(ns: argparse.Namespace) -> None:
+    if ns.value is None:
+        return  # 无参 = 读当前值，无需校验
+    v = _require_float(ns.value, "time-scale", "value")
+    if not 0 < v <= 100:
+        raise ValueError(
+            f"time-scale: value 必须 > 0 且 <= 100，收到 {v}（要冻结游戏用 pause，别用 0）"
+        )
+
+
+def _preflight_step_frames(ns: argparse.Namespace) -> None:
+    _require_frames(ns.frames, "step-frames")
 
 
 def _combo_total_duration(steps: list[dict]) -> float:
@@ -490,6 +510,23 @@ async def cmd_scene_change(client: GameClient, ns: argparse.Namespace) -> dict:
     return await client.scene_change(ns.scene_path, timeout=float(ns.timeout))
 
 
+async def cmd_time_scale(client: GameClient, ns: argparse.Namespace) -> dict:
+    value = float(ns.value) if ns.value is not None else None
+    return await client.time_scale(value)
+
+
+async def cmd_pause(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.pause()
+
+
+async def cmd_unpause(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.unpause()
+
+
+async def cmd_step_frames(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.step_frames(int(ns.frames), physics=ns.physics)
+
+
 async def cmd_pressed(
     client: GameClient, ns: argparse.Namespace
 ) -> list[str]:
@@ -669,6 +706,17 @@ def _register_scene_change_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("scene_path", help="目标场景资源路径（res:// 或 uid://）")
     p.add_argument("--timeout", default="10",
                    help="等新场景 ready 的超时秒（>0 且 <=3600，默认 10）")
+
+
+def _register_time_scale_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("value", nargs="?", default=None,
+                   help="新倍速（>0 且 <=100）；省略则读当前值")
+
+
+def _register_step_frames_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("frames", help="推进帧数（1..3600）")
+    p.add_argument("--physics", action="store_true",
+                   help="推进 physics_frame（默认 process_frame）")
 
 
 def _register_set_args(p: argparse.ArgumentParser) -> None:
@@ -1006,6 +1054,49 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         text_formatter=lambda r: f"scene changed: {r.get('scene_path')} (root: {r.get('name')})",
     ),
     RpcSpec(
+        name="time-scale",
+        handler=cmd_time_scale,
+        description=(
+            "读 / 写 Engine.time_scale（无参 = 读）。wait-time 按 game time 计，"
+            "倍速后语义不变、墙钟变快。合法域 (0, 100]。注意：--record 下仍生效，"
+            "录出的是加速画面。"
+        ),
+        positionals=(),  # 由 extra_args 注册
+        example="time-scale 5",
+        extra_args=_register_time_scale_args,
+        preflight=_preflight_time_scale,
+        text_formatter=lambda r: f"time_scale = {r.get('time_scale')}",
+    ),
+    RpcSpec(
+        name="pause",
+        handler=cmd_pause,
+        description='暂停 SceneTree（get_tree().paused = true）。幂等；返回 {"paused": true}。',
+        positionals=(),
+        example="pause",
+        text_formatter=lambda r: f"paused: {r.get('paused')}",
+    ),
+    RpcSpec(
+        name="unpause",
+        handler=cmd_unpause,
+        description='恢复 SceneTree（paused = false）。幂等；返回 {"paused": false}。',
+        positionals=(),
+        example="unpause",
+        text_formatter=lambda r: f"paused: {r.get('paused')}",
+    ),
+    RpcSpec(
+        name="step-frames",
+        handler=cmd_step_frames,
+        description=(
+            "paused 状态下确定性推进 N 帧再停（物理断言银弹：推 N 个物理帧后状态"
+            "必然确定）。必须先 pause，否则报 1009，exit 1。"
+        ),
+        positionals=(),  # 由 extra_args 注册
+        example="step-frames 3 --physics",
+        extra_args=_register_step_frames_args,
+        preflight=_preflight_step_frames,
+        text_formatter=lambda r: f"stepped {r.get('stepped')} frames (still paused)",
+    ),
+    RpcSpec(
         name="pressed",
         handler=cmd_pressed,
         description="列出当前模拟器持有的输入动作（press + held 去重合并）。",
@@ -1085,6 +1176,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             fps=ns.fps,
             port=ns.port,
             idle_timeout=idle_seconds,
+            time_scale=getattr(ns, "time_scale", None),
         )
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
@@ -1662,6 +1754,20 @@ _TOP_EPILOG = """\
 """
 
 
+def _time_scale_arg(raw: str) -> float:
+    """argparse type：daemon start --time-scale 的域校验（错误走 -1003 + 64）。
+
+    # 域 (0, 100] 与 _preflight_time_scale / daemon.start 校验对齐，改动需三处同步
+    """
+    try:
+        v = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"必须是数字，收到 {raw!r}")
+    if not 0 < v <= 100:
+        raise argparse.ArgumentTypeError(f"必须 > 0 且 <= 100，收到 {v}")
+    return v
+
+
 def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--record",
@@ -1844,6 +1950,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="启动 Godot daemon 并写入 .cli_control/{godot.pid,port}。",
     )
     _add_daemon_flags(start_p)
+    start_p.add_argument(
+        "--time-scale",
+        type=_time_scale_arg,
+        default=None,
+        help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 提速用",
+    )
     _add_output_format_flags(start_p)
 
     stop_p = daemon_subs.add_parser(

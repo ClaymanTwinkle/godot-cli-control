@@ -29,6 +29,9 @@ const SIGNAL_NOT_FOUND: int = 1007
 # 与 1006 拆开：1006 是「短重试可能成功」的 transient；1008 三种情形里
 # 路径不存在是永久错，超时大概率是场景加载本身坏了——agent 应停下排查。
 const SCENE_UNAVAILABLE: int = 1008
+# step_frames 的状态前置错（issue #102）：tree 未 paused 时调 step_frames。
+# 与 -32602 区分：参数本身没问题，是世界状态不满足前置——agent 应先 pause。
+const NOT_PAUSED: int = 1009
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600

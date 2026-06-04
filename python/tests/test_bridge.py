@@ -137,6 +137,18 @@ class _StubClient:
     async def scene_change(self, path: str, timeout: float = 10.0) -> dict:
         return self._record("scene_change", (path,), {"timeout": timeout})
 
+    async def time_scale(self, value: float | None = None) -> dict:
+        return self._record("time_scale", (value,), {})
+
+    async def pause(self) -> dict:
+        return self._record("pause", (), {})
+
+    async def unpause(self) -> dict:
+        return self._record("unpause", (), {})
+
+    async def step_frames(self, frames: int, physics: bool = False) -> dict:
+        return self._record("step_frames", (frames,), {"physics": physics})
+
 
 @pytest.fixture
 def stub_client(monkeypatch: pytest.MonkeyPatch) -> _StubClient:
@@ -593,4 +605,66 @@ def test_scene_change_custom_timeout(stub_client: dict) -> None:
     c.returns["scene_change"] = {"scene_path": "res://b.tscn", "name": "B"}
     b.scene_change("res://b.tscn", timeout=5.0)
     assert c.calls[-1] == ("scene_change", ("res://b.tscn",), {"timeout": 5.0})
+    b.close()
+
+
+# ── issue #102: time_scale / pause / unpause / step_frames bridge 委托 ──
+
+
+def test_time_scale_no_arg_delegates_to_client(stub_client: dict) -> None:
+    """bridge.time_scale() 无参时委托 client.time_scale(None)，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["time_scale"] = {"time_scale": 1.0}
+    result = b.time_scale()
+    assert c.calls[-1] == ("time_scale", (None,), {})
+    assert result == {"time_scale": 1.0}
+    b.close()
+
+
+def test_time_scale_with_value_delegates_to_client(stub_client: dict) -> None:
+    """bridge.time_scale(2.5) 委托 client.time_scale(2.5)，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["time_scale"] = {"time_scale": 2.5}
+    result = b.time_scale(2.5)
+    assert c.calls[-1] == ("time_scale", (2.5,), {})
+    assert result == {"time_scale": 2.5}
+    b.close()
+
+
+def test_pause_delegates_to_client(stub_client: dict) -> None:
+    """bridge.pause() 委托给 client.pause()，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["pause"] = {"paused": True}
+    result = b.pause()
+    assert c.calls[-1] == ("pause", (), {})
+    assert result == {"paused": True}
+    b.close()
+
+
+def test_unpause_delegates_to_client(stub_client: dict) -> None:
+    """bridge.unpause() 委托给 client.unpause()，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["unpause"] = {"paused": False}
+    result = b.unpause()
+    assert c.calls[-1] == ("unpause", (), {})
+    assert result == {"paused": False}
+    b.close()
+
+
+def test_step_frames_delegates_to_client(stub_client: dict) -> None:
+    """bridge.step_frames(10) 委托给 client.step_frames(10, physics=False)，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["step_frames"] = {"stepped": 10, "paused": True}
+    result = b.step_frames(10)
+    assert c.calls[-1] == ("step_frames", (10,), {"physics": False})
+    assert result == {"stepped": 10, "paused": True}
+    b.close()
+
+
+def test_step_frames_physics_flag_delegates_to_client(stub_client: dict) -> None:
+    """bridge.step_frames(5, physics=True) 把 physics=True 透传到 client。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["step_frames"] = {"stepped": 5, "paused": True}
+    b.step_frames(5, physics=True)
+    assert c.calls[-1] == ("step_frames", (5,), {"physics": True})
     b.close()

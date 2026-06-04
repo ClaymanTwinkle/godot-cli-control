@@ -1408,6 +1408,90 @@ def test_scene_change_preflight_rejects_bad_timeout(
     assert "timeout" in payload["error"]["message"]
 
 
+# ── Time 命令组测试（#102）──
+
+
+def test_time_specs_registered() -> None:
+    """time-scale / pause / unpause / step-frames 四个 spec 在 RPC_BY_NAME；
+    time-scale 和 step-frames 带 preflight。"""
+    from godot_cli_control.cli import RPC_BY_NAME
+
+    for name in ("time-scale", "pause", "unpause", "step-frames"):
+        assert name in RPC_BY_NAME, f"{name} 未注册"
+    assert RPC_BY_NAME["time-scale"].preflight is not None, "time-scale 需要 preflight"
+    assert RPC_BY_NAME["step-frames"].preflight is not None, "step-frames 需要 preflight"
+    # pause / unpause 无参，不需要 preflight
+    assert RPC_BY_NAME["pause"].preflight is None
+    assert RPC_BY_NAME["unpause"].preflight is None
+
+
+def test_time_text_formatters() -> None:
+    """time-scale / pause / unpause / step-frames 的 text_formatter 输出符合预期。"""
+    from godot_cli_control.cli import RPC_BY_NAME
+
+    assert RPC_BY_NAME["time-scale"].text_formatter({"time_scale": 2.5}) == "time_scale = 2.5"
+    assert RPC_BY_NAME["pause"].text_formatter({"paused": True}) == "paused: True"
+    assert RPC_BY_NAME["unpause"].text_formatter({"paused": False}) == "paused: False"
+    assert RPC_BY_NAME["step-frames"].text_formatter({"stepped": 5, "paused": True}) == \
+        "stepped 5 frames (still paused)"
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-1", "101", "abc"])
+def test_time_scale_preflight_rejects_bad_value(
+    bad_value: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """time-scale 非法 value 必须在连 daemon 之前报 EXIT_USAGE（-1003）。"""
+    import json as _json
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：time-scale 非法 value 时不应连 daemon")
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "time-scale", bad_value])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "value" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("bad_frames", ["0", "3601", "abc"])
+def test_step_frames_preflight_rejects_bad_frames(
+    bad_frames: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """step-frames 非法 frames 必须在连 daemon 之前报 EXIT_USAGE（-1003）。"""
+    import json as _json
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：step-frames 非法 frames 时不应连 daemon")
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "step-frames", bad_frames])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "frames" in payload["error"]["message"]
+
+
 def test_daemon_stop_emits_json_envelope(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2002,6 +2086,39 @@ def test_daemon_start_idle_timeout_default_is_zero() -> None:
     from godot_cli_control.cli import build_parser
     ns = build_parser().parse_args(["daemon", "start"])
     assert ns.idle_timeout == "0"
+
+
+def test_daemon_start_time_scale_flag_parses() -> None:
+    """daemon start --time-scale 2.5 → ns.time_scale == 2.5（float）。"""
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "start", "--time-scale", "2.5"])
+    assert ns.time_scale == 2.5
+
+
+def test_daemon_start_time_scale_default_is_none() -> None:
+    """不传 --time-scale 时 ns.time_scale is None。"""
+    from godot_cli_control.cli import build_parser
+    ns = build_parser().parse_args(["daemon", "start"])
+    assert ns.time_scale is None
+
+
+@pytest.mark.parametrize("bad_value", ["abc", "0", "-1", "101"])
+def test_daemon_start_time_scale_rejects_bad_value(
+    bad_value: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon start --time-scale <bad> → exit 64 + -1003 信封（argparse type 校验）。"""
+    import json as _json
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "daemon", "start", "--time-scale", bad_value])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
 
 
 def test_tree_accepts_max_nodes_flag() -> None:

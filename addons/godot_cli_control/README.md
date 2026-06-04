@@ -109,6 +109,10 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `list_input_actions(include_builtin=False)` | `await client.list_input_actions()` |
 | `scene_reload(timeout)` | `await client.scene_reload(timeout=10.0)` — reload current scene, block until ready; CLI: `scene-reload [--timeout N]` |
 | `scene_change(path, timeout)` | `await client.scene_change("res://levels/l2.tscn", timeout=10.0)` — switch scene, block until ready; CLI: `scene-change <res://path.tscn> [--timeout N]` |
+| `time_scale(value=None)` | `await client.time_scale()` — read `Engine.time_scale`; `await client.time_scale(5.0)` — set to 5×; CLI: `time-scale [value]`; valid range `(0, 100]` |
+| `pause()` | `await client.pause()` — freeze scene tree (`get_tree().paused = true`); idempotent; CLI: `pause` |
+| `unpause()` | `await client.unpause()` — resume scene tree; idempotent; CLI: `unpause` |
+| `step_frames(frames, physics=False)` | `await client.step_frames(10)` — while paused, advance exactly N frames (1..3600) then stop; CLI: `step-frames <n> [--physics]`; error `1009` if tree not paused |
 
 > **CLI note**: as a shell subcommand, `screenshot` **requires an output path** — `godot-cli-control screenshot /tmp/shot.png` — and writes the PNG to that file. Returning base64 over stdout is intentionally unsupported, to keep large binary payloads out of an automating agent's context window.
 
@@ -136,6 +140,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1006` | server | Resource transiently unavailable (e.g. screenshot during scene transition). Rare under normal use — GameBridge waits for viewport first-frame before listening, and `screenshot` retries internally. Safe to retry if you do hit it. |
 | `1007` | server | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` or `children` to find valid signals. |
 | `1008` | server | Scene unavailable (`scene-reload` / `scene-change`): no current scene, scene file missing / failed to load, or timed out waiting for the new scene to become ready. Fix the path (permanent) or inspect the daemon log (timeout). |
+| `1009` | server | NOT_PAUSED: `step-frames` called while the scene tree is not paused. Call `pause` first. Precondition error — not a param error (distinct from `-32602`). |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold; also out-of-range values like a scene `timeout` outside `(0, 3600]` sent directly via `GameClient`) |
@@ -155,7 +160,7 @@ The daemon is the long-lived Godot process the CLI talks to (one per project roo
 
 | Command | What it does |
 |---|---|
-| `daemon start [--headless\|--gui] [--record]` | Launch Godot with the bridge listening. Headless vs GUI is auto-detected from the TTY; `--record` forces GUI (Movie Maker needs a real renderer) and is **rejected with `--headless`** (exit 2). |
+| `daemon start [--headless\|--gui] [--record] [--time-scale N]` | Launch Godot with the bridge listening. Headless vs GUI is auto-detected from the TTY; `--record` forces GUI (Movie Maker needs a real renderer) and is **rejected with `--headless`** (exit 2). `--time-scale N` sets `Engine.time_scale` from frame 0 (range `(0, 100]`). |
 | `daemon stop` | Stop this project's daemon. Exit 2 if it stopped cleanly but the `.avi`→`.mp4` ffmpeg transcode failed (raw `.avi` kept; see `.cli_control/ffmpeg.log`). |
 | `daemon stop --all` | Stop every registered daemon across all projects. **Exit 3** if at least one failed; per-record `rc` (and an `error` field on failures) is in `result.stopped[]`. |
 | `daemon stop --project <path>` | Stop the daemon for one specific project root. |
