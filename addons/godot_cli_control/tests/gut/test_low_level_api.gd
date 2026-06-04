@@ -938,3 +938,57 @@ func test_wait_property_rejects_ordering_op_with_non_numeric_value() -> void:
 	})
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602)
+
+
+# ── issue #96：wait_signal ──
+
+func test_wait_signal_captures_emission_and_args() -> void:
+	var emitter := Node.new()
+	emitter.add_user_signal("e2e_sig", [{"name": "v", "type": TYPE_INT}])
+	add_child_autofree(emitter)
+	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.emit_signal("e2e_sig", 42))
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "e2e_sig", "timeout": 2.0,
+	})
+	assert_true(result["emitted"])
+	assert_eq(result["args"], [{"value": 42}])
+
+
+func test_wait_signal_zero_arg_signal() -> void:
+	var emitter := Node.new()
+	add_child_autofree(emitter)
+	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.emit_signal("renamed"))
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "renamed", "timeout": 2.0,
+	})
+	assert_true(result["emitted"])
+	assert_eq(result["args"], [])
+
+
+func test_wait_signal_timeout_cleans_up_connection() -> void:
+	var emitter := Node.new()
+	emitter.add_user_signal("never_fires")
+	add_child_autofree(emitter)
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "never_fires", "timeout": 0.1,
+	})
+	assert_false(result["emitted"])
+	assert_eq(emitter.get_signal_connection_list("never_fires").size(), 0, "超时后连接必须清理")
+
+
+func test_wait_signal_node_missing_is_1001() -> void:
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": "/root/__nope__", "signal": "x", "timeout": 0.1,
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1001)
+
+
+func test_wait_signal_unknown_signal_is_1007() -> void:
+	var emitter := Node.new()
+	add_child_autofree(emitter)
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "__nope__", "timeout": 0.1,
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1007)
