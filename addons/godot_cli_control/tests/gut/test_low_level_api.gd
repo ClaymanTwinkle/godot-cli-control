@@ -766,3 +766,43 @@ func test_get_set_round_trip_vector2() -> void:
 	assert_false(set_result.has("error"))
 	var got2: Dictionary = _api.handle_get_property({"path": str(node.get_path()), "property": "position"})
 	assert_eq(got2["value"], got["value"])
+
+
+# ── issue #100：get_properties 同帧原子读 ──
+
+func test_get_properties_returns_all_encoded() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	node.position = Vector2(1.0, 2.0)
+	node.visible = true
+	var result: Dictionary = _api.handle_get_properties({
+		"path": str(node.get_path()), "properties": ["position", "visible", "position:y"],
+	})
+	assert_false(result.has("error"))
+	var values: Dictionary = result["values"]
+	assert_eq(values["position"], {"value": [1.0, 2.0], "type": "Vector2"})
+	assert_eq(values["visible"], {"value": true})
+	assert_eq(values["position:y"], {"value": 2.0})
+
+
+func test_get_properties_missing_prop_fails_atomically_naming_all() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_get_properties({
+		"path": str(node.get_path()), "properties": ["position", "nope1", "nope2"],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1002)
+	assert_string_contains(str(result.error.message), "nope1")
+	assert_string_contains(str(result.error.message), "nope2")
+
+
+func test_get_properties_rejects_empty_or_non_string() -> void:
+	var node := Node2D.new()
+	add_child_autofree(node)
+	for bad: Variant in [[], null, [1], [""]]:
+		var result: Dictionary = _api.handle_get_properties({
+			"path": str(node.get_path()), "properties": bad,
+		})
+		assert_has(result, "error", "properties=%s 应报错" % [bad])
+		assert_eq(int(result.error.code), -32602)
