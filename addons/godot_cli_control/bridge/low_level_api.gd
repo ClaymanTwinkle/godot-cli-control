@@ -562,10 +562,16 @@ func wait_property_async(params: Dictionary) -> Dictionary:
 	var op: String = params.get("op", "eq") as String
 	if not op in _WAIT_PROP_OPS:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "op must be one of: %s" % ", ".join(_WAIT_PROP_OPS))
-	var timeout: float = params.get("timeout", 5.0) as float
+	var timeout_raw: Variant = params.get("timeout", 5.0)
+	if not (timeout_raw is int or timeout_raw is float):
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "'timeout' must be a number")
+	var timeout: float = float(timeout_raw)
 	if timeout < 0.0 or timeout > _MAX_WAIT_SECONDS:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "timeout must be 0..%s" % _MAX_WAIT_SECONDS)
-	var tolerance: float = params.get("tolerance", 0.0) as float
+	var tolerance_raw: Variant = params.get("tolerance", 0.0)
+	if not (tolerance_raw is int or tolerance_raw is float):
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "'tolerance' must be a number")
+	var tolerance: float = float(tolerance_raw)
 	if tolerance < 0.0:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "tolerance must be >= 0")
 	var expected: Variant = params.get("value", null)
@@ -666,7 +672,10 @@ func wait_signal_async(params: Dictionary) -> Dictionary:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'signal' parameter")
 	if not node.has_signal(signal_name):
 		return _err(CliControlErrorCodes.SIGNAL_NOT_FOUND, "Signal not found: %s" % signal_name)
-	var timeout: float = params.get("timeout", 5.0) as float
+	var timeout_raw2: Variant = params.get("timeout", 5.0)
+	if not (timeout_raw2 is int or timeout_raw2 is float):
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "'timeout' must be a number")
+	var timeout: float = float(timeout_raw2)
 	if timeout < 0.0 or timeout > _MAX_WAIT_SECONDS:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "timeout must be 0..%s" % _MAX_WAIT_SECONDS)
 	var argc: int = 0

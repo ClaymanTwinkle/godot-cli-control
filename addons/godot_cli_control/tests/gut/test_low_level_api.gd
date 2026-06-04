@@ -992,3 +992,29 @@ func test_wait_signal_unknown_signal_is_1007() -> void:
 	})
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), 1007)
+
+
+# ── issue #96 review fix：timeout/tolerance 非数字服务端拒绝 ──
+
+func test_wait_property_timeout_string_is_minus_32602() -> void:
+	## wait_property 传 timeout="abc" 必须被拒绝（-32602），不能静默转 0.0。
+	var result: Dictionary = await _api.wait_property_async({
+		"path": "/root", "property": "name", "value": "root", "timeout": "abc",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602,
+		"timeout='abc' 应报 -32602 INVALID_PARAMS，实际 code=%d" % [int(result.error.code)])
+
+
+func test_wait_signal_timeout_string_is_minus_32602() -> void:
+	## wait_signal 传 timeout="abc" 必须被拒绝（-32602），节点和信号均合法。
+	var emitter := Node.new()
+	emitter.add_user_signal("test_sig_for_timeout_check")
+	add_child_autofree(emitter)
+	var result: Dictionary = await _api.wait_signal_async({
+		"path": str(emitter.get_path()), "signal": "test_sig_for_timeout_check",
+		"timeout": "abc",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602,
+		"timeout='abc' 应报 -32602 INVALID_PARAMS，实际 code=%d" % [int(result.error.code)])
