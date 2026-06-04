@@ -76,8 +76,8 @@ extends Node
 var saw_jump_event: bool = false
 
 func _unhandled_input(event: InputEvent) -> void:
-    if event is InputEventAction and event.action == "jump" and event.is_pressed():
-        saw_jump_event = true
+	if event is InputEventAction and event.action == "jump" and event.is_pressed():
+		saw_jump_event = true
 """
 
 _MAIN_WITH_PROBE_TSCN = """\
