@@ -56,7 +56,9 @@ _methods["scene_change"] = {"callable": _scene_api.scene_change_async, "kind": "
 2. `ResourceLoader.exists(path, "PackedScene")` 为 false → `1008`
    （不碰当前场景就失败，避免半切换状态）
 3. `get_tree().change_scene_to_file(path)` 返回非 OK → `1008`
-4. 等 ready 逻辑与 reload 共用（私有 helper `_await_new_scene_ready(old, timeout)`）
+4. 等 ready 逻辑与 reload 共用（私有 helper `_await_new_scene_ready(old, timeout)`；
+   `old` 是调 `change_scene_to_file` **之前**捕获的 `current_scene`，可为 null——
+   此时「`current_scene != null`」条件本身就构成新实例判定，不会死循环）
 5. 成功返回同 reload
 
 ### 2. 错误码
@@ -102,19 +104,21 @@ def fresh_scene(bridge: GameBridge) -> Iterator[GameBridge]:
 |---|---|---|
 | GUT | `tests/gut/test_scene_api.gd`（新） | 参数校验 -32602；无 current_scene → 1008；路径不存在 → 1008。真 reload/change 受 GUT script-mode runner 环境限制，由 e2e 兜底 |
 | Python 单测 | test_cli.py / test_bridge.py / test_client.py | preflight 前缀校验、text_formatter、RpcSpec 注册完整性、bridge/client 包装（mock transport） |
-| e2e | `test_e2e_scene.py`（新） | platformer-demo 加 `second.tscn`；真跑：改属性 → scene-reload → 属性归位；scene-change → tree 验证新根节点；fresh_scene fixture 全链路 |
+| e2e | `test_e2e_scene.py`（新） | `second.tscn` **预置进 `examples/platformer-demo/`**（demo_project fixture 按固定文件名列表拷贝，新文件加进列表）；真跑：改属性 → scene-reload → 属性归位；scene-change → tree 验证新根节点；fresh_scene fixture 全链路 |
 
 ## 文档同步（契约 7）
 
 - SKILL.md 模板：Command catalogue 加 **Scene 分组**（scene-reload / scene-change）、
-  错误码表加 1008、pytest plugin 段加 fresh_scene、Common pitfalls 加
-  「场景切换后旧节点路径全部失效，需重新 wait-node 定位」
+  错误码表加 1008、pytest plugin 段加 fresh_scene、Common pitfalls 加两条：
+  「场景切换后旧节点路径全部失效，需重新 wait-node 定位」、
+  「scene-reload 返回后原场景已被释放，不要复用此前缓存的节点引用/路径」
 - addon README：命令表 / 错误码表同步
 - 跑 `python -c "from godot_cli_control import cli; print(cli.format_full_help())"` 验证渲染
 
 ## 不做的事（YAGNI）
 
 - 不加 `@pytest.mark.fresh_scene` marker
+- 不给 `fresh_scene` 加超时参数/工厂模式（继承 `scene_reload()` 默认 10s；有真实需求再说）
 - 不做「恢复到主场景 / 可配置目标场景」
 - 不做 `change_scene_to_packed` / 场景栈管理
 - 不动 method blacklist（scene 操作走专用 RPC，不经 `call` 通道）
