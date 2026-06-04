@@ -243,6 +243,48 @@ def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
     return parsed
 
 
+_WAIT_PROP_OPS = ("eq", "ne", "gt", "lt", "ge", "le")
+
+
+def _require_float(raw: Any, cmd: str, field: str) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{cmd}: {field} 必须是数字，收到 {raw!r}")
+
+
+def _preflight_wait_prop(ns: argparse.Namespace) -> None:
+    timeout = _require_float(ns.timeout, "wait-prop", "timeout")
+    if not 0 <= timeout <= 3600:
+        raise ValueError(f"wait-prop: timeout 必须在 0..3600 秒，收到 {timeout}")
+    tolerance = _require_float(ns.tolerance, "wait-prop", "tolerance")
+    if tolerance < 0:
+        raise ValueError(f"wait-prop: tolerance 必须 >= 0，收到 {tolerance}")
+    expected = _parse_json_arg(ns.value)
+    is_numeric = isinstance(expected, (int, float)) and not isinstance(expected, bool)
+    if ns.op not in ("eq", "ne") and not is_numeric:
+        raise ValueError(
+            f"wait-prop: --op {ns.op} 只支持数值比较；复合/字符串/bool 值只能用 eq/ne"
+        )
+
+
+def _preflight_wait_signal(ns: argparse.Namespace) -> None:
+    if ns.timeout is None:
+        return
+    timeout = _require_float(ns.timeout, "wait-signal", "timeout")
+    if not 0 <= timeout <= 3600:
+        raise ValueError(f"wait-signal: timeout 必须在 0..3600 秒，收到 {timeout}")
+
+
+def _preflight_wait_frames(ns: argparse.Namespace) -> None:
+    try:
+        frames = int(ns.frames)
+    except (TypeError, ValueError):
+        raise ValueError(f"wait-frames: frames 必须是整数，收到 {ns.frames!r}")
+    if not 1 <= frames <= 3600:
+        raise ValueError(f"wait-frames: frames 必须在 1..3600，收到 {frames}")
+
+
 def _combo_total_duration(steps: list[dict]) -> float:
     """combo 全部 step 的累计 game-time（给 ``--wait`` 算阻塞时长，issue #90）。
 
@@ -406,6 +448,23 @@ async def cmd_wait_time(
     return await client.wait_game_time(seconds)
 
 
+async def cmd_wait_prop(client: GameClient, ns: argparse.Namespace) -> dict:
+    expected = _parse_json_arg(ns.value)
+    return await client.wait_property(
+        ns.node_path, ns.prop, expected,
+        op=ns.op, timeout=float(ns.timeout), tolerance=float(ns.tolerance),
+    )
+
+
+async def cmd_wait_signal(client: GameClient, ns: argparse.Namespace) -> dict:
+    timeout = float(ns.timeout) if ns.timeout else 5.0
+    return await client.wait_signal(ns.node_path, ns.signal_name, timeout=timeout)
+
+
+async def cmd_wait_frames(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.wait_frames(int(ns.frames), physics=ns.physics)
+
+
 async def cmd_pressed(
     client: GameClient, ns: argparse.Namespace
 ) -> list[str]:
@@ -483,6 +542,27 @@ def _exit_from_wait_node(r: dict) -> int:
     return EXIT_OK if r.get("found") else EXIT_RPC_ERROR
 
 
+def _fmt_wait_prop_text(r: dict) -> str:
+    if r.get("matched"):
+        return f"matched (waited {r.get('waited', 0.0):.3f}s)"
+    return (
+        f"timeout (reason={r.get('reason', 'timeout')}, "
+        f"last={json.dumps(r.get('value'), ensure_ascii=False)})"
+    )
+
+
+def _fmt_wait_signal_text(r: dict) -> str:
+    return "emitted" if r.get("emitted") else "timeout"
+
+
+def _exit_from_wait_prop(r: dict) -> int:
+    return EXIT_OK if r.get("matched") else EXIT_RPC_ERROR
+
+
+def _exit_from_wait_signal(r: dict) -> int:
+    return EXIT_OK if r.get("emitted") else EXIT_RPC_ERROR
+
+
 # ── extra_args registrators ──
 
 
@@ -538,6 +618,21 @@ def _register_actions_flag(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="包含 ui_* 内置动作（默认仅项目自定义动作）",
     )
+
+
+def _register_wait_prop_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("node_path", help="绝对节点路径")
+    p.add_argument("prop", help="属性名（支持 sub-path 如 position:x）")
+    p.add_argument("value", help="期望值（JSON-or-string，同 set 的 value 规则）")
+    p.add_argument("--op", choices=_WAIT_PROP_OPS, default="eq",
+                   help="比较运算符，默认 eq；gt/lt/ge/le 仅数值")
+    p.add_argument("--timeout", default="5", help="超时秒（0..3600，默认 5）")
+    p.add_argument("--tolerance", default="0", help="float eq/ne 容差（默认 0=精确比较）")
+
+
+def _register_wait_frames_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("frames", help="等待帧数（1..3600）")
+    p.add_argument("--physics", action="store_true", help="等 physics_frame（默认 process_frame）")
 
 
 def _register_set_args(p: argparse.ArgumentParser) -> None:
@@ -804,6 +899,48 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         ),
         example="wait-time 0.5",
         text_formatter=_fmt_wait_time_text,
+    ),
+    RpcSpec(
+        name="wait-prop",
+        handler=cmd_wait_prop,
+        description=(
+            "逐帧轮询直到属性满足条件（或 timeout）。退出码：0=命中, 1=超时, "
+            "2=infra error。超时返回 reason（timeout/node_not_found/property_not_found）"
+            "+ 最后读到的值，便于诊断 typo。"
+        ),
+        positionals=(),  # 由 extra_args 注册
+        example="wait-prop /root/Player position:x 500 --op gt --timeout 3",
+        extra_args=_register_wait_prop_args,
+        preflight=_preflight_wait_prop,
+        text_formatter=_fmt_wait_prop_text,
+        exit_code_from=_exit_from_wait_prop,
+    ),
+    RpcSpec(
+        name="wait-signal",
+        handler=cmd_wait_signal,
+        description=(
+            "等信号发射（或 timeout），命中带回编码后的信号参数。退出码：0=命中, "
+            "1=超时, 2=infra error。注意：必须先挂等待再触发动作（见 SKILL.md pitfall）。"
+        ),
+        positionals=(
+            Positional("node_path", None, "绝对节点路径"),
+            Positional("signal_name", None, "信号名，如 body_entered"),
+            Positional("timeout", "?", "超时秒（0..3600，默认 5）"),
+        ),
+        example="wait-signal /root/Area door_opened 3",
+        preflight=_preflight_wait_signal,
+        text_formatter=_fmt_wait_signal_text,
+        exit_code_from=_exit_from_wait_signal,
+    ),
+    RpcSpec(
+        name="wait-frames",
+        handler=cmd_wait_frames,
+        description="等 N 个 process 帧（--physics 等物理帧）。确定性帧推进，替代短 sleep。",
+        positionals=(),  # 由 extra_args 注册
+        example="wait-frames 3 --physics",
+        extra_args=_register_wait_frames_args,
+        preflight=_preflight_wait_frames,
+        text_formatter=lambda r: f"waited {r.get('frames')} frames",
     ),
     RpcSpec(
         name="pressed",
