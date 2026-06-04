@@ -106,6 +106,22 @@ class GameBridge:
         """切换场景并等新场景 ready（issue #98）。path 须为 res:// 或 uid://。"""
         return self._run(self._client.scene_change(path, timeout=timeout))
 
+    def time_scale(self, value: float | None = None) -> dict:
+        """读 / 写 Engine.time_scale（issue #102）。value=None 纯读，返回 {"time_scale": x}。"""
+        return self._run(self._client.time_scale(value))
+
+    def pause(self) -> dict:
+        """暂停 SceneTree（issue #102）。幂等；返回 {"paused": True}。"""
+        return self._run(self._client.pause())
+
+    def unpause(self) -> dict:
+        """恢复 SceneTree（issue #102）。幂等；返回 {"paused": False}。"""
+        return self._run(self._client.unpause())
+
+    def step_frames(self, frames: int, physics: bool = False) -> dict:
+        """paused 前置下确定性推进 N 帧再停（issue #102）。返回 {"stepped": N, "paused": True}。"""
+        return self._run(self._client.step_frames(frames, physics=physics))
+
     # ── UI 交互 ──
 
     def click(self, path: str) -> dict:

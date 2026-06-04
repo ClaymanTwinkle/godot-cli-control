@@ -388,6 +388,36 @@ class GameClient:
             "scene_change", {"path": path, "timeout": timeout}, timeout=timeout + 5.0
         )
 
+    async def time_scale(self, value: float | None = None) -> dict:
+        """读 / 写 Engine.time_scale（issue #102）。
+
+        value=None 纯读。合法域 (0, 100]，越界 → -32602。
+        返回 {"time_scale": x}。wait_game_time 跟随 time_scale，
+        套件整体倍速时 wait 语义不变、墙钟变快。
+        """
+        params: dict = {} if value is None else {"value": value}
+        return await self.request("time_scale", params)
+
+    async def pause(self) -> dict:
+        """暂停 SceneTree（issue #102）。幂等；返回 {"paused": True}。"""
+        return await self.request("pause", {})
+
+    async def unpause(self) -> dict:
+        """恢复 SceneTree（issue #102）。幂等；返回 {"paused": False}。"""
+        return await self.request("unpause", {})
+
+    async def step_frames(self, frames: int, physics: bool = False) -> dict:
+        """paused 前置下确定性推进 N 帧再停（issue #102）。
+
+        未 pause → 1009 NOT_PAUSED。返回 {"stepped": N, "paused": True}。
+        网络超时对齐 wait_frames（最低 10fps 估算 + 10s grace）。
+        """
+        return await self.request(
+            "step_frames",
+            {"frames": frames, "physics": physics},
+            timeout=max(30.0, frames / 10.0 + 10.0),
+        )
+
     async def wait_game_time(self, seconds: float) -> dict:
         """按 Godot game time 等待 N 秒。
 
