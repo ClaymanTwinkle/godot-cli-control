@@ -258,6 +258,20 @@ class GameClient:
         )
         return result.get("value")
 
+    async def get_properties(self, path: str, props: list[str]) -> dict[str, Any]:
+        """同帧原子读多个属性（issue #100），返回 {prop: 裸 value} 映射。
+
+        type 字段是给 CLI JSON 信封的（agent 消费）；Python 层要 type 时直接
+        ``await client.request("get_properties", ...)`` 拿原始 result。
+        """
+        result = await self.request(
+            "get_properties", {"path": path, "properties": list(props)}
+        )
+        return {
+            k: (v.get("value") if isinstance(v, dict) else v)
+            for k, v in result.get("values", {}).items()
+        }
+
     async def set_property(self, path: str, prop: str, value: Any) -> dict:
         return await self.request(
             "set_property", {"path": path, "property": prop, "value": value}

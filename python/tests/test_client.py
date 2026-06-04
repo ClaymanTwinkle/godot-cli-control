@@ -525,6 +525,54 @@ async def test_combo_client_timeout_decoupled_from_steps_total() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_properties_sends_correct_rpc_params() -> None:
+    """``get_properties`` 必须发出 method="get_properties"、params={"path": ..., "properties": [...]}。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"values": {}}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.get_properties("/root/Player", ["position", "visible"])
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["method"] == "get_properties"
+    assert captured["params"] == {"path": "/root/Player", "properties": ["position", "visible"]}
+
+
+@pytest.mark.asyncio
+async def test_get_properties_unwraps_values_to_bare_value_map() -> None:
+    """服务端 ``{"values": {prop: {"value": ..., "type"?: ...}}}`` 必须被解包成
+    ``{prop: 裸value}`` 映射；非 dict 容错分支（如 ``"weird": 42``）也需透传。"""
+    import godot_cli_control.client as client_mod
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        return {
+            "values": {
+                "position": {"value": [1, 2], "type": "Vector2"},
+                "visible": {"value": True},
+                "weird": 42,  # 非 dict，容错：直接透传
+            }
+        }
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.get_properties("/root/Player", ["position", "visible", "weird"])
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert result == {"position": [1, 2], "visible": True, "weird": 42}
+
+
+@pytest.mark.asyncio
 async def test_connect_locks_ws_ping_keepalive() -> None:
     """issue #45 治本依赖：去掉 wall 上限后，死连接靠 ws ping/pong 检测。
 
