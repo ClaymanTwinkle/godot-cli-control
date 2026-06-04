@@ -27,6 +27,12 @@ class _StringNameFixture extends Node:
 	var test_sn: StringName = &"hello"
 
 
+# issue #119：handler → codec 接缝测试 —— Object 引用属性 fixture
+# （自建属性，不依赖 Node.multiplayer 等内置属性的版本演化语义）
+class _ObjectFixture extends Node:
+	var test_obj: RefCounted = RefCounted.new()
+
+
 var _api: Node
 var _target: Node
 
@@ -807,15 +813,18 @@ func test_get_properties_missing_prop_fails_atomically_naming_all() -> void:
 func test_get_property_object_type_returns_string_type_field() -> void:
 	## handle_get_property 读 Object 属性 → codec 编码为 {"value": "<str>", "type": "Object"}
 	## 检验 handler → codec 全链路（codec 单测已覆盖 encode，这里测 handler 调 codec 的接缝）。
-	## 用 Node 的 "multiplayer" 属性（MultiplayerAPI，headless 下恒非 null）作内置 Object 属性。
-	var node := Node2D.new()
-	add_child_autofree(node)
+	## 用自建 fixture 持有 Object 引用属性（issue #119：不依赖内置 multiplayer
+	## 属性的版本演化语义；内容断言只锚类名，不锚 str(obj) 的实例 id 部分）。
+	var fixture := _ObjectFixture.new()
+	add_child_autofree(fixture)
 	var result: Dictionary = _api.handle_get_property({
-		"path": str(node.get_path()), "property": "multiplayer",
+		"path": str(fixture.get_path()), "property": "test_obj",
 	})
-	assert_does_not_have(result, "error", "multiplayer 是合法 Object 属性，不应报错")
+	assert_does_not_have(result, "error", "test_obj 是合法 Object 属性，不应报错")
 	assert_eq(result.get("type"), "Object", "Object 类型属性必须带 type=Object 字段")
 	assert_true(result.get("value") is String, "Object 编码应是字符串（str(obj)）")
+	# 内容断言锚类名（str(obj) 形如 <RefCounted#id>），不锚实例 id 部分
+	assert_string_contains(str(result.get("value")), "RefCounted")
 
 
 func test_get_property_stringname_type_returns_string_type_field() -> void:

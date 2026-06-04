@@ -1678,6 +1678,17 @@ def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
+class _QuietPeekParser(argparse.ArgumentParser):
+    """peek-parse 专用：error() 不往 stderr 打 usage/error，直接抛 SystemExit。
+
+    peek parser 自身解析失败（如 `--text=x`）属预期内分支（调用方 catch 后
+    回落 JSON 信封），不应在 stderr 留下第二段 usage 噪声（#118）。
+    """
+
+    def error(self, message: str) -> NoReturn:
+        raise SystemExit(2)
+
+
 class _EnvelopeArgumentParser(argparse.ArgumentParser):
     """覆写 argparse 的 error() —— 把用法错统一进 JSON 信封 + exit 64。
 
@@ -1705,8 +1716,9 @@ class _EnvelopeArgumentParser(argparse.ArgumentParser):
         self.print_usage(sys.stderr)
         # --text / --no-json 旁路判定：用 peek-parse 而非 token 扫描，
         # 避免 `--` 之后的字面量 --text 被误判为 text 模式旗标。
-        # peek parser 是普通 ArgumentParser（非 _EnvelopeArgumentParser），避免递归。
-        _peek = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+        # peek parser 用 _QuietPeekParser（非 _EnvelopeArgumentParser），
+        # 既避免递归、也避免解析失败时往 stderr 重复打 usage（#118）。
+        _peek = _QuietPeekParser(add_help=False, allow_abbrev=False)
         _add_output_format_flags(_peek)
         _is_text_mode = False
         try:
