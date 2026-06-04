@@ -139,6 +139,36 @@ func _read_property(node: Node, property: String) -> Dictionary:
 	return {"value": node.get(property)}
 
 
+## issue #100：多属性同帧原子读。sync handler 无 await——所有读取天然同一帧。
+## 原子语义：任一属性缺失整体失败（1002 点名全部缺失项），不返回半新半旧组合。
+func handle_get_properties(params: Dictionary) -> Dictionary:
+	var node: Node = _get_node_or_error(params)
+	if node == null:
+		return _node_not_found(params.get("path", "") as String)
+	var props_raw: Variant = params.get("properties", null)
+	if not props_raw is Array or (props_raw as Array).is_empty():
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "'properties' must be a non-empty array of strings")
+	var props: Array = props_raw as Array
+	var missing: PackedStringArray = []
+	for raw_prop: Variant in props:
+		if not raw_prop is String or (raw_prop as String).is_empty():
+			return _err(CliControlErrorCodes.INVALID_PARAMS, "'properties' must be a non-empty array of strings")
+		var prop_name: String = raw_prop as String
+		var top_level: String = prop_name.split(":", true, 1)[0] if ":" in prop_name else prop_name
+		if not _has_property(node, top_level):
+			missing.append(prop_name)
+	if not missing.is_empty():
+		return _err(CliControlErrorCodes.PROPERTY_NOT_FOUND, "Properties not found: %s" % ", ".join(missing))
+	var values: Dictionary = {}
+	for raw_prop2: Variant in props:
+		var prop_name2: String = raw_prop2 as String
+		var read: Dictionary = _read_property(node, prop_name2)
+		if read.has("error"):
+			return read  # 防御纵深：上面已全量校验，理论到不了这里
+		values[prop_name2] = CliControlVariantCodec.encode(read["value"])
+	return {"values": values}
+
+
 func handle_set_property(params: Dictionary) -> Dictionary:
 	var node: Node = _get_node_or_error(params)
 	if node == null:
