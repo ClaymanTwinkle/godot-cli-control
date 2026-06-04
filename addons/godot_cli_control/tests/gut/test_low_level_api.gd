@@ -22,6 +22,11 @@ class _CoerceFixture extends Node:
 	var test_object: Object = null
 
 
+# issue #112：handler → codec 接缝测试 —— StringName 属性 fixture
+class _StringNameFixture extends Node:
+	var test_sn: StringName = &"hello"
+
+
 var _api: Node
 var _target: Node
 
@@ -795,6 +800,43 @@ func test_get_properties_missing_prop_fails_atomically_naming_all() -> void:
 	assert_eq(int(result.error.code), 1002)
 	assert_string_contains(str(result.error.message), "nope1")
 	assert_string_contains(str(result.error.message), "nope2")
+
+
+# ── issue #112：handle_get_property → codec 接缝测试（Object / StringName） ──
+
+func test_get_property_object_type_returns_string_type_field() -> void:
+	## handle_get_property 读 Object 属性 → codec 编码为 {"value": "<str>", "type": "Object"}
+	## 检验 handler → codec 全链路（codec 单测已覆盖 encode，这里测 handler 调 codec 的接缝）。
+	## Node.get_viewport() 返回 Viewport（Object 子类），是内置可用的 Object 属性。
+	var node := Node2D.new()
+	add_child_autofree(node)
+	# "owner" 在未 add_child 前是 null，不适合测 Object 值。
+	# Node.get_viewport() 是方法而非属性。找一个内置 Object 类型属性：
+	# Node 的 "multiplayer" 属性是 MultiplayerAPI（Object 子类）且总有非 null 值。
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(node.get_path()), "property": "multiplayer",
+	})
+	assert_does_not_have(result, "error", "multiplayer 是合法 Object 属性，不应报错")
+	assert_eq(result.get("type"), "Object", "Object 类型属性必须带 type=Object 字段")
+	assert_true(result.get("value") is String, "Object 编码应是字符串（str(obj)）")
+
+
+func test_get_property_stringname_type_returns_string_type_field() -> void:
+	## handle_get_property 读 StringName 属性 → codec 编码为 {"value": "<str>", "type": "StringName"}
+	## Node "scene_file_path" 是 String，不是 StringName。
+	## AnimationPlayer.current_animation 是 String。
+	## 用自定义 fixture 节点持有 StringName 类型属性来测。
+	## Node.name 在 GDScript 里是 String（不是 StringName），无法直接用内置属性。
+	## 改用 custom fixture：
+	var fixture := _StringNameFixture.new()
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(fixture.get_path()), "property": "test_sn",
+	})
+	assert_does_not_have(result, "error", "test_sn 是合法 StringName 属性，不应报错")
+	assert_eq(result.get("type"), "StringName", "StringName 属性必须带 type=StringName 字段")
+	assert_true(result.get("value") is String, "StringName 编码应转为普通 String")
+	assert_eq(result.get("value"), "hello", "StringName 值应正确编码为原始字串")
 
 
 func test_get_properties_rejects_empty_or_non_string() -> void:
