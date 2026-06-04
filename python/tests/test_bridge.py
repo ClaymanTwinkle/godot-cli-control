@@ -131,6 +131,12 @@ class _StubClient:
     async def wait_frames(self, frames: int, physics: bool = False) -> dict:
         return self._record("wait_frames", (frames,), {"physics": physics})
 
+    async def scene_reload(self, timeout: float = 10.0) -> dict:
+        return self._record("scene_reload", (), {"timeout": timeout})
+
+    async def scene_change(self, path: str, timeout: float = 10.0) -> dict:
+        return self._record("scene_change", (path,), {"timeout": timeout})
+
 
 @pytest.fixture
 def stub_client(monkeypatch: pytest.MonkeyPatch) -> _StubClient:
@@ -546,4 +552,45 @@ def test_wait_frames_delegates_params(stub_client: dict) -> None:
         {"physics": True},
     )
     assert result == {"success": True, "frames": 5}
+    b.close()
+
+
+# ── issue #98: scene_reload / scene_change bridge 委托 ──
+
+
+def test_scene_reload_delegates_to_client(stub_client: dict) -> None:
+    """bridge.scene_reload() 委托给 client.scene_reload，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["scene_reload"] = {"scene_path": "res://Main.tscn", "name": "Main"}
+    result = b.scene_reload()
+    assert c.calls[-1] == ("scene_reload", (), {"timeout": 10.0})
+    assert result == {"scene_path": "res://Main.tscn", "name": "Main"}
+    b.close()
+
+
+def test_scene_reload_custom_timeout(stub_client: dict) -> None:
+    """bridge.scene_reload(timeout=3.0) 把 timeout 透传到 client。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["scene_reload"] = {"scene_path": "res://Main.tscn", "name": "Main"}
+    b.scene_reload(timeout=3.0)
+    assert c.calls[-1] == ("scene_reload", (), {"timeout": 3.0})
+    b.close()
+
+
+def test_scene_change_delegates_to_client(stub_client: dict) -> None:
+    """bridge.scene_change(path) 委托给 client.scene_change，参数透传，返回值透传。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["scene_change"] = {"scene_path": "res://a.tscn", "name": "A"}
+    result = b.scene_change("res://a.tscn")
+    assert c.calls[-1] == ("scene_change", ("res://a.tscn",), {"timeout": 10.0})
+    assert result == {"scene_path": "res://a.tscn", "name": "A"}
+    b.close()
+
+
+def test_scene_change_custom_timeout(stub_client: dict) -> None:
+    """bridge.scene_change(path, timeout=5.0) 把所有参数透传到 client。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["scene_change"] = {"scene_path": "res://b.tscn", "name": "B"}
+    b.scene_change("res://b.tscn", timeout=5.0)
+    assert c.calls[-1] == ("scene_change", ("res://b.tscn",), {"timeout": 5.0})
     b.close()

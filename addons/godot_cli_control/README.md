@@ -107,6 +107,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `release_all()` | `await client.release_all()` |
 | `get_pressed()` | `await client.get_pressed()` |
 | `list_input_actions(include_builtin=False)` | `await client.list_input_actions()` |
+| `scene_reload(timeout)` | `await client.scene_reload(timeout=10.0)` — reload current scene, block until ready; CLI: `scene-reload [--timeout N]` |
+| `scene_change(path, timeout)` | `await client.scene_change("res://levels/l2.tscn", timeout=10.0)` — switch scene, block until ready; CLI: `scene-change <res://path.tscn> [--timeout N]` |
 
 > **CLI note**: as a shell subcommand, `screenshot` **requires an output path** — `godot-cli-control screenshot /tmp/shot.png` — and writes the PNG to that file. Returning base64 over stdout is intentionally unsupported, to keep large binary payloads out of an automating agent's context window.
 
@@ -133,12 +135,13 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1005` | server | Scene tree too large (lower `depth` or pass `--max-nodes`) |
 | `1006` | server | Resource transiently unavailable (e.g. screenshot during scene transition). Rare under normal use — GameBridge waits for viewport first-frame before listening, and `screenshot` retries internally. Safe to retry if you do hit it. |
 | `1007` | server | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` or `children` to find valid signals. |
+| `1008` | server | Scene unavailable (`scene-reload` / `scene-change`): no current scene, scene file missing / failed to load, or timed out waiting for the new scene to become ready. Fix the path (permanent) or inspect the daemon log (timeout). |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
-| `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold) |
+| `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold; also out-of-range values like a scene `timeout` outside `(0, 3600]` sent directly via `GameClient`) |
 | `-1001` | client | Connection failure (daemon not running, port wrong, proxy hijacking localhost) |
 | `-1002` | client | Timeout waiting for response |
-| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `set`/`call` value that fails JSON parsing, script path not found, or script missing `run(bridge)`). Always exits **64** (#82 / #111). |
+| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `scene-change` path not starting with `res://`/`uid://`, a `scene-reload`/`scene-change` `--timeout` outside `(0, 3600]`, a `set`/`call` value that fails JSON parsing, script path not found, or script missing `run(bridge)`). Always exits **64** (#82 / #111). |
 | `-1004` | client | Local file IO error (e.g. screenshot can't write the destination) |
 | `-1005` | client | `run <script>` user script raised an uncaught exception — fix the script |
 | `-1006` | client | Infra pre-condition failure (`daemon start`/`stop`/`run` auto-start failed at OS level — port conflict, Godot binary not found, etc.). Always exits **2** (#92). |

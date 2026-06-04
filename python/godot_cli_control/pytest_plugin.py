@@ -1,4 +1,4 @@
-"""pytest 插件：``godot_daemon`` (session) + ``bridge`` (function) fixtures。
+"""pytest 插件：``godot_daemon`` (session) + ``bridge`` (function) + ``fresh_scene`` (function) fixtures。
 
 加载路径：
   - ``pip install godot-cli-control[pytest]`` 装上 pytest 后，pytest 启动时
@@ -107,3 +107,17 @@ def bridge(godot_daemon: Daemon) -> Iterator[GameBridge]:
         except Exception:  # noqa: BLE001 — 关闭路径，吞掉残留以保证 close 一定跑
             pass
         b.close()
+
+
+@pytest.fixture
+def fresh_scene(bridge: GameBridge) -> Iterator[GameBridge]:
+    """Function-scoped：setup 时调 bridge.scene_reload() 等新场景 ready（issue #98）。
+
+    语义是「本用例开始时场景是干净的」：teardown 不做事，下一个需要干净
+    场景的用例自己声明 fresh_scene。reload 后此前缓存的节点路径全部失效。
+
+        def test_jump(godot_daemon, fresh_scene):
+            fresh_scene.click("/root/Game/Start")   # fresh_scene 即 bridge
+    """
+    bridge.scene_reload()
+    yield bridge

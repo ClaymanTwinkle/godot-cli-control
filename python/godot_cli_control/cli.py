@@ -286,6 +286,22 @@ def _preflight_wait_frames(ns: argparse.Namespace) -> None:
         raise ValueError(f"wait-frames: frames 必须在 1..3600，收到 {frames}")
 
 
+def _preflight_scene_reload(ns: argparse.Namespace) -> None:
+    timeout = _require_float(ns.timeout, "scene-reload", "timeout")
+    if not 0 < timeout <= 3600:
+        raise ValueError(f"scene-reload: timeout 必须 > 0 且 <= 3600 秒，收到 {timeout}")
+
+
+def _preflight_scene_change(ns: argparse.Namespace) -> None:
+    if not ns.scene_path.startswith(("res://", "uid://")):
+        raise ValueError(
+            f"scene-change: 场景路径必须以 res:// 或 uid:// 开头，收到 {ns.scene_path!r}"
+        )
+    timeout = _require_float(ns.timeout, "scene-change", "timeout")
+    if not 0 < timeout <= 3600:
+        raise ValueError(f"scene-change: timeout 必须 > 0 且 <= 3600 秒，收到 {timeout}")
+
+
 def _combo_total_duration(steps: list[dict]) -> float:
     """combo 全部 step 的累计 game-time（给 ``--wait`` 算阻塞时长，issue #90）。
 
@@ -466,6 +482,14 @@ async def cmd_wait_frames(client: GameClient, ns: argparse.Namespace) -> dict:
     return await client.wait_frames(int(ns.frames), physics=ns.physics)
 
 
+async def cmd_scene_reload(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.scene_reload(timeout=float(ns.timeout))
+
+
+async def cmd_scene_change(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.scene_change(ns.scene_path, timeout=float(ns.timeout))
+
+
 async def cmd_pressed(
     client: GameClient, ns: argparse.Namespace
 ) -> list[str]:
@@ -634,6 +658,17 @@ def _register_wait_prop_args(p: argparse.ArgumentParser) -> None:
 def _register_wait_frames_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("frames", help="等待帧数（1..3600）")
     p.add_argument("--physics", action="store_true", help="等 physics_frame（默认 process_frame）")
+
+
+def _register_scene_reload_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--timeout", default="10",
+                   help="等新场景 ready 的超时秒（>0 且 <=3600，默认 10）")
+
+
+def _register_scene_change_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("scene_path", help="目标场景资源路径（res:// 或 uid://）")
+    p.add_argument("--timeout", default="10",
+                   help="等新场景 ready 的超时秒（>0 且 <=3600，默认 10）")
 
 
 def _register_set_args(p: argparse.ArgumentParser) -> None:
@@ -942,6 +977,33 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         extra_args=_register_wait_frames_args,
         preflight=_preflight_wait_frames,
         text_formatter=lambda r: f"waited {r.get('frames')} frames",
+    ),
+    RpcSpec(
+        name="scene-reload",
+        handler=cmd_scene_reload,
+        description=(
+            "重载当前场景并阻塞到新场景 ready（per-test 隔离原语）。"
+            "失败（无 current scene / 超时）报 1008，exit 1。"
+            "注意：返回后此前缓存的所有节点路径/引用全部失效。"
+        ),
+        positionals=(),  # 由 extra_args 注册
+        example="scene-reload",
+        extra_args=_register_scene_reload_args,
+        preflight=_preflight_scene_reload,
+        text_formatter=lambda r: f"scene reloaded: {r.get('scene_path')} (root: {r.get('name')})",
+    ),
+    RpcSpec(
+        name="scene-change",
+        handler=cmd_scene_change,
+        description=(
+            "切换到指定场景并阻塞到新场景 ready。路径不存在/加载失败/超时 "
+            "报 1008，exit 1。"
+        ),
+        positionals=(),  # 由 extra_args 注册
+        example="scene-change res://levels/level2.tscn",
+        extra_args=_register_scene_change_args,
+        preflight=_preflight_scene_change,
+        text_formatter=lambda r: f"scene changed: {r.get('scene_path')} (root: {r.get('name')})",
     ),
     RpcSpec(
         name="pressed",

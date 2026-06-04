@@ -98,6 +98,14 @@ class GameBridge:
         """等 N 帧（issue #96）。确定性帧推进，替代短 sleep。"""
         return self._run(self._client.wait_frames(frames, physics=physics))
 
+    def scene_reload(self, timeout: float = 10.0) -> dict:
+        """重载当前场景并等新场景 ready（issue #98）。返回 {"scene_path": ..., "name": ...}。"""
+        return self._run(self._client.scene_reload(timeout=timeout))
+
+    def scene_change(self, path: str, timeout: float = 10.0) -> dict:
+        """切换场景并等新场景 ready（issue #98）。path 须为 res:// 或 uid://。"""
+        return self._run(self._client.scene_change(path, timeout=timeout))
+
     # ── UI 交互 ──
 
     def click(self, path: str) -> dict:

@@ -687,3 +687,83 @@ async def test_wait_frames_sends_correct_rpc_params_and_calculates_timeout() -> 
 
     assert captured[1]["params"] == {"frames": 300, "physics": True}
     assert captured[1]["timeout"] == 40.0
+
+
+# ---- issue #98: scene_reload / scene_change client 包装 ----
+
+
+@pytest.mark.asyncio
+async def test_scene_reload_sends_correct_rpc_params() -> None:
+    """scene_reload 必须发出 method="scene_reload"，params={"timeout": 10.0}，RPC timeout=15.0。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"scene_path": "res://Main.tscn", "name": "Main"}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.scene_reload()
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "scene_reload"
+    assert captured["params"] == {"timeout": 10.0}
+    assert captured["timeout"] == 10.0 + 5.0
+    assert result == {"scene_path": "res://Main.tscn", "name": "Main"}
+
+
+@pytest.mark.asyncio
+async def test_scene_reload_custom_timeout_sends_correct_rpc_params() -> None:
+    """scene_reload(timeout=3.0) 发出 params={"timeout": 3.0}，RPC timeout=8.0。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"scene_path": "res://Main.tscn", "name": "Main"}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.scene_reload(timeout=3.0)
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "scene_reload"
+    assert captured["params"] == {"timeout": 3.0}
+    assert captured["timeout"] == 3.0 + 5.0
+
+
+@pytest.mark.asyncio
+async def test_scene_change_sends_correct_rpc_params() -> None:
+    """scene_change 必须发出 method="scene_change"，params={"path": ..., "timeout": ...}，RPC timeout=timeout+5。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"scene_path": "res://a.tscn", "name": "A"}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.scene_change("res://a.tscn", timeout=3.0)
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "scene_change"
+    assert captured["params"] == {"path": "res://a.tscn", "timeout": 3.0}
+    assert captured["timeout"] == 3.0 + 5.0
+    assert result == {"scene_path": "res://a.tscn", "name": "A"}

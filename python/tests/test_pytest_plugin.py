@@ -40,7 +40,12 @@ def test_options_registered_in_help(pytester: pytest.Pytester) -> None:
 
 
 def test_fixtures_listed(pytester: pytest.Pytester) -> None:
-    """`pytest --fixtures` 列出 godot_daemon + bridge。"""
+    """`pytest --fixtures` 列出 godot_daemon + bridge + fresh_scene。
+
+    逐个 fnmatch（顺序无关——pytest 对 fixture 的列出顺序不保证），
+    并锚定「<name> ... -- ...pytest_plugin.py」定义行格式，
+    避免 docstring 里提及其它 fixture 名造成假阳性。
+    """
     pytester.makepyfile(
         test_smoke="""
         def test_smoke():
@@ -48,7 +53,8 @@ def test_fixtures_listed(pytester: pytest.Pytester) -> None:
         """
     )
     result = pytester.runpytest("--fixtures")
-    result.stdout.fnmatch_lines(["*godot_daemon*", "*bridge*"])
+    for name in ("godot_daemon", "bridge", "fresh_scene"):
+        result.stdout.fnmatch_lines([f"{name}*-- *pytest_plugin.py*"])
 
 
 def test_fixture_lifecycle(pytester: pytest.Pytester) -> None:
@@ -382,3 +388,56 @@ def test_project_root_option_is_respected(pytester: pytest.Pytester) -> None:
     result.assert_outcomes(passed=1)
     output = result.stdout.str()
     assert str(custom_root.resolve()) in output
+
+
+# ---------------------------------------------------------------------------
+# fresh_scene fixture（issue #98）
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_scene_fixture(pytester: pytest.Pytester) -> None:
+    """fresh_scene：setup 时 scene_reload 恰好调 1 次，yield 出 bridge 本身，
+    teardown 不再调 scene_reload（每用例各 1 次，无额外调用）。
+    """
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+
+        RELOAD_COUNT: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return True
+            def start(self, **kw): pass
+            def stop(self): return 0
+            def current_port(self): return 9877
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def scene_reload(self): RELOAD_COUNT.append(1)
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"RELOAD_COUNT={RELOAD_COUNT}")
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_uses_fresh_scene(fresh_scene, bridge):
+            # fresh_scene 必须是 bridge 同一个对象
+            assert fresh_scene is bridge
+
+        def test_only_one_reload(fresh_scene):
+            pass
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=2)
+    output = result.stdout.str()
+    # 两个测试各调 1 次 scene_reload，合计 2 次
+    assert "RELOAD_COUNT=[1, 1]" in output, f"expected 2 reloads, got: {output}"
