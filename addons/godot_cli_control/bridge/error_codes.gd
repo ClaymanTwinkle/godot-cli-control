@@ -22,6 +22,8 @@ const SCENE_TREE_TOO_LARGE: int = 1005
 # client 必须保留对 1006 的处理（不要假设它消失），未来若改为 fail-loud
 # 会让 scene 切换瞬间的截图变成硬错。
 const RESOURCE_UNAVAILABLE: int = 1006
+# 信号不存在（wait_signal 的 schema 错，永久性——与 1003 method、1002 property 同族）
+const SIGNAL_NOT_FOUND: int = 1007
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600
