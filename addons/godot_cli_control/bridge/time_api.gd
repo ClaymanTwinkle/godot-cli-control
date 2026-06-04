@@ -76,6 +76,9 @@ func step_frames_async(params: Dictionary) -> Dictionary:
 			"step_frames requires the tree to be paused — call pause first",
 		)
 	get_tree().paused = false
+	# 并发边界：process_frame/physics_frame 是 SceneTree 信号，paused 下也照常
+	# 发射（pause 只停节点回调，不停主循环），所以即使推进期间有并发 pause RPC
+	# 把树暂停，本循环也不会挂死——只是被暂停的那些帧不推进游戏逻辑（帧数照计）。
 	for _i in frames:
 		if physics:
 			await get_tree().physics_frame
