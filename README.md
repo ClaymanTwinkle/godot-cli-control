@@ -210,7 +210,8 @@ If you don't want `init`, copy the plugin manually and enable it from the editor
 - **Default daemon port is now OS-assigned (was 9877).** The actual port is written to `.cli_control/port`; CLI subcommands and `GameClient()` (no port arg) auto-discover it. External scripts that hardcoded `127.0.0.1:9877` should either read `.cli_control/port` or pass `--port 9877` explicitly to `daemon start`.
 - **New: `godot-cli-control daemon ls`** — list daemons across all projects.
 - **New: `godot-cli-control daemon stop --all`** / **`--project <path>`** — batch / cross-project stop.
-- **New: `godot-cli-control daemon start --idle-timeout 30m`** — opt-in: auto-shutdown the Godot process after N minutes of no RPC activity. Default off.
+- **New: `godot-cli-control daemon start --idle-timeout 30m`** — opt-in: auto-shutdown the Godot process after N minutes of no RPC activity. Default off. A project-level default can live in `.cli_control/config.json` (`{"idle_timeout": "30m"}`); an explicit flag always wins.
+- **New: `GODOT_CLI_LONG_OP_TIMEOUT=<seconds>`** — raise the 600s client-side ceiling on long operations (e.g. recordings longer than 10 minutes). Non-positive / non-numeric values are ignored.
 
 ## Status
 
