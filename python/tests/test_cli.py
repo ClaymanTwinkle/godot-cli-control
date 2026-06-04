@@ -1932,6 +1932,62 @@ def test_set_default_still_json_parses() -> None:
     assert _resolve_value_for_set(ns) is True
 
 
+# ── _fmt_get_result_text 防御 + 文本渲染补测（review 遗留）──
+
+
+def test_fmt_get_result_text_nested_compound_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """嵌套复合 value（Array 内含 dict）在 --text 模式下渲染成 JSON 串，不崩。
+
+    info：client.request("get_property") 返回 {"value": [[1.0, 2.0], {"p": [3.0, 4.0, 5.0]}]}；
+    这种结构在普通 Python 属性里少见，但 agent 可能读到 custom Variant / Rect2 等。
+    """
+    from godot_cli_control.cli import OUTPUT_TEXT, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    import json as _json
+
+    spec = RPC_BY_NAME["get"]
+    ns = __import__("argparse").Namespace(
+        node_path="/root/Node", props=["weird"]
+    )
+
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(
+        return_value={"value": [[1.0, 2.0], {"p": [3.0, 4.0, 5.0]}]}
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_TEXT))
+
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    # 必须是合法 JSON 串（value 是复合类型，走 json.dumps 分支）
+    parsed = _json.loads(out)
+    assert parsed == [[1.0, 2.0], {"p": [3.0, 4.0, 5.0]}]
+
+
+def test_fmt_get_result_text_multi_prop_non_dict_entry_does_not_crash(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """多属性 result 中 entry 不是 dict（防御性非 dict 分支）不崩，打印为 str(entry)。
+
+    正常路径下服务端总是返回 dict，但防御性代码必须能接受非 dict 的 entry
+    （如 result.values["weird"] = 42 这种裸值，对齐 client 侧 guard）。
+    """
+    from godot_cli_control.cli import _fmt_get_result_text
+
+    # 多属性 result，values 里有一个非 dict 的裸值 42
+    r = {"values": {"weird": 42}}
+    out = _fmt_get_result_text(r)
+    # 不抛；渲染出来包含 key 和值
+    assert "weird" in out
+    assert "42" in out
+
+
 def test_call_text_value_disables_arg_parse() -> None:
     from godot_cli_control.cli import build_parser, _resolve_args_for_call
 

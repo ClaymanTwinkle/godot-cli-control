@@ -215,3 +215,40 @@ async def test_client_autodiscovers_port_from_control_dir(
     monkeypatch.chdir(project)
     async with GameClient() as client:  # 无 port → auto-discover
         assert await client.node_exists("/root/Main") is True
+
+
+@pytest.mark.asyncio
+async def test_client_get_properties_multi(daemon_port: Any) -> None:
+    """client.get_properties(path, props) 原子读——返回 dict，key 齐，每项是裸 value
+    （不含 type 字段）。覆盖 client.py get_properties 方法体（issue #100 direct-connect）。"""
+    _, port = daemon_port
+    async with GameClient(port=port) as client:
+        result = await client.get_properties("/root/Main", ["counter", "name"])
+        assert isinstance(result, dict), result
+        # 两个 key 都在
+        assert "counter" in result, result
+        assert "name" in result, result
+        # Python API 只给裸 value（不含 type），counter 是 int，name 是 str
+        assert isinstance(result["counter"], int), result
+        assert isinstance(result["name"], str), result
+
+
+@pytest.mark.asyncio
+async def test_client_request_get_property_has_type_field(daemon_port: Any) -> None:
+    """client.request('get_property', {...}) 对 Node2D.position 返回带 type 字段的对象。
+
+    Python API (get_property) 只给裸 value；要拿 type + value 必须走底层 request()。
+    这里直接断言 shape: {"value": [x, y], "type": "Vector2"}。
+    覆盖 issue #99 的服务端编码 + client.request 直通路径。"""
+    _, port = daemon_port
+    async with GameClient(port=port) as client:
+        result = await client.request(
+            "get_property", {"path": "/root/Main/Player", "property": "position"}
+        )
+        assert isinstance(result, dict), result
+        # value 是 list（Vector2 编码为数组）
+        assert "value" in result, result
+        assert isinstance(result["value"], list), result
+        assert len(result["value"]) == 2, result
+        # type 字段存在且是 "Vector2"
+        assert result.get("type") == "Vector2", result

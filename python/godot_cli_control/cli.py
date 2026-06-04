@@ -450,7 +450,7 @@ def _fmt_get_result_text(r: dict) -> str:
     """get 的文本渲染：单属性打印 value；多属性每行 ``prop = value``。"""
     if "values" in r:
         return "\n".join(
-            f"{prop} = {_fmt_get_text(entry.get('value'))}"
+            f"{prop} = {_fmt_get_text(entry.get('value') if isinstance(entry, dict) else entry)}"
             for prop, entry in r["values"].items()
         )
     return _fmt_get_text(r.get("value"))

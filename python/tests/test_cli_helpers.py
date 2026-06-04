@@ -94,11 +94,18 @@ def test_cmd_release_all() -> None:
 
 
 def test_cmd_get_returns_value_directly() -> None:
+    """cmd_get 单属性透传 client.request("get_property") 的完整 result（含 type 字段）。
+
+    注：cmd_get 自 #99 改为走 client.request 而非 client.get_property，
+    透传带 type 字段的 RPC result 给 agent 消歧；get_property 是裸 value 便捷层。
+    """
     client = AsyncMock()
-    client.get_property = AsyncMock(return_value=42)
-    result = _run(cli.cmd_get(client, _ns(node_path="/X", prop="value")))
-    assert result == 42
-    client.get_property.assert_awaited_once_with("/X", "value")
+    client.request = AsyncMock(return_value={"value": 42})
+    result = _run(cli.cmd_get(client, _ns(node_path="/X", props=["value"])))
+    assert result == {"value": 42}
+    client.request.assert_awaited_once_with(
+        "get_property", {"path": "/X", "property": "value"}
+    )
 
 
 def test_cmd_set_parses_json_value() -> None:
