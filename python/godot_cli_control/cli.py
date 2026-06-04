@@ -341,9 +341,21 @@ async def cmd_release_all(client: GameClient, ns: argparse.Namespace) -> dict:
 # ── 新增的 12 个 AI 友好命令 ──
 
 
-async def cmd_get(client: GameClient, ns: argparse.Namespace) -> Any:
-    """读节点属性，返回原值（字符串/数字/数组/对象/null）。"""
-    return await client.get_property(ns.node_path, ns.prop)
+async def cmd_get(client: GameClient, ns: argparse.Namespace) -> dict:
+    """读节点属性（1 个或多个，支持 sub-path 如 position:x）。
+
+    透传 RPC result（带 type 字段）——client.get_property 的裸 value 是给
+    Python 脚本的便捷层；CLI 信封必须带 type 给 agent 消歧（issue #99/#100）。
+    单属性 result={"value", "type"?}；多属性 result={"values": {...}}。
+    """
+    props: list[str] = ns.props
+    if len(props) == 1:
+        return await client.request(
+            "get_property", {"path": ns.node_path, "property": props[0]}
+        )
+    return await client.request(
+        "get_properties", {"path": ns.node_path, "properties": props}
+    )
 
 
 async def cmd_set(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -432,6 +444,16 @@ def _fmt_get_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False)
+
+
+def _fmt_get_result_text(r: dict) -> str:
+    """get 的文本渲染：单属性打印 value；多属性每行 ``prop = value``。"""
+    if "values" in r:
+        return "\n".join(
+            f"{prop} = {_fmt_get_text(entry.get('value'))}"
+            for prop, entry in r["values"].items()
+        )
+    return _fmt_get_text(r.get("value"))
 
 
 def _fmt_tree_text(tree: Any) -> str:
@@ -676,13 +698,17 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
         name="get",
         handler=cmd_get,
-        description="读节点属性。",
+        description=(
+            "读节点属性（1 个或多个；多个时服务端同帧原子读，issue #100）。"
+            "复合类型（Vector2 等）返回与 set 同 schema 的数组 + type 字段，"
+            "可直接回灌 set（issue #99）。支持 sub-path：position:x。"
+        ),
         positionals=(
             Positional("node_path", None, "绝对节点路径，如 /root/Main"),
-            Positional("prop", None, "属性名，如 position / text / visible"),
+            Positional("props", "+", "属性名，1 个或多个；支持 sub-path 如 position:x"),
         ),
-        example="get /root/Main/Score text",
-        text_formatter=_fmt_get_text,
+        example="get /root/Player position visible",
+        text_formatter=_fmt_get_result_text,
     ),
     RpcSpec(
         name="set",
