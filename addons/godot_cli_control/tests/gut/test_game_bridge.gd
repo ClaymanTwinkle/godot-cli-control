@@ -107,6 +107,7 @@ var _wait: StubWaitApi
 var _scene: SceneApi
 var _time: TimeApi
 var _render: RenderApi
+var _diag: DiagnosticsApi
 
 
 func before_each() -> void:
@@ -138,12 +139,17 @@ func before_each() -> void:
 	_render.name = "RenderApi"
 	add_child_autofree(_render)
 
+	_diag = DiagnosticsApi.new()
+	_diag.name = "DiagnosticsApi"
+	add_child_autofree(_diag)
+
 	_bridge._low_level_api = _low
 	_bridge._input_sim_api = _input
 	_bridge._wait_api = _wait
 	_bridge._scene_api = _scene
 	_bridge._time_api = _time
 	_bridge._render_api = _render
+	_bridge._diag_api = _diag
 	# InputSim 的 callback：bridge 的 _on_async_response 把 (id, result) 转回 dispatch
 	_input.setup(_bridge._on_async_response)
 	_bridge._register_methods()
@@ -533,3 +539,8 @@ func test_registry_has_time_methods() -> void:
 func test_registry_has_sprite_info() -> void:
 	assert_true(_bridge._methods.has("sprite_info"), "sprite_info 应已注册（issue #101）")
 	assert_eq(str(_bridge._methods["sprite_info"]["kind"]), "sync")
+
+
+func test_registry_has_errors() -> void:
+	assert_true(_bridge._methods.has("errors"), "errors 应已注册（issue #103）")
+	assert_eq(str(_bridge._methods["errors"]["kind"]), "sync")

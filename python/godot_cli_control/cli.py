@@ -390,6 +390,10 @@ async def cmd_sprite_info(client: GameClient, ns: argparse.Namespace) -> dict:
     return await client.sprite_info(ns.node_path)
 
 
+async def cmd_errors(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.errors(since=ns.since, limit=ns.limit)
+
+
 async def cmd_tree(client: GameClient, ns: argparse.Namespace) -> dict:
     depth = int(ns.depth) if ns.depth else 3
     return await client.get_scene_tree(depth=depth, max_nodes=ns.max_nodes)
@@ -605,6 +609,39 @@ def _fmt_screenshot_text(r: dict) -> str:
 def _fmt_sprite_info_text(r: dict) -> str:
     # 聚合 payload 字段多且按类型变化，text 模式直接缩进 JSON（人读）
     return json.dumps(r, ensure_ascii=False, indent=2)
+
+
+def _fmt_errors_text(r: dict) -> str:
+    entries = r.get("errors", [])
+    if not entries:
+        return f"no new errors (marker={r.get('marker')})"
+    lines = [
+        f"[{e.get('type')}] {e.get('message')}  ({e.get('source') or e.get('file')})"
+        for e in entries
+    ]
+    suffix = f"marker={r.get('marker')}"
+    if r.get("truncated"):
+        suffix += " truncated=true"
+    if r.get("dropped"):
+        suffix += f" dropped={r.get('dropped')}"
+    return "\n".join(lines) + f"\n({suffix})"
+
+
+def _register_errors_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--since",
+        type=int,
+        default=0,
+        metavar="MARKER",
+        help="只看 seq > MARKER 的新增（传上一次响应的 marker，实现「本用例期间」语义）",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        metavar="N",
+        help="最多返回 N 条（0..1000；0 = 纯基线查询，只拿 marker 不取数据）",
+    )
 
 
 def _register_screenshot_args(p: argparse.ArgumentParser) -> None:
@@ -829,6 +866,20 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         ),
         example="sprite-info /root/Game/Player/Sprite",
         text_formatter=_fmt_sprite_info_text,
+    ),
+    RpcSpec(
+        name="errors",
+        handler=cmd_errors,
+        description=(
+            "结构化查询运行期捕获的 push_error / push_warning（issue #103）。"
+            "返回 {errors, marker, dropped, truncated}；--since 传上次 marker "
+            "只看新增（「本用例期间应零 push_error」断言的原语），--limit 0 "
+            "纯拿基线。需 Godot 4.5+（Logger API），老引擎报 1012。"
+        ),
+        positionals=(),
+        example="errors --since 42",
+        extra_args=_register_errors_args,
+        text_formatter=_fmt_errors_text,
     ),
     RpcSpec(
         name="tree",
@@ -1362,6 +1413,47 @@ def cmd_daemon_status(ns: argparse.Namespace) -> int:
     return EXIT_RPC_ERROR
 
 
+def cmd_daemon_logs(ns: argparse.Namespace) -> int:
+    """输出 .cli_control/godot.log 尾部若干行（issue #103）。
+
+    纯客户端读文件，不走 RPC —— daemon 已退出也能 post-mortem（与
+    ``daemon status`` 透出 last_log 的语义衔接：status 告诉你日志在哪，
+    logs 直接把尾部喂给你，免去 agent 再 shell 出去 tail + 找路径）。
+
+    JSON 模式：``{"ok": true, "result": {"path": ..., "lines": [...],
+    "returned": N}}``；无日志文件 → ``-1006`` infra 前置失败，exit 2。
+    """
+    from .daemon import Daemon
+
+    fmt = _output_format(ns)
+    daemon = Daemon(Path.cwd())
+    if not daemon.log_file.exists():
+        _emit_top_error(
+            ns,
+            code=CLIENT_CODE_PRECONDITION,
+            message=(
+                f"no daemon log at {daemon.log_file} — daemon 从未在该项目启动过"
+                "（或 .cli_control/ 被清理）。先 daemon start。"
+            ),
+        )
+        return EXIT_INFRA_ERROR
+    tail: int = ns.tail
+    text = daemon.log_file.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()[-tail:]
+    payload: dict[str, Any] = {
+        "path": str(daemon.log_file),
+        "lines": lines,
+        "returned": len(lines),
+    }
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload(payload)
+    else:
+        for line in lines:
+            print(line)
+        print(f"({payload['path']}, last {len(lines)} lines)")
+    return EXIT_OK
+
+
 def cmd_daemon_ls(ns: argparse.Namespace) -> int:
     """跨项目列出运行中的 daemon。
 
@@ -1781,6 +1873,7 @@ _TOP_EPILOG = """\
     daemon start    启动 Godot daemon（可选录制 / headless）
     daemon stop     停止当前 daemon
     daemon status   显示 daemon 状态（pid / port），exit 0=运行中，1=未运行
+    daemon logs     输出 godot.log 尾部（--tail N；daemon 停了也能 post-mortem）
     run <script>    自动启停 daemon 并跑用户脚本（脚本需定义 run(bridge)）
 
   接入:
@@ -1792,6 +1885,7 @@ _TOP_EPILOG = """\
     输入：   press / release / tap / hold / combo / combo-cancel / release-all
     等待：   wait-node / wait-time
     截图：   screenshot（--node 按节点裁剪）
+    诊断：   errors（push_error 结构化增量查询）
 
 输出契约（默认 --json，AI 友好）:
   成功： {"ok": true, "result": <data>}        单行 stdout，exit 0
@@ -1804,6 +1898,17 @@ _TOP_EPILOG = """\
   godot-cli-control combo -h        # 含 step JSON schema 与示例
   godot-cli-control daemon start -h
 """
+
+
+def _tail_arg(raw: str) -> int:
+    """argparse type：daemon logs --tail 的域校验（1..1000，错误走 -1003 + 64）。"""
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--tail 必须是整数，收到 {raw!r}")
+    if not 1 <= value <= 1000:
+        raise argparse.ArgumentTypeError(f"--tail 必须在 1..1000，收到 {value}")
+    return value
 
 
 def _time_scale_arg(raw: str) -> float:
@@ -2040,6 +2145,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_output_format_flags(status_p)
+
+    logs_p = daemon_subs.add_parser(
+        "logs",
+        help="输出 godot.log 尾部（daemon 停了也能查）",
+        description=(
+            "直接输出 .cli_control/godot.log 的最后 N 行（JSON 信封包裹），"
+            "免去先 daemon status 拿路径再 tail。纯客户端读文件：daemon "
+            "已退出时同样可用（post-mortem 排查启动失败/崩溃）。"
+            "无日志文件 → -1006，exit 2。"
+        ),
+    )
+    logs_p.add_argument(
+        "--tail",
+        type=_tail_arg,
+        default=50,
+        metavar="N",
+        help="返回最后 N 行（1..1000，默认 50）",
+    )
+    _add_output_format_flags(logs_p)
 
     ls_p = daemon_subs.add_parser(
         "ls",
@@ -2304,6 +2428,8 @@ def main() -> None:
             sys.exit(cmd_daemon_stop(ns))
         if ns.action == "status":
             sys.exit(cmd_daemon_status(ns))
+        if ns.action == "logs":
+            sys.exit(cmd_daemon_logs(ns))
         if ns.action == "ls":
             sys.exit(cmd_daemon_ls(ns))
         parser.error(f"unknown daemon action: {ns.action}")

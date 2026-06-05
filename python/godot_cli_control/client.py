@@ -334,6 +334,15 @@ class GameClient:
         """
         return await self.request("sprite_info", {"path": path})
 
+    async def errors(self, since: int = 0, limit: int = 100) -> dict:
+        """结构化 push_error / push_warning 增量查询（issue #103）。
+
+        返回 ``{"errors": [...], "marker": int, "dropped": int, "truncated": bool}``；
+        ``since`` 传上次的 ``marker`` 只看新增，``limit=0`` 是纯基线查询
+        （拿 marker 不取数据）。需 Godot 4.5+（Logger API），老引擎 → 1012。
+        """
+        return await self.request("errors", {"since": since, "limit": limit})
+
     async def get_scene_tree(
         self, depth: int = 5, max_nodes: int | None = None
     ) -> dict:

@@ -40,6 +40,10 @@ const UNSUPPORTED_NODE_TYPE: int = 1010
 # 变换后尺寸为零。状态类错（与 1009 同族）——参数没问题，是世界状态不满足；
 # agent 应先把节点挪进视口（移动 camera / 改 position / 等动画到位）再截。
 const NODE_NOT_ON_SCREEN: int = 1011
+# 引擎能力缺失（issue #103）：errors 捕获需要 Godot 4.5+ 的 Logger API，
+# 老引擎上该 RPC 永久不可用。与 1006 区分：不是 transient，升级引擎前
+# 重试无意义；与 1010 区分：错的不是目标节点，是宿主引擎版本。
+const FEATURE_UNAVAILABLE: int = 1012
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600

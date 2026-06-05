@@ -66,12 +66,14 @@ godot-cli-control daemon stop              # stop cwd-project daemon (rc 0; rc 2
 godot-cli-control daemon stop --project /path/to/other/godot/project
 godot-cli-control daemon stop --all        # stop every registered daemon; exit 3 if any failed
 godot-cli-control daemon ls                # list all running daemons (cross-project, walks the registry)
+godot-cli-control daemon logs --tail 50    # last N lines of godot.log (works after the daemon died, too)
 ```
 
 - **`daemon status` payload when running**: `{"state": "running", "pid": N, "port": M}`.
 - **`daemon status` payload when stopped**: `{"state": "stopped"}`. If the previous launch wrote `.cli_control/godot.log` or recorded an exit code, the envelope also includes `"last_log": "<path>"` and/or `"last_exit_code": <int>` — use these to diagnose why the daemon died without manually grepping under `.cli_control/`.
 - **`daemon ls` payload**: `{"daemons": [{"project_root", "pid", "port", "started_at", "godot_bin", "log_path"}, ...]}`. Dead records (PID gone) are auto-pruned on each call, so this is the canonical list of *actually-alive* daemons across all projects on the machine.
 - **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-project stop result; the top-level `rc` is the aggregate exit code.
+- **`daemon logs [--tail N]` payload**: `{"path": "<godot.log>", "lines": [...], "returned": N}` (default 50, max 1000). Reads the file client-side — **no RPC**, so it works post-mortem after the daemon crashed or stopped (the companion to `daemon status`'s `last_log` hint: status tells you where the log is, `logs` hands you the tail directly). No log file yet → `-1006`, exit 2.
 - **`daemon start --time-scale N`**: sets `Engine.time_scale = N` (range `(0, 100]`) from the very first frame of the Godot process. Useful to run an entire test suite at e.g. 5× speed. **Asymmetry**: `run <script>` mode does not support `--time-scale` as a startup flag — inside the script call `bridge.time_scale(5)` on the first line instead; or use `daemon start --time-scale 5` beforehand and connect the script to the already-running daemon.
 
 ## JSON envelope examples
@@ -132,6 +134,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `1009` | NOT_PAUSED: `step-frames` was called while the scene tree is not paused. This is a state precondition error, not a parameter error — the frames value is valid, but the world state doesn't satisfy the prerequisite. Call `pause` first, then `step-frames`. Don't confuse with `-32602` (bad param value) or `-1003` (CLI usage error). |
 | `1010` | UNSUPPORTED_NODE_TYPE: `sprite-info` on a node that isn't `Sprite2D` / `AnimatedSprite2D` / `TextureRect`, or `screenshot --node` on a node whose bounds can't be determined (not a CanvasItem, or no size/rect/texture to measure). Schema-class permanent error — pick a different node (often a child sprite of the one you tried) or a different command; retrying is pointless. |
 | `1011` | NODE_NOT_ON_SCREEN: `screenshot --node` resolved the node and computed its rect, but the rect doesn't intersect the viewport (off-screen, or zero visible size). State-class error (like `1009`): the arguments are fine, the world isn't — move the camera / the node, or wait for it to enter view, then retry. |
+| `1012` | FEATURE_UNAVAILABLE: the engine hosting the daemon lacks an API this RPC needs. Currently only `errors` (push_error capture requires Godot 4.5+'s `Logger`). Permanent for that engine — don't retry; upgrade Godot or drop the `errors` / `no_push_errors` usage. |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 
@@ -207,6 +210,12 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
   - `Sprite2D`: `texture`, `flip_h/v`, `frame`, `frame_coords`, `hframes/vframes`, `region_enabled`, `region_rect`, and **`effective_region` `[x,y,w,h]`** — the atlas rect actually being drawn (region wins when enabled, else computed from the frame grid). Assert "the sprite shows frame N" against this instead of reading internal bookkeeping fields.
   - `AnimatedSprite2D`: `sprite_frames`, `animation`, `frame`, `playing`, `speed_scale`, `flip_h/v`, and **`frame_texture`** — the texture of the *current* frame (distinguishes FRONT vs BACK frames that no plain property exposes).
   - `TextureRect`: `texture`, `flip_h/v`, `stretch_mode`, `expand_mode`, `size`.
+
+**Diagnostics:**
+- `errors [--since MARKER] [--limit N]` — structured query of `push_error` / `push_warning` captured at runtime (Godot 4.5+ `Logger`; older engines → `1012`). Returns `{"errors": [{seq, type, message, source, file, line, unix_time, ticks_msec}], "marker": int, "dropped": int, "truncated": bool}`:
+  - `type`: `"error"` / `"warning"` / `"script"` / `"shader"`; `source` is the GDScript call site (`res://x.gd:12 @ func`) from the backtrace — far more useful than `file`/`line` (the C++ origin).
+  - **Cursor pattern**: grab a baseline with `errors --limit 0` (returns just `marker`), run your action, then `errors --since <marker>` to see *only what that action produced*. This is the primitive behind "this test must produce zero push_errors" — the only e2e-level defense against silently-swallowed failures.
+  - `dropped > 0` means an error storm overflowed the ring buffer (last 1000 kept); `truncated` means more matched than `--limit` — page with `--since <returned marker>`.
 
 ### `set` / `call` security blacklist
 
@@ -359,6 +368,10 @@ positional arguments:
                   TextureRect 的 texture、实际图集区域（effective_region /
                   frame_texture）、翻转、帧号、modulate、visible 一次拿齐。纯属性读，headless
                   可用。非 sprite 类节点 → 1010。
+    errors        结构化查询运行期捕获的 push_error / push_warning（issue #103）。返回
+                  {errors, marker, dropped, truncated}；--since 传上次 marker
+                  只看新增（「本用例期间应零 push_error」断言的原语），--limit 0 纯拿基线。需 Godot
+                  4.5+（Logger API），老引擎报 1012。
     tree          dump 当前场景树为 JSON。
     press         按下输入动作（持续按住，需配 release 释放）。
     release       释放之前 press 按下的输入动作。
@@ -417,6 +430,7 @@ options:
     daemon start    启动 Godot daemon（可选录制 / headless）
     daemon stop     停止当前 daemon
     daemon status   显示 daemon 状态（pid / port），exit 0=运行中，1=未运行
+    daemon logs     输出 godot.log 尾部（--tail N；daemon 停了也能 post-mortem）
     run <script>    自动启停 daemon 并跑用户脚本（脚本需定义 run(bridge)）
 
   接入:
@@ -428,6 +442,7 @@ options:
     输入：   press / release / tap / hold / combo / combo-cancel / release-all
     等待：   wait-node / wait-time
     截图：   screenshot（--node 按节点裁剪）
+    诊断：   errors（push_error 结构化增量查询）
 
 输出契约（默认 --json，AI 友好）:
   成功： {"ok": true, "result": <data>}        单行 stdout，exit 0
@@ -450,6 +465,7 @@ positional arguments:
     start     启动 daemon
     stop      停止 daemon
     status    查询 daemon 状态
+    logs      输出 godot.log 尾部（daemon 停了也能查）
     ls        列出所有正在运行的 daemon（跨项目）
 
 options:
@@ -509,6 +525,20 @@ port=<port>），1 = 未运行（输出 stopped）。默认输出 JSON 信封；
 
 options:
   -h, --help  show this help message and exit
+  --json      输出 JSON 信封（默认）
+  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json   --text 别名
+
+$ godot-cli-control daemon logs --help
+usage: godot-cli-control daemon logs [-h] [--tail N] [--json] [--text]
+                                     [--no-json]
+
+直接输出 .cli_control/godot.log 的最后 N 行（JSON 信封包裹），免去先 daemon status 拿路径再
+tail。纯客户端读文件：daemon 已退出时同样可用（post-mortem 排查启动失败/崩溃）。无日志文件 → -1006，exit 2。
+
+options:
+  -h, --help  show this help message and exit
+  --tail N    返回最后 N 行（1..1000，默认 50）
   --json      输出 JSON 信封（默认）
   --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json   --text 别名
@@ -655,6 +685,23 @@ options:
 
 示例:
   godot-cli-control sprite-info /root/Game/Player/Sprite
+
+$ godot-cli-control errors --help
+usage: godot-cli-control errors [-h] [--since MARKER] [--limit N] [--json]
+                                [--text] [--no-json]
+
+结构化查询运行期捕获的 push_error / push_warning（issue #103）。返回 {errors, marker, dropped, truncated}；--since 传上次 marker 只看新增（「本用例期间应零 push_error」断言的原语），--limit 0 纯拿基线。需 Godot 4.5+（Logger API），老引擎报 1012。
+
+options:
+  -h, --help      show this help message and exit
+  --since MARKER  只看 seq > MARKER 的新增（传上一次响应的 marker，实现「本用例期间」语义）
+  --limit N       最多返回 N 条（0..1000；0 = 纯基线查询，只拿 marker 不取数据）
+  --json          输出 JSON 信封（默认）
+  --text          输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json       --text 别名
+
+示例:
+  godot-cli-control errors --since 42
 
 $ godot-cli-control tree --help
 usage: godot-cli-control tree [-h] [--max-nodes MAX_NODES] [--json] [--text]
@@ -1212,6 +1259,7 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | `await client.screenshot(node=None)` | `screenshot <path> [--node <node-path>]` — returns PNG bytes; pass `node` to crop to that node's screen rect |
 | `await client.screenshot_raw(node=None)` | raw response incl. `region` (the actual crop rect the CLI envelope shows) |
 | `await client.sprite_info(path)` | `sprite-info <node-path>` |
+| `await client.errors(since=0, limit=100)` | `errors [--since MARKER] [--limit N]` — `limit=0` is a marker-only baseline query |
 | `await client.get_scene_tree(depth, max_nodes=None)` | `tree [depth] [--max-nodes N]` |
 | `await client.wait_for_node(path, timeout)` | `wait-node <path> [timeout]` |
 | `await client.wait_game_time(seconds)` | `wait-time <seconds>` |
@@ -1254,7 +1302,7 @@ def run(bridge):
 
 ## pytest plugin (preferred for end-to-end test suites)
 
-`pip install godot-cli-control[pytest]` registers a `pytest11` entry-point that exposes three fixtures, so a Godot e2e test is a one-liner:
+`pip install godot-cli-control[pytest]` registers a `pytest11` entry-point that exposes four fixtures, so a Godot e2e test is a one-liner:
 
 ```python
 def test_jump(godot_daemon, bridge):
@@ -1266,6 +1314,9 @@ def test_jump(godot_daemon, bridge):
 - **`godot_daemon`** *(session-scoped)*: starts the daemon for the whole test session and stops it at teardown. If a daemon was **already running** when the session started, the fixture leaves it alone — neither restarts nor kills it. Same test file works in CI and during interactive development.
 - **`bridge`** *(function-scoped)*: a fresh `GameBridge` per test; on teardown it calls `release_all()` and closes the socket so a `hold`/`press` left dangling by one test can't bleed into the next. It also restores engine-global time state: best-effort `unpause` + reset `Engine.time_scale` to the value snapshotted at test setup (so `--godot-cli-time-scale 5` suite-wide acceleration survives), preventing a test that crashed after `pause` or `time-scale` from freezing / fast-forwarding every later test.
 - **`fresh_scene`** *(function-scoped)*: reloads the current scene before the test so it starts from a clean state; yields the same `bridge` object. Use this as a lightweight per-test isolation primitive whenever leftover scene state between tests would cause flakiness — it's cheaper than restarting the daemon. Requires the project to actually *have* a current scene: in autoload-only / no-main-scene startup states (`get_tree().current_scene == null`) the setup's `scene_reload` fails loudly with error `1008` before the test body runs — drive the project into a scene first (e.g. `scene-change res://...`), or don't use this fixture for those cases.
+- **`no_push_errors`** *(function-scoped, opt-in)*: the test fails if the game emitted any new `push_error` during it — the e2e defense against silently-swallowed failures (business assertions green, but the game logged an error). Snapshots the `errors` marker at setup, queries the increment at teardown; yields the same `bridge` object. Warnings don't fail it (query `bridge.errors()` yourself for stricter policies). Two caveats: the failure surfaces as a pytest **ERROR** (teardown-phase) rather than FAIL — same red, different label; and it needs Godot 4.5+ (`Logger` API) — on older engines setup raises `RpcError 1012` (fail-loud beats fake-green).
+
+On a test failure (call phase, test used `bridge`, daemon **not** headless), the plugin also saves a screenshot to `<project_root>/.cli_control/failures/<nodeid>.png` automatically and notes the path in the report sections — CI debugging goes from "re-run with extra logging" to "look at the picture". Headless runs skip this (dummy renderer can't screenshot); screenshot failures never mask the original test failure.
 
 ```python
 def test_score_resets_on_reload(godot_daemon, fresh_scene):
@@ -1324,6 +1375,8 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Sub-path reading a non-existent leaf returns `null` — indistinguishable from a real `null` value (typo only detected at the top-level name).** `get /root/Node position:typo` returns `{"value": null}` with no error — the `":" `suffix is not validated beyond checking that `"position"` exists as a top-level property. Verify your leaf name carefully; the only error you'll get is `1002` if the part before `":"` itself doesn't exist.
 - **Python API (`bridge.get_property` / `bridge.get_properties`) returns bare values only — no `type` field.** These convenience methods strip the `type` from the server response to reduce boilerplate. When you need the `type` field (e.g. to distinguish `Vector2` from a plain 2-element array), go through `client.request("get_property", {"path": ..., "property": ...})` directly.
 - **After `scene-change` / `scene-reload`, all node paths from the previous scene are stale** — re-locate nodes with `wait-node` before touching them. The new scene root is a brand-new tree; any path cached from the old scene will return `1001 "node not found"`.
+- **"Tests green but the game logged errors" is undetectable unless you assert it — use `no_push_errors` (pytest) or the `errors --since` cursor (shell).** Business-level assertions can't see a `push_error` the game swallowed (the classic: a sprite fails to load, the NPC silently doesn't render, every position check still passes). Baseline `errors --limit 0` → act → `errors --since <marker>`. Needs Godot 4.5+ (error `1012` otherwise). Note `errors` only sees what was pushed *after* the bridge booted, and its ring keeps the last 1000 entries (`dropped > 0` = storm overflow).
+- **`daemon logs --tail N` works after the daemon died — use it first when the daemon won't start or vanished.** It reads `.cli_control/godot.log` client-side (no RPC, no connection). Don't `daemon status` → copy path → shell `tail` — `logs` is that, in one envelope.
 - **Asserting "what does this sprite actually show" — use `sprite-info` (headless-safe), not internal bookkeeping fields; use `screenshot --node` only when you truly need pixels.** `sprite-info`'s `effective_region` / `frame_texture` tell you which atlas rect / frame texture is being drawn — that covers most "is it facing left / showing frame N / mirrored" assertions without a renderer. `screenshot --node` needs a real renderer (headless → `1006` like any screenshot) and is for pixel-level comparison; its `1010` (can't bound the node) usually means you pointed at a container — aim at the child sprite instead; `1011` means the node is off-screen right now.
 - **`scene-reload` returning means the OLD scene instance was freed — never reuse node references/paths cached before the reload.** The command blocks until the new scene is ready, but the path strings that were valid in the old scene may now point to different nodes or nothing at all. Always re-query after a reload.
 - **`fresh_scene` (pytest fixture) errors with `1008` before the test body even runs — the project has no current scene.** Autoload-only / no-main-scene startup states have `get_tree().current_scene == null`, and the fixture's setup calls `scene_reload`, which then fails loudly with `1008`. This is intended (the fixture's contract is "this test starts with a clean *scene*"), not a daemon problem. Either drive the project into a scene first (`scene-change res://...`) or don't request `fresh_scene` for those tests.
@@ -1334,4 +1387,4 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ---
 
-Generated from godot-cli-control v0.2.15.dev45+ge18d90810.d20260605. Re-run `godot-cli-control init --skills-only` to refresh.
+Generated from godot-cli-control v0.2.15.dev46+gcbba9e534.d20260605. Re-run `godot-cli-control init --skills-only` to refresh.

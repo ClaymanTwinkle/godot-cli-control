@@ -21,6 +21,7 @@ CLI 选项：
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -149,3 +150,75 @@ def fresh_scene(bridge: GameBridge) -> Iterator[GameBridge]:
     """
     bridge.scene_reload()
     yield bridge
+
+
+@pytest.fixture
+def no_push_errors(bridge: GameBridge) -> Iterator[GameBridge]:
+    """Opt-in（issue #103）：用例期间出现新 push_error → 用例失败。
+
+    「游戏静默吞错」类 bug 的唯一 e2e 级防线 —— 业务断言全绿、但代码里
+    push_error 了，这个 fixture 让它红出来。setup 记 errors marker，
+    teardown 查增量；warning 级不算失败（要更严格自己查 bridge.errors()）。
+
+    注意：
+      - teardown 阶段的失败在 pytest 里表现为 ERROR（非 FAIL）——这是
+        pytest fixture 的固有语义，结果一样是红的；
+      - 需 Godot 4.5+（Logger API）。老引擎上 setup 即抛 RpcError 1012 ——
+        fail-loud：宁可红，也不让「断言了零错误」变成假绿。
+
+        def test_load_npc(godot_daemon, no_push_errors):
+            no_push_errors.click("/root/Game/SpawnNpc")   # 即 bridge
+    """
+    marker = int(bridge.errors(limit=0)["marker"])
+    yield bridge
+    result = bridge.errors(since=marker, limit=100)
+    bad = [e for e in result.get("errors", []) if e.get("type") != "warning"]
+    if bad:
+        lines = [
+            f"  - [{e.get('type')}] {e.get('message')}"
+            f" ({e.get('source') or e.get('file')})"
+            for e in bad
+        ]
+        extra = "（已截断，还有更多）" if result.get("truncated") else ""
+        pytest.fail(
+            f"用例期间捕获到 {len(bad)} 条 push_error{extra}:\n" + "\n".join(lines),
+            pytrace=False,
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    """失败自动截图（issue #103）：用例 call 阶段失败且用了 bridge、daemon
+    非 headless（headless 截图必 1006，白费）时，best-effort 截到
+    ``<project_root>/.cli_control/failures/<nodeid>.png``，路径写进 report
+    sections（``-rA`` 或失败摘要里可见）。截图自身的任何异常都吞掉 ——
+    诊断辅助不允许掩盖原始失败。
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if report.when != "call" or not report.failed:
+        return
+    bridge_obj = getattr(item, "funcargs", {}).get("bridge")
+    if bridge_obj is None:
+        return
+    config = item.config
+    headless = not config.getoption("--godot-cli-no-headless")
+    if headless:
+        return
+    project_root_opt = config.getoption("--godot-cli-project-root")
+    root = (
+        Path(project_root_opt).resolve()
+        if project_root_opt
+        else Path(str(config.rootpath)).resolve()
+    )
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", item.nodeid)[:150]
+    path = root / ".cli_control" / "failures" / f"{safe}.png"
+    try:
+        bridge_obj.screenshot(str(path))
+        report.sections.append(
+            ("godot-cli-control", f"failure screenshot: {path}")
+        )
+    except Exception as exc:  # noqa: BLE001 — 诊断辅助，绝不让截图失败掩盖原失败
+        report.sections.append(
+            ("godot-cli-control", f"failure screenshot failed: {exc}")
+        )
