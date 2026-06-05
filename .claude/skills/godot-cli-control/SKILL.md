@@ -627,7 +627,7 @@ GODOT_BIN 查找顺序：
   1. 环境变量 GODOT_BIN
   2. 项目根 .cli_control/godot_bin 文件（init 检测到时会写入）
   3. macOS /Applications/Godot*.app/Contents/MacOS/Godot
-  4. PATH 上的 godot4 / godot / Godot
+  4. PATH 上的 godot4 / godot / Godot，及 mono 别名 godot4-mono / godot-mono / godot_mono / Godot_mono
   5. Windows Program Files\Godot*\Godot*.exe
 都没找到时 init 会打 warning，daemon start 会直接报错。
 可以手动 `export GODOT_BIN=/path/to/godot` 或写到 .cli_control/godot_bin。
@@ -1389,4 +1389,4 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ---
 
-Generated from godot-cli-control v0.2.15.dev46+gcbba9e534.d20260605. Re-run `godot-cli-control init --skills-only` to refresh.
+Generated from godot-cli-control v0.2.16.dev0+g206cc6f53.d20260605. Re-run `godot-cli-control init --skills-only` to refresh.

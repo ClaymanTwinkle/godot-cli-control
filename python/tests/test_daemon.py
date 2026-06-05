@@ -17,6 +17,7 @@ from godot_cli_control.daemon import (
     _allocate_port,
     _process_alive,
     _wait_port_ready,
+    find_godot_binary,
 )
 
 
@@ -138,6 +139,42 @@ def test_read_godot_bin_pref_ignores_dead_path(tmp_path: Path) -> None:
     daemon.control_dir.mkdir()
     (daemon.control_dir / "godot_bin").write_text("/not/real/godot\n")
     assert daemon.read_godot_bin_pref() is None
+
+
+@pytest.mark.parametrize(
+    "alias", ["godot4-mono", "godot-mono", "godot_mono", "Godot_mono"]
+)
+def test_find_godot_binary_finds_mono_alias_on_path(
+    alias: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """标准名都不在 PATH 时，.NET/mono 版的常见别名也要能命中。
+
+    平台固定成 linux：跳过 macOS /Applications glob（开发机上真有
+    Godot.app 会先命中）与 Windows Program Files glob，让 PATH 这级
+    在三平台 CI 上都被确定性地测到。
+    """
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.shutil.which",
+        lambda name: f"/usr/bin/{name}" if name == alias else None,
+    )
+    assert find_godot_binary() == f"/usr/bin/{alias}"
+
+
+def test_find_godot_binary_prefers_standard_over_mono(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """标准版与 mono 版同时在 PATH 时优先标准版（更轻量）。"""
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    table = {
+        "godot": "/usr/bin/godot",
+        "godot-mono": "/usr/bin/godot-mono",
+        "Godot_mono": "/usr/bin/Godot_mono",
+    }
+    monkeypatch.setattr("godot_cli_control.daemon.shutil.which", table.get)
+    assert find_godot_binary() == "/usr/bin/godot"
 
 
 def test_stop_handles_missing_pid_file(tmp_path: Path) -> None:

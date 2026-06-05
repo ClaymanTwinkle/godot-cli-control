@@ -419,6 +419,10 @@ def find_godot_binary() -> str | None:
     """查找可用的 Godot 二进制。
 
     优先级：``GODOT_BIN`` env > macOS /Applications > PATH > Windows Program Files。
+    PATH 候选名含 .NET/mono 版常见别名（godot4-mono / godot-mono / godot_mono /
+    Godot_mono），排标准名之后——两版都装时优先轻量的标准版。macOS /Applications
+    与 Windows Program Files 两级的 glob 天然匹配 ``Godot_mono.app`` / mono exe
+    （mono 版 .app 内部可执行文件仍叫 ``Godot``），无需单列。
     """
     env_bin = os.environ.get("GODOT_BIN")
     if env_bin and Path(env_bin).is_file() and os.access(env_bin, os.X_OK):
@@ -431,7 +435,15 @@ def find_godot_binary() -> str | None:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
 
-    for name in ("godot4", "godot", "Godot"):
+    for name in (
+        "godot4",
+        "godot",
+        "Godot",
+        "godot4-mono",
+        "godot-mono",
+        "godot_mono",
+        "Godot_mono",
+    ):
         p = shutil.which(name)
         if p:
             return p
