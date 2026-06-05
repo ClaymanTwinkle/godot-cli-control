@@ -600,7 +600,7 @@ bridge 是 GameClient 的同步包装，方法名一致、无需 await。
 脚本同目录的兄弟模块（from helpers import foo）可正常 import。
 
 $ godot-cli-control init --help
-usage: godot-cli-control init [-h] [--path PATH] [--force]
+usage: godot-cli-control init [-h] [--path PATH] [--force | --keep-addon]
                               [--skills-no-clobber] [--no-gitignore]
                               [--no-skills | --skills-only] [--json] [--text]
                               [--no-json]
@@ -610,7 +610,9 @@ usage: godot-cli-control init [-h] [--path PATH] [--force]
 options:
   -h, --help           show this help message and exit
   --path PATH          目标 Godot 项目根（默认当前目录）
-  --force              覆盖已存在的 addons/godot_cli_control
+  --force              覆盖已存在的 addons/godot_cli_control（现已是默认行为，本 flag 仅为兼容保留）
+  --keep-addon         已存在 addons/godot_cli_control 时跳过插件复制（保留本地版本，不随 CLI
+                       升级刷新；默认会覆盖以同步版本）
   --skills-no-clobber  写 skill 时跳过已存在的 .claude/.codex SKILL.md（默认会覆盖以保证版本与 CLI
                        帮助同步）。与 --no-skills / --skills-only 都兼容。
   --no-gitignore       跳过往项目根 .gitignore 追加 .cli_control/（默认会追加，忽略 daemon

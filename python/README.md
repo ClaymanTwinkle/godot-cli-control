@@ -25,7 +25,7 @@ godot-cli-control tree 3
 godot-cli-control daemon stop
 ```
 
-`init` is idempotent — running it twice on the same project does nothing the second time. Pass `--force` to overwrite an existing `addons/godot_cli_control/`.
+Re-running `init` refreshes both `addons/godot_cli_control/` and the SKILL.md files to match the installed CLI version (the plugin directory is wiped and re-copied; `project.godot` patching stays idempotent). Pass `--keep-addon` to keep an existing `addons/godot_cli_control/` untouched.
 
 `init` also writes `.claude/skills/godot-cli-control/SKILL.md` and `.codex/skills/godot-cli-control/SKILL.md` so AI agents working in your Godot project can pick up this CLI surface automatically. Use `--no-skills` to skip, or `--skills-only` to refresh just those files after a CLI upgrade. See the [top-level README](../README.md#agent-integration) for details.
 
@@ -96,7 +96,7 @@ The CLI is the canonical surface — every `GameClient` method has a one-line eq
 
 ```bash
 # Lifecycle
-godot-cli-control init [--path DIR] [--force]
+godot-cli-control init [--path DIR] [--keep-addon]
 godot-cli-control daemon start [--headless | --gui] [--port N --idle-timeout 30m]
 godot-cli-control daemon start --record --movie-path X [--fps N]   # 录制需真实渲染器，不能与 --headless 同用
 godot-cli-control daemon stop [--all | --project PATH]
