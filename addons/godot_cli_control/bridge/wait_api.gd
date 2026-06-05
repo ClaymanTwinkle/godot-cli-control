@@ -13,6 +13,15 @@ const _MAX_WAIT_SECONDS: float = 3600.0
 const _MAX_WAIT_FRAMES: int = 3600
 # wait_property 支持的比较操作符列表
 const _WAIT_PROP_OPS: PackedStringArray = ["eq", "ne", "gt", "lt", "ge", "le"]
+# encode_value 会递归重建的容器类型（#109：这些走免物化的结构化比较；
+# 其余类型 encode 都是 O(1)，直接编码走旧路径）
+const _CONTAINER_TYPES: PackedInt32Array = [
+	TYPE_ARRAY, TYPE_DICTIONARY,
+	TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY,
+	TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_STRING_ARRAY,
+	TYPE_PACKED_VECTOR2_ARRAY, TYPE_PACKED_VECTOR3_ARRAY, TYPE_PACKED_COLOR_ARRAY,
+	TYPE_PACKED_VECTOR4_ARRAY,
+]
 
 # 注入的 _read_property Callable（由 setup() 传入）
 var _read_property_fn: Callable = Callable()
@@ -123,30 +132,145 @@ func wait_property_async(params: Dictionary) -> Dictionary:
 		return _err(-32603, "WaitApi not wired: read_property unavailable")
 	var start_ms: int = Time.get_ticks_msec()
 	var reason: String = "timeout"
-	var last_value: Variant = null
+	var last_raw: Variant = null
+	var has_value: bool = false
+	# #109 memo：已确认「该属性存在」的节点实例 id。同实例后续帧走裸读，
+	# 跳过 _read_property 内 get_property_list 的逐帧整表分配 + 线性扫。
+	# 实例 id 不复用——节点中途被释放/替换时 memo 自动失效、回全检路径。
+	var verified_iid: int = 0
+	var is_sub_path: bool = ":" in property
+	var prop_np: NodePath = NodePath(property)  # 裸读预解析，避免逐帧构造
 	while true:
 		var node: Node = get_tree().root.get_node_or_null(path)
 		if node == null:
 			reason = "node_not_found"
-			last_value = null
+			has_value = false
 		else:
-			var read: Dictionary = _read_property_fn.call(node, property)
+			var read: Dictionary
+			if node.get_instance_id() == verified_iid:
+				# 裸读与 low_level_api._read_property 的取值路径对齐（sub-path 走
+				# get_indexed）。读到 null 时降级全检：null 无法区分「真 null 值」
+				# 与「属性中途消失（set_script 等）」，降级保住 reason 诊断精度。
+				var fast: Variant = node.get_indexed(prop_np) if is_sub_path else node.get(property)
+				read = {"value": fast} if fast != null else _read_property_fn.call(node, property)
+			else:
+				read = _read_property_fn.call(node, property)
 			if read.has("error"):
 				reason = "property_not_found"
-				last_value = null
+				has_value = false
+				verified_iid = 0
 			else:
+				verified_iid = node.get_instance_id()
 				reason = "timeout"
-				last_value = CliControlVariantCodec.encode_value(read["value"])
-				if _wait_compare(last_value, expected, op, tolerance):
+				last_raw = read["value"]
+				has_value = true
+				# #109：原始 Variant 直比（容器 miss 帧零分配、首差短路），
+				# 命中才编码做返回 payload
+				if _wait_compare_raw(last_raw, expected, op, tolerance):
 					return {
 						"matched": true,
-						"value": last_value,
+						"value": CliControlVariantCodec.encode_value(last_raw),
 						"waited": float(Time.get_ticks_msec() - start_ms) / 1000.0,
 					}
 		if float(Time.get_ticks_msec() - start_ms) / 1000.0 >= timeout:
 			break
 		await get_tree().process_frame
-	return {"matched": false, "reason": reason, "value": last_value}
+	# break 与最后一次读取同帧（中间无 await），此刻编码与旧版逐帧编码结果一致
+	return {
+		"matched": false,
+		"reason": reason,
+		"value": CliControlVariantCodec.encode_value(last_raw) if has_value else null,
+	}
+
+
+## #109 性能：与 `_wait_compare(CliControlVariantCodec.encode_value(actual_raw),
+## expected, op, tolerance)` 结果恒等，但容器不物化整棵编码树——miss 帧零分配、
+## 首差短路。等价性由 test_wait_api.gd 的 parity 矩阵测试钉死；改这里 / 改
+## variant_codec.encode_value / 改 _deep_equal 任意一处都必须重跑矩阵。
+func _wait_compare_raw(actual_raw: Variant, expected: Variant, op: String, tolerance: float) -> bool:
+	if not typeof(actual_raw) in _CONTAINER_TYPES:
+		# 非容器叶子 encode_value 是 O(1)（标量恒等 / 复合类型 → 定长小数组），原路走
+		return _wait_compare(CliControlVariantCodec.encode_value(actual_raw), expected, op, tolerance)
+	# 容器编码后仍是 Array/Dictionary（非数值）：旧路径下 ordering op 恒 false，
+	# eq/ne 走 _deep_equal——此处免物化镜像
+	var equal: bool = _encoded_eq_raw(actual_raw, expected, tolerance, false, 0)
+	if op == "eq":
+		return equal
+	if op == "ne":
+		return not equal
+	return false
+
+
+## `_deep_equal(encode_value(raw, depth), expected, tolerance)`（strict=false）或
+## `encode_value(raw, depth) == expected`（strict=true，引擎深比较）的免物化镜像。
+## strict 的来源：_deep_equal 对 Dictionary 对落引擎 `==`（精确、无 tolerance），
+## 所以进入 Dictionary 后整棵子树切 strict——与「编码后真比较」行为逐位一致。
+func _encoded_eq_raw(raw: Variant, expected: Variant, tolerance: float, strict: bool, depth: int) -> bool:
+	if depth > CliControlVariantCodec._MAX_ENCODE_DEPTH:
+		# 镜像 encode_value 超深降级哨兵；哨兵是 String，对非 String expected 恒 false
+		# （typeof 守卫：GDScript 跨类型 == 是运行期脚本错误，见 _safe_eq docstring）
+		return expected is String and (expected as String) == CliControlVariantCodec._DEPTH_SENTINEL
+	match typeof(raw):
+		TYPE_ARRAY:
+			if not expected is Array:
+				return false  # 编码后是 Array，与非 Array 比较两种模式下都为 false
+			var raw_arr: Array = raw as Array
+			var exp_arr: Array = expected as Array
+			if raw_arr.size() != exp_arr.size():
+				return false
+			for i in raw_arr.size():
+				if not _encoded_eq_raw(raw_arr[i], exp_arr[i], tolerance, strict, depth + 1):
+					return false
+			return true
+		TYPE_DICTIONARY:
+			if not expected is Dictionary:
+				return false
+			var raw_dict: Dictionary = raw as Dictionary
+			var exp_dict: Dictionary = expected as Dictionary
+			for key: Variant in raw_dict:
+				if not (key is String or key is StringName):
+					# 异类键经 str() 可能撞键折叠（后写覆盖），结构化镜像不划算：
+					# 兜底物化这棵子树走真编码（罕见路径，正确性优先）。
+					# String/StringName 键在 Dictionary 里本就同键（引擎语义），无碰撞。
+					return CliControlVariantCodec.encode_value(raw, depth) == expected
+			if raw_dict.size() != exp_dict.size():
+				return false
+			for key: Variant in raw_dict:
+				var skey: String = str(key)
+				if not exp_dict.has(skey):
+					return false
+				# Dictionary 内部恒 strict（见 docstring）
+				if not _encoded_eq_raw(raw_dict[key], exp_dict[skey], tolerance, true, depth + 1):
+					return false
+			return true
+		TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY, TYPE_PACKED_STRING_ARRAY:
+			# encode_value 对这 4 种是 Array(v) 直转：元素（int/String）不经编码、
+			# 不耗 depth 层级——元素按 depth=0 比较（恒等、永不触哨兵），镜像直转语义
+			return _packed_elems_eq(raw, expected, tolerance, strict, 0)
+		TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_VECTOR2_ARRAY, TYPE_PACKED_VECTOR3_ARRAY, TYPE_PACKED_COLOR_ARRAY, TYPE_PACKED_VECTOR4_ARRAY:
+			# encode_value 对这 6 种逐元素 encode_value(item, depth + 1)，镜像之
+			return _packed_elems_eq(raw, expected, tolerance, strict, depth + 1)
+		_:
+			# 非容器叶子：O(1) 编码后按模式比较（含 float 的 nan/inf → 字符串降级）
+			var enc: Variant = CliControlVariantCodec.encode_value(raw, depth)
+			if strict:
+				# 引擎内部深比较是「类型严格」的：int 与 float 不互通
+				# （实证：{"a": 1} == {"a": 1.0} → false）。typeof 守卫同时挡掉
+				# GDScript 跨类型 == 的运行期脚本错误。
+				return typeof(enc) == typeof(expected) and enc == expected
+			return _deep_equal(enc, expected, tolerance)
+
+
+func _packed_elems_eq(raw: Variant, expected: Variant, tolerance: float, strict: bool, elem_depth: int) -> bool:
+	if not expected is Array:
+		return false
+	var exp_arr: Array = expected as Array
+	if raw.size() != exp_arr.size():
+		return false
+	for i in exp_arr.size():
+		if not _encoded_eq_raw(raw[i], exp_arr[i], tolerance, strict, elem_depth):
+			return false
+	return true
 
 
 ## 编码后值比较。数值走 6 op（eq/ne 带 tolerance）；其余类型仅 eq/ne 深比较
@@ -184,7 +308,21 @@ func _deep_equal(a: Variant, b: Variant, tolerance: float) -> bool:
 			if not _deep_equal(aa[i], ba[i], tolerance):
 				return false
 		return true
-	return a == b  # String / bool / null / Dictionary（引擎深比较）
+	return _safe_eq(a, b)  # String / bool / null / Dictionary（引擎深比较）
+
+
+## #109 顺手修存量雷：GDScript 层跨类型 `==`（如 Array == String、bool == int）
+## 是**运行期脚本错误**——打印错误、中止所在函数、向上抛 Nil，不是静默 false。
+## 旧版 _deep_equal 末行裸 `a == b` 在 expected 与属性类型不符时（agent typo
+## 常态）每帧刷一条脚本错误、还会污染 #103 errors 环形缓冲，结果只是靠
+## Nil→false 的二次错误侥幸正确。合法比较只有三类：同 typeof / int-float
+## 数值对 / 任一侧 null（恒 false）——其余直接判 false，结果不变、零错误输出。
+func _safe_eq(a: Variant, b: Variant) -> bool:
+	var ta: int = typeof(a)
+	var tb: int = typeof(b)
+	if ta == tb or ((ta == TYPE_INT or ta == TYPE_FLOAT) and (tb == TYPE_INT or tb == TYPE_FLOAT)):
+		return a == b
+	return false  # 含 null vs 非 null：引擎语义本就恒 false，这里短路掉
 
 
 ## issue #96：等 N 帧（确定性帧推进）。physics=true 等 physics_frame。
