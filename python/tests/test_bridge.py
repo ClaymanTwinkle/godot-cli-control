@@ -94,8 +94,11 @@ class _StubClient:
     async def list_input_actions(self, include_builtin: bool = False) -> list[str]:
         return self._record("list_input_actions", (include_builtin,), {})
 
-    async def screenshot(self) -> bytes:
-        return self._record("screenshot", (), {})
+    async def screenshot(self, node: str | None = None) -> bytes:
+        return self._record("screenshot", (), {"node": node})
+
+    async def sprite_info(self, path: str) -> dict:
+        return self._record("sprite_info", (path,), {})
 
     async def get_property(self, path: str, prop: str) -> Any:
         return self._record("get_property", (path, prop), {})
@@ -428,6 +431,25 @@ def test_screenshot_with_path_writes_file(
     assert out.read_bytes() == b"\x89PNG\r\nfake"
     # 父目录自动创建
     assert out.parent.is_dir()
+    b.close()
+
+
+def test_screenshot_node_passes_through(stub_client: dict) -> None:
+    """screenshot(node=...) 把节点路径透传给 client（issue #101）。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["screenshot"] = b"\x89PNG"
+    b.screenshot(node="/root/Game/Sprite")
+    assert c.calls[-1] == ("screenshot", (), {"node": "/root/Game/Sprite"})
+    b.close()
+
+
+def test_sprite_info_returns_aggregate(stub_client: dict) -> None:
+    """sprite_info 透传路径并原样返回聚合 dict（issue #101）。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["sprite_info"] = {"type": "Sprite2D", "frame": 3}
+    info = b.sprite_info("/root/Game/Sprite")
+    assert info == {"type": "Sprite2D", "frame": 3}
+    assert c.calls[-1] == ("sprite_info", ("/root/Game/Sprite",), {})
     b.close()
 
 

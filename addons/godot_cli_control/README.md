@@ -92,7 +92,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `is_visible(path)` | `await client.is_visible("/root/UI/Panel")` |
 | `get_children(path, type_filter?)` | `await client.get_children("/root/Map", "Node2D")` |
 | `get_scene_tree(depth)` | `await client.get_scene_tree(depth=3)` |
-| `screenshot()` | `png_bytes = await client.screenshot()` |
+| `screenshot(node=None)` | `png_bytes = await client.screenshot()`; pass `node="/root/Game/Sprite"` to crop to that node's screen-space AABB; CLI: `screenshot <path> [--node <node-path>]` (errors: `1010` bounds undeterminable, `1011` off-screen) |
+| `sprite_info(path)` | `await client.sprite_info("/root/Game/Sprite")` — aggregate render-state query for `Sprite2D` / `AnimatedSprite2D` / `TextureRect` (texture, `effective_region`, `frame_texture`, flips, frame, modulate); headless-safe; CLI: `sprite-info <node-path>`; error `1010` for other node types |
 | `wait_for_node(path, timeout)` | `await client.wait_for_node("/root/Boss", timeout=10.0)` |
 | `wait_game_time(seconds)` | `await client.wait_game_time(2.5)` |
 | `wait_property(path, prop, value, op, timeout, tolerance)` | `await client.wait_property("/root/Player", "position:x", 500, op="gt", timeout=3.0)` |
@@ -141,6 +142,8 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1007` | server | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` or `children` to find valid signals. |
 | `1008` | server | Scene unavailable (`scene-reload` / `scene-change`): no current scene, scene file missing / failed to load, or timed out waiting for the new scene to become ready. Fix the path (permanent) or inspect the daemon log (timeout). |
 | `1009` | server | NOT_PAUSED: `step-frames` called while the scene tree is not paused. Call `pause` first. Precondition error — not a param error (distinct from `-32602`). |
+| `1010` | server | UNSUPPORTED_NODE_TYPE: `sprite-info` on a non-sprite node, or `screenshot --node` on a node whose bounds can't be determined. Schema-class — pick another node/command, don't retry. |
+| `1011` | server | NODE_NOT_ON_SCREEN: `screenshot --node` crop rect doesn't intersect the viewport (off-screen / zero size). State-class — bring the node into view, then retry. |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold; also out-of-range values like a scene `timeout` outside `(0, 3600]` sent directly via `GameClient`) |

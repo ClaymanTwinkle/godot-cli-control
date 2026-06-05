@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import json
 import sys
@@ -368,12 +369,25 @@ async def cmd_screenshot(client: GameClient, ns: argparse.Namespace) -> dict:
 
     展开 ``~`` 让 ``screenshot ~/foo.png`` 工作；不展开时 ``Path("~")`` 会
     创建字面 ``~`` 目录，是常见 footgun。
+
+    ``--node``（issue #101）：按节点屏幕 AABB 裁剪小图；信封带回实际裁剪
+    region（视口像素坐标）便于排查「裁到的不是我想的区域」。
     """
-    data = await client.screenshot()
+    node: str | None = getattr(ns, "node", None)
+    raw = await client.screenshot_raw(node)
+    data = base64.b64decode(raw.get("image", ""))
     output = Path(ns.output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(data)
-    return {"path": str(output), "bytes": len(data)}
+    result: dict = {"path": str(output), "bytes": len(data)}
+    if node:
+        result["node"] = node
+        result["region"] = raw.get("region")
+    return result
+
+
+async def cmd_sprite_info(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.sprite_info(ns.node_path)
 
 
 async def cmd_tree(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -582,7 +596,27 @@ def _fmt_tree_text(tree: Any) -> str:
 
 
 def _fmt_screenshot_text(r: dict) -> str:
-    return f"screenshot saved: {r['path']} ({r['bytes']} bytes)"
+    base = f"screenshot saved: {r['path']} ({r['bytes']} bytes)"
+    if "region" in r:
+        base += f" [node={r.get('node')} region={r.get('region')}]"
+    return base
+
+
+def _fmt_sprite_info_text(r: dict) -> str:
+    # 聚合 payload 字段多且按类型变化，text 模式直接缩进 JSON（人读）
+    return json.dumps(r, ensure_ascii=False, indent=2)
+
+
+def _register_screenshot_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--node",
+        default=None,
+        metavar="NODE_PATH",
+        help=(
+            "按该节点的屏幕 AABB 裁剪截图（issue #101），产出小图供像素级断言。"
+            "节点在屏幕外/零尺寸 → 1011；非 CanvasItem/算不出边界 → 1010。"
+        ),
+    )
 
 
 def _fmt_wait_node_text(r: dict) -> str:
@@ -775,8 +809,26 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         positionals=(
             Positional("output_path", None, "PNG 输出路径（必填）"),
         ),
-        example="screenshot out.png",
+        example="screenshot out.png --node /root/Game/Player/Sprite",
+        extra_args=_register_screenshot_args,
         text_formatter=_fmt_screenshot_text,
+    ),
+    RpcSpec(
+        name="sprite-info",
+        handler=cmd_sprite_info,
+        description=(
+            "渲染态聚合查询（issue #101）：Sprite2D / AnimatedSprite2D / "
+            "TextureRect 的 texture、实际图集区域（effective_region / "
+            "frame_texture）、翻转、帧号、modulate、visible 一次拿齐。"
+            "纯属性读，headless 可用。非 sprite 类节点 → 1010。"
+        ),
+        positionals=(
+            Positional(
+                "node_path", None, "绝对节点路径，如 /root/Game/Player/Sprite"
+            ),
+        ),
+        example="sprite-info /root/Game/Player/Sprite",
+        text_formatter=_fmt_sprite_info_text,
     ),
     RpcSpec(
         name="tree",
@@ -1735,11 +1787,11 @@ _TOP_EPILOG = """\
     init            在 Godot 项目根一键复制插件、patch project.godot
 
   RPC 一发命令（需先 daemon 在跑）:
-    读：     get / text / exists / visible / children / tree / pressed / actions
+    读：     get / text / exists / visible / children / tree / pressed / actions / sprite-info
     写：     set / call / click
     输入：   press / release / tap / hold / combo / combo-cancel / release-all
     等待：   wait-node / wait-time
-    截图：   screenshot
+    截图：   screenshot（--node 按节点裁剪）
 
 输出契约（默认 --json，AI 友好）:
   成功： {"ok": true, "result": <data>}        单行 stdout，exit 0

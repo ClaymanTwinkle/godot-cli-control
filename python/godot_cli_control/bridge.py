@@ -172,14 +172,22 @@ class GameBridge:
 
     # ── 截图 ──
 
-    def screenshot(self, path: str | None = None) -> bytes:
-        """截图，返回 PNG 字节。可选保存到文件。"""
-        data = self._run(self._client.screenshot())
+    def screenshot(self, path: str | None = None, node: str | None = None) -> bytes:
+        """截图，返回 PNG 字节。可选保存到文件。
+
+        ``node``（issue #101）：按节点屏幕 AABB 裁剪成小图（像素级断言用）。
+        屏幕外 → 1011，算不出边界 → 1010。
+        """
+        data = self._run(self._client.screenshot(node=node))
         if path:
             p = Path(path)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(data)
         return data
+
+    def sprite_info(self, path: str) -> dict:
+        """渲染态聚合查询（issue #101）：texture/图集区域/翻转/帧号 一次拿齐。"""
+        return self._run(self._client.sprite_info(path))
 
     # ── 属性读写 ──
 

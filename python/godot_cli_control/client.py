@@ -306,10 +306,33 @@ class GameClient:
         )
         return result.get("children", [])
 
-    async def screenshot(self) -> bytes:
-        """Take a screenshot and return PNG bytes."""
-        result = await self.request("screenshot")
+    async def screenshot(self, node: str | None = None) -> bytes:
+        """Take a screenshot and return PNG bytes.
+
+        ``node``（issue #101）：传节点绝对路径时按该节点的屏幕 AABB 裁剪，
+        产出小图供像素级断言。节点在屏幕外 → 1011；算不出边界 → 1010。
+        只要裁剪 region 信息时用 :meth:`screenshot_raw`。
+        """
+        result = await self.screenshot_raw(node)
         return base64.b64decode(result.get("image", ""))
+
+    async def screenshot_raw(self, node: str | None = None) -> dict:
+        """screenshot 的原始响应：``{"image": <base64>, "region": [x,y,w,h]?}``。
+
+        ``region`` 仅在传 ``node`` 时出现，是实际裁剪到的视口像素矩形
+        （已与视口求交，可能小于节点 AABB）。CLI 信封需要它，故与
+        :meth:`screenshot` 的 bytes 便捷形式拆开。
+        """
+        params: dict = {"node": node} if node else {}
+        return await self.request("screenshot", params)
+
+    async def sprite_info(self, path: str) -> dict:
+        """渲染态聚合查询（issue #101）：Sprite2D / AnimatedSprite2D / TextureRect。
+
+        返回 texture/图集区域/翻转/帧号/modulate/visible 聚合；非 sprite 类
+        节点 → 1010。headless 下可用（纯属性读，不依赖真渲染）。
+        """
+        return await self.request("sprite_info", {"path": path})
 
     async def get_scene_tree(
         self, depth: int = 5, max_nodes: int | None = None

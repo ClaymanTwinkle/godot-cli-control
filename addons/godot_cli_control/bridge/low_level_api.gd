@@ -448,7 +448,19 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	return response
 
 
-func take_screenshot_async() -> Dictionary:
+func take_screenshot_async(params: Dictionary = {}) -> Dictionary:
+	# 可选 node 裁剪（issue #101）：node 解析 / 边界计算放在取图 *之前*，
+	# schema 错（1001/1010）不必白等帧循环；交集判定（1011）只能在拿到
+	# image 之后做（需要视口像素尺寸）。
+	var crop_node: Node = null
+	var node_path: String = params.get("node", "") as String
+	if not node_path.is_empty():
+		crop_node = get_tree().root.get_node_or_null(node_path)
+		if crop_node == null:
+			return _node_not_found(node_path)
+		var probe: Variant = RenderApi.compute_node_screen_rect(crop_node)
+		if probe is Dictionary:
+			return probe as Dictionary
 	# dummy renderer (--headless) 下 RenderingServer.frame_post_draw 永不发射，
 	# await 会永久挂死。RenderingServer.get_rendering_device() 在 dummy driver
 	# 下返回 null，用它检测后改走 process_frame 推进路径。
@@ -474,9 +486,28 @@ func take_screenshot_async() -> Dictionary:
 	if image == null:
 		# 1006 (transient) ≠ 1003 (schema)：agent 可短重试，等下一帧 viewport 就绪。
 		return _err(CliControlErrorCodes.RESOURCE_UNAVAILABLE, "Screenshot unavailable (viewport texture is null)")
+	var response: Dictionary = {}
+	if crop_node != null:
+		# 边界重算一次：帧循环 await 期间节点可能移动/变换，取图后的位置才是
+		# 与 image 内容一致的位置。
+		var rect_or_err: Variant = RenderApi.compute_node_screen_rect(crop_node)
+		if rect_or_err is Dictionary:
+			return rect_or_err as Dictionary
+		var img_rect := Rect2(0, 0, image.get_width(), image.get_height())
+		var clipped: Rect2 = (rect_or_err as Rect2).intersection(img_rect)
+		var region := Rect2i(clipped)
+		if region.size.x < 1 or region.size.y < 1:
+			return _err(
+				CliControlErrorCodes.NODE_NOT_ON_SCREEN,
+				"screenshot node: %s is off-screen or has zero visible size (rect=%s, viewport=%s)"
+					% [node_path, rect_or_err, img_rect.size],
+			)
+		image = image.get_region(region)
+		response["region"] = [region.position.x, region.position.y, region.size.x, region.size.y]
 	var png_buffer: PackedByteArray = image.save_png_to_buffer()
 	var base64_str: String = Marshalls.raw_to_base64(png_buffer)
-	return {"image": base64_str}
+	response["image"] = base64_str
+	return response
 
 
 func _get_node_or_error(params: Dictionary) -> Node:
