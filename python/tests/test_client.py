@@ -898,3 +898,100 @@ async def test_step_frames_sends_correct_params_and_calculates_timeout() -> None
     assert captured[1]["method"] == "step_frames"
     assert captured[1]["params"] == {"frames": 600, "physics": True}
     assert captured[1]["timeout"] == 70.0
+
+
+# ---- issue #101: sprite_info / screenshot --node client 包装 ----
+
+
+@pytest.mark.asyncio
+async def test_sprite_info_sends_path() -> None:
+    """sprite_info 发出 method="sprite_info"，params={"path": ...}，原样返回聚合。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"type": "Sprite2D", "frame": 2}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.sprite_info("/root/Game/Sprite")
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "sprite_info"
+    assert captured["params"] == {"path": "/root/Game/Sprite"}
+    assert result == {"type": "Sprite2D", "frame": 2}
+
+
+@pytest.mark.asyncio
+async def test_screenshot_without_node_keeps_empty_params() -> None:
+    """screenshot() 旧契约不破：params={}（不带 node 键），返回解码后的 bytes。"""
+    import base64 as _b64
+
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"image": _b64.b64encode(b"\x89PNGdata").decode()}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        data = await client.screenshot()
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "screenshot"
+    assert captured["params"] == {}, "无 node 时不得带 node 键（老 addon 兼容）"
+    assert data == b"\x89PNGdata"
+
+
+@pytest.mark.asyncio
+async def test_screenshot_with_node_sends_node_param() -> None:
+    """screenshot(node=...) 发出 params={"node": ...}。"""
+    import base64 as _b64
+
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {"image": _b64.b64encode(b"crop").decode(), "region": [1, 2, 3, 4]}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        data = await client.screenshot(node="/root/S")
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["params"] == {"node": "/root/S"}
+    assert data == b"crop"
+
+
+@pytest.mark.asyncio
+async def test_screenshot_raw_exposes_region() -> None:
+    """screenshot_raw 返回原始响应（含 region），供 CLI 信封透出裁剪框。"""
+    import base64 as _b64
+
+    import godot_cli_control.client as client_mod
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        return {"image": _b64.b64encode(b"crop").decode(), "region": [10, 20, 30, 40]}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        raw = await client.screenshot_raw("/root/S")
+    finally:
+        client_mod.GameClient.request = orig
+    assert raw["region"] == [10, 20, 30, 40]

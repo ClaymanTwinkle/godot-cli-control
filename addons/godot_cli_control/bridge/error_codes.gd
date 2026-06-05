@@ -32,6 +32,14 @@ const SCENE_UNAVAILABLE: int = 1008
 # step_frames 的状态前置错（issue #102）：tree 未 paused 时调 step_frames。
 # 与 -32602 区分：参数本身没问题，是世界状态不满足前置——agent 应先 pause。
 const NOT_PAUSED: int = 1009
+# 节点类型不支持该可视化操作（issue #101）：sprite_info 打在非 sprite 类节点、
+# screenshot --node 算不出节点边界（非 CanvasItem / 无法确定 local rect）。
+# schema 类永久错（与 1002/1003/1007 同族）——agent 应换节点或换操作，重试无意义。
+const UNSUPPORTED_NODE_TYPE: int = 1010
+# screenshot --node 的裁剪框与视口交集为空（issue #101）：节点在屏幕外或
+# 变换后尺寸为零。状态类错（与 1009 同族）——参数没问题，是世界状态不满足；
+# agent 应先把节点挪进视口（移动 camera / 改 position / 等动画到位）再截。
+const NODE_NOT_ON_SCREEN: int = 1011
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600

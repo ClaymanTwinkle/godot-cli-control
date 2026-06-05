@@ -1664,10 +1664,16 @@ def test_run_rpc_separates_local_io_error_from_connection(
     blocker = tmp_path / "blocker"
     blocker.write_bytes(b"")
     bad_path = blocker / "out.png"
-    ns = __import__("argparse").Namespace(output_path=str(bad_path))
+    ns = __import__("argparse").Namespace(output_path=str(bad_path), node=None)
 
     mock_client = AsyncMock()
-    mock_client.screenshot = AsyncMock(return_value=b"fake png bytes")
+    # cmd_screenshot 走 screenshot_raw（issue #101 起，为透出 region），
+    # 服务端响应是 {"image": <base64>}，写盘前解码。
+    mock_client.screenshot_raw = AsyncMock(
+        return_value={
+            "image": __import__("base64").b64encode(b"fake png bytes").decode()
+        }
+    )
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
 

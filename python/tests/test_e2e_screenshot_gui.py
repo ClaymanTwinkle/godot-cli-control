@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -99,6 +100,14 @@ anchors_preset = 15
 layout_mode = 1
 anchors_preset = 15
 color = Color(0.2, 0.4, 0.8, 1)
+
+[node name="Patch" type="ColorRect" parent="."]
+layout_mode = 0
+offset_left = 40.0
+offset_top = 30.0
+offset_right = 140.0
+offset_bottom = 110.0
+color = Color(1, 0, 0, 1)
 """
 
 
@@ -182,3 +191,43 @@ def test_windowed_screenshot_returns_png_without_wait(
         assert payload["result"]["bytes"] == len(raw), (
             f"第 {i} 次 信封 bytes 与落盘大小不一致：{payload}"
         )
+
+
+def test_windowed_screenshot_node_crop(gui_daemon: Any, tmp_path: Path) -> None:
+    """--node 裁剪 happy path（issue #101）：region 信封与 PNG 实际尺寸一致。
+
+    Patch 是 (40,30) 起、100x80 的 ColorRect，窗口 320x240 无 stretch ——
+    裁剪 region 应逐像素等于其布局矩形；PNG IHDR 尺寸应等于 region 尺寸。
+    """
+    project = gui_daemon
+    out = tmp_path / "crop.png"
+    payload = _run_cli(project, "screenshot", str(out), "--node", "/root/Main/Patch")
+    assert payload["ok"] is True, payload
+    assert payload["result"]["node"] == "/root/Main/Patch"
+    assert payload["result"]["region"] == [40, 30, 100, 80], payload
+
+    raw = out.read_bytes()
+    assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = struct.unpack(">II", raw[16:24])  # IHDR 头的 w/h 字段
+    assert (width, height) == (100, 80), f"PNG 尺寸应等于裁剪 region：{(width, height)}"
+
+    # 对照组：全屏截图必须严格大于裁剪小图（证明真裁了，不是整屏改名）
+    full = tmp_path / "full.png"
+    full_payload = _run_cli(project, "screenshot", str(full))
+    assert full_payload["ok"] is True
+    assert full_payload["result"]["bytes"] > payload["result"]["bytes"]
+
+
+def test_windowed_screenshot_node_offscreen_1011(gui_daemon: Any, tmp_path: Path) -> None:
+    """节点挪到视口外 → 1011（NODE_NOT_ON_SCREEN），且不落盘。"""
+    project = gui_daemon
+    assert _run_cli(project, "set", "/root/Main/Patch", "position", "[-500, -500]")["ok"]
+    try:
+        out = tmp_path / "off.png"
+        payload = _run_cli(project, "screenshot", str(out), "--node", "/root/Main/Patch")
+        assert payload["ok"] is False and payload["error"]["code"] == 1011, payload
+        assert not out.exists()
+    finally:
+        # 还原位置，避免污染同 module 的其它用例（gui_daemon 是 function 级，
+        # 但 godot_project 是 module 级 —— daemon 重启不重建场景文件，保险起见还原）
+        _run_cli(project, "set", "/root/Main/Patch", "position", "[40, 30]")

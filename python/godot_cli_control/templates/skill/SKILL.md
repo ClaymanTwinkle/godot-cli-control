@@ -130,6 +130,8 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `1007` | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` to list available signals. |
 | `1008` | Scene unavailable (`scene-reload` / `scene-change`): no current scene, scene file missing / failed to load, or timed out waiting for the new scene to become ready. Missing file is permanent — fix the path; timeout usually means the scene itself fails to load — inspect the daemon log. |
 | `1009` | NOT_PAUSED: `step-frames` was called while the scene tree is not paused. This is a state precondition error, not a parameter error — the frames value is valid, but the world state doesn't satisfy the prerequisite. Call `pause` first, then `step-frames`. Don't confuse with `-32602` (bad param value) or `-1003` (CLI usage error). |
+| `1010` | UNSUPPORTED_NODE_TYPE: `sprite-info` on a node that isn't `Sprite2D` / `AnimatedSprite2D` / `TextureRect`, or `screenshot --node` on a node whose bounds can't be determined (not a CanvasItem, or no size/rect/texture to measure). Schema-class permanent error — pick a different node (often a child sprite of the one you tried) or a different command; retrying is pointless. |
+| `1011` | NODE_NOT_ON_SCREEN: `screenshot --node` resolved the node and computed its rect, but the rect doesn't intersect the viewport (off-screen, or zero visible size). State-class error (like `1009`): the arguments are fine, the world isn't — move the camera / the node, or wait for it to enter view, then retry. |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 
@@ -199,7 +201,12 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 - `step-frames <n> [--physics]` — while paused, advance exactly N frames (1..3600) then stop (deterministic stepping for physics assertions). Requires `pause` first — otherwise error `1009`, exit 1. Returns `{"stepped": N, "paused": true}`.
 
 **Render:**
-- `screenshot <path>` — write PNG (path is **required** as of 0.2.0)
+- `screenshot <path> [--node <node-path>]` — write PNG (path is **required** as of 0.2.0). With `--node`, the full screenshot is cropped to that node's screen-space AABB (canvas/camera transform included) and the envelope reports the actual crop: `{"path": ..., "bytes": N, "node": ..., "region": [x, y, w, h]}` (viewport pixels, already clipped to the viewport). Errors: `1001` unknown node, `1010` bounds undeterminable, `1011` off-screen. Like any screenshot it needs a real renderer — headless daemons return `1006`.
+- `sprite-info <node-path>` — aggregate "what is this node actually rendering" query for `Sprite2D` / `AnimatedSprite2D` / `TextureRect` (error `1010` for anything else). Pure property read — **works headless**. Key fields:
+  - common: `type`, `visible`, `visible_in_tree`, `modulate` `[r,g,b,a]`; textures are reported as `{"path": "res://..."|null, "size": [w,h]}` (+ `atlas`/`atlas_region` when it's an `AtlasTexture`); `path` is `null` for runtime-built textures.
+  - `Sprite2D`: `texture`, `flip_h/v`, `frame`, `frame_coords`, `hframes/vframes`, `region_enabled`, `region_rect`, and **`effective_region` `[x,y,w,h]`** — the atlas rect actually being drawn (region wins when enabled, else computed from the frame grid). Assert "the sprite shows frame N" against this instead of reading internal bookkeeping fields.
+  - `AnimatedSprite2D`: `sprite_frames`, `animation`, `frame`, `playing`, `speed_scale`, `flip_h/v`, and **`frame_texture`** — the texture of the *current* frame (distinguishes FRONT vs BACK frames that no plain property exposes).
+  - `TextureRect`: `texture`, `flip_h/v`, `stretch_mode`, `expand_mode`, `size`.
 
 ### `set` / `call` security blacklist
 
@@ -355,7 +362,9 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | `await client.node_exists(path)` | `exists <path>` |
 | `await client.is_visible(path)` | `visible <path>` |
 | `await client.get_children(path)` | `children <path>` |
-| `await client.screenshot()` | `screenshot <path>` |
+| `await client.screenshot(node=None)` | `screenshot <path> [--node <node-path>]` — returns PNG bytes; pass `node` to crop to that node's screen rect |
+| `await client.screenshot_raw(node=None)` | raw response incl. `region` (the actual crop rect the CLI envelope shows) |
+| `await client.sprite_info(path)` | `sprite-info <node-path>` |
 | `await client.get_scene_tree(depth, max_nodes=None)` | `tree [depth] [--max-nodes N]` |
 | `await client.wait_for_node(path, timeout)` | `wait-node <path> [timeout]` |
 | `await client.wait_game_time(seconds)` | `wait-time <seconds>` |
@@ -468,6 +477,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Sub-path reading a non-existent leaf returns `null` — indistinguishable from a real `null` value (typo only detected at the top-level name).** `get /root/Node position:typo` returns `{"value": null}` with no error — the `":" `suffix is not validated beyond checking that `"position"` exists as a top-level property. Verify your leaf name carefully; the only error you'll get is `1002` if the part before `":"` itself doesn't exist.
 - **Python API (`bridge.get_property` / `bridge.get_properties`) returns bare values only — no `type` field.** These convenience methods strip the `type` from the server response to reduce boilerplate. When you need the `type` field (e.g. to distinguish `Vector2` from a plain 2-element array), go through `client.request("get_property", {"path": ..., "property": ...})` directly.
 - **After `scene-change` / `scene-reload`, all node paths from the previous scene are stale** — re-locate nodes with `wait-node` before touching them. The new scene root is a brand-new tree; any path cached from the old scene will return `1001 "node not found"`.
+- **Asserting "what does this sprite actually show" — use `sprite-info` (headless-safe), not internal bookkeeping fields; use `screenshot --node` only when you truly need pixels.** `sprite-info`'s `effective_region` / `frame_texture` tell you which atlas rect / frame texture is being drawn — that covers most "is it facing left / showing frame N / mirrored" assertions without a renderer. `screenshot --node` needs a real renderer (headless → `1006` like any screenshot) and is for pixel-level comparison; its `1010` (can't bound the node) usually means you pointed at a container — aim at the child sprite instead; `1011` means the node is off-screen right now.
 - **`scene-reload` returning means the OLD scene instance was freed — never reuse node references/paths cached before the reload.** The command blocks until the new scene is ready, but the path strings that were valid in the old scene may now point to different nodes or nothing at all. Always re-query after a reload.
 - **`fresh_scene` (pytest fixture) errors with `1008` before the test body even runs — the project has no current scene.** Autoload-only / no-main-scene startup states have `get_tree().current_scene == null`, and the fixture's setup calls `scene_reload`, which then fails loudly with `1008`. This is intended (the fixture's contract is "this test starts with a clean *scene*"), not a daemon problem. Either drive the project into a scene first (`scene-change res://...`) or don't request `fresh_scene` for those tests.
 - **`step-frames` requires `pause` first (error `1009`) — the intended pattern is `pause` → `step-frames` → assert → `unpause`.** Error `1009` means the precondition (tree is paused) was not met; it is distinct from `-32602` (bad param value) and `-1003` (CLI usage error). If you get `1009`, call `pause` before `step-frames`.
