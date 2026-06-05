@@ -177,7 +177,7 @@ def test_run_init_creates_addons_and_patches_project_godot(
 
 
 def test_run_init_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """重复跑 init 不能破坏 project.godot 或抛错。"""
+    """重复跑 init 不能破坏 project.godot 或抛错（addon 会被默认刷新，project.godot patch 仍幂等）。"""
     monkeypatch.delenv("GODOT_BIN", raising=False)
     monkeypatch.setattr(
         "godot_cli_control.init_cmd.find_godot_binary", lambda: None
@@ -187,10 +187,55 @@ def test_run_init_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert run_init(project) == 0
     pg_after_first = (project / "project.godot").read_text()
 
-    # 第二次：应该 noop
+    # 第二次：addon 整目录刷新（默认 clobber），project.godot 不得重复 patch
     assert run_init(project) == 0
     pg_after_second = (project / "project.godot").read_text()
     assert pg_after_first == pg_after_second
+
+
+def test_run_init_overwrites_existing_addon_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认 clobber_addon=True：已存在的 addon 整目录刷新，旧文件被清掉。"""
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    project = _minimal_project(tmp_path)
+    assert run_init(project) == 0
+
+    plugin_dst = project / "addons" / "godot_cli_control"
+    marker = plugin_dst / "user_local_hack.gd"
+    marker.write_text("# 用户本地改动\n")
+
+    result: dict = {}
+    assert run_init(project, result=result) == 0
+    assert not marker.exists(), "默认应 rmtree+copy，旧文件要被清掉"
+    assert (plugin_dst / "plugin.cfg").is_file()
+    assert result["plugin_copied"] is True
+    assert result["plugin_overwritten"] is True
+
+
+def test_run_init_keep_addon_preserves_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """clobber_addon=False（CLI --keep-addon）：已存在 addon 原样保留。"""
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.init_cmd.find_godot_binary", lambda: None
+    )
+    project = _minimal_project(tmp_path)
+    assert run_init(project) == 0
+
+    plugin_dst = project / "addons" / "godot_cli_control"
+    marker = plugin_dst / "user_local_hack.gd"
+    marker.write_text("# 用户本地改动\n")
+
+    result: dict = {}
+    assert run_init(project, clobber_addon=False, result=result) == 0
+    assert marker.exists(), "--keep-addon 必须保留本地文件"
+    assert result["plugin_copied"] is False
+    assert result["plugin_overwritten"] is False
 
 
 def test_run_init_writes_godot_bin_when_detected(
@@ -425,6 +470,7 @@ def test_cmd_init_emits_success_envelope_in_json_mode(
     ns = argparse.Namespace(
         path=str(proj),
         force=False,
+        keep_addon=False,
         no_skills=False,
         skills_only=False,
         skills_no_clobber=False,
@@ -457,6 +503,7 @@ def test_cmd_init_emits_error_envelope_on_non_godot_dir(
     ns = argparse.Namespace(
         path=str(tmp_path),
         force=False,
+        keep_addon=False,
         no_skills=False,
         skills_only=False,
         skills_no_clobber=False,
@@ -643,6 +690,7 @@ def test_cmd_init_no_gitignore_flag_skips(
     ns = argparse.Namespace(
         path=str(proj),
         force=False,
+        keep_addon=False,
         no_skills=False,
         skills_only=False,
         skills_no_clobber=False,

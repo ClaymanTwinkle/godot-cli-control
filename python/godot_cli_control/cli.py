@@ -1798,7 +1798,7 @@ def cmd_init(ns: argparse.Namespace) -> int:
             # 保留 .resolve()：run_init 内部用 relative_to(project_root) 打印
             # skill 路径，相对路径会让 relative_to 在 cwd 不寻常时抛 ValueError。
             project_root=(Path(ns.path).resolve() if ns.path else Path.cwd()),
-            force=ns.force,
+            clobber_addon=not ns.keep_addon,
             write_skills=not ns.no_skills,
             skills_only=ns.skills_only,
             clobber_skills=not ns.skills_no_clobber,
@@ -2236,10 +2236,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="目标 Godot 项目根（默认当前目录）",
     )
-    init_p.add_argument(
+    addon_group = init_p.add_mutually_exclusive_group()
+    addon_group.add_argument(
         "--force",
         action="store_true",
-        help="覆盖已存在的 addons/godot_cli_control",
+        help=(
+            "覆盖已存在的 addons/godot_cli_control"
+            "（现已是默认行为，本 flag 仅为兼容保留）"
+        ),
+    )
+    addon_group.add_argument(
+        "--keep-addon",
+        action="store_true",
+        help=(
+            "已存在 addons/godot_cli_control 时跳过插件复制"
+            "（保留本地版本，不随 CLI 升级刷新；默认会覆盖以同步版本）"
+        ),
     )
     init_p.add_argument(
         "--skills-no-clobber",
