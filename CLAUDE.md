@@ -85,4 +85,4 @@ release.sh                  # 发版脚本
 
 ## 已知遗留 issue（PR 路过时顺手修）
 
-*（截至 2026-06-05，已 land：#96/#97/#99/#100 三连（wait 原语/codec/多属性读）、#111/#92 退出码统一、#108 wait_api 拆分、#110/#112/#107/#113 收尾批、#118/#119 review 快修（PR #120）、#98 场景隔离 scene-reload/scene-change + fresh_scene（PR #121）、#102 时间控制 time-scale/pause/step-frames + 1009（本批）。仍 open：#109（KIV）；#101/#103（feature backlog）；#88、#18（需 maintainer 操作）；#122（fresh_scene 无场景启动态 pitfall 文档）、#123（GUT wait_frames deprecation）、#124（pause/time_scale 跨用例泄漏兜底，见 #102 最终 review）。下次 review 发现新坑请补到这里。）*
+*（截至 2026-06-05，已 land：#96/#97/#99/#100 三连（wait 原语/codec/多属性读）、#111/#92 退出码统一、#108 wait_api 拆分、#110/#112/#107/#113 收尾批、#118/#119 review 快修（PR #120）、#98 场景隔离 scene-reload/scene-change + fresh_scene（PR #121）、#102 时间控制 time-scale/pause/step-frames + 1009（PR #125）、#122/#123/#124 收尾批：bridge fixture 兜底还原 pause/time_scale + fresh_scene 1008 pitfall + GUT wait_frames 替换（PR #126，本批；顺手追平了仓内 .claude/skills 渲染版 SKILL.md——它不会自动刷新，改模板/CLI 后记得用 skills_install.render_skill 重渲染）。仍 open：#109（KIV）；#101/#103（feature backlog）；#88、#18（需 maintainer 操作）。下次 review 发现新坑请补到这里。）*
