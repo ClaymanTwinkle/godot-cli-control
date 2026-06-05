@@ -40,7 +40,7 @@ def test_options_registered_in_help(pytester: pytest.Pytester) -> None:
 
 
 def test_fixtures_listed(pytester: pytest.Pytester) -> None:
-    """`pytest --fixtures` 列出 godot_daemon + bridge + fresh_scene。
+    """`pytest --fixtures` 列出 godot_daemon + bridge + fresh_scene + no_push_errors。
 
     逐个 fnmatch（顺序无关——pytest 对 fixture 的列出顺序不保证），
     并锚定「<name> ... -- ...pytest_plugin.py」定义行格式，
@@ -53,7 +53,7 @@ def test_fixtures_listed(pytester: pytest.Pytester) -> None:
         """
     )
     result = pytester.runpytest("--fixtures")
-    for name in ("godot_daemon", "bridge", "fresh_scene"):
+    for name in ("godot_daemon", "bridge", "fresh_scene", "no_push_errors"):
         result.stdout.fnmatch_lines([f"{name}*-- *pytest_plugin.py*"])
 
 
@@ -700,3 +700,188 @@ def test_bridge_time_scale_snapshot_failure_skips_restore(
     result.assert_outcomes(passed=1)
     output = result.stdout.str()
     assert "LOG=['unpause', 'release_all', 'close']" in output, output
+
+
+# ---------------------------------------------------------------------------
+# no_push_errors fixture + 失败自动截图（issue #103）
+# ---------------------------------------------------------------------------
+
+_DIAG_CONFTEST_HEADER = """
+from __future__ import annotations
+import godot_cli_control.pytest_plugin as plugin
+
+CALLS: list = []
+
+class FakeDaemon:
+    def __init__(self, *a, **kw): pass
+    def is_running(self): return True
+    def start(self, **kw): pass
+    def stop(self): return 0
+    def current_port(self): return 9877
+"""
+
+_DIAG_CONFTEST_FOOTER = """
+plugin.Daemon = FakeDaemon
+plugin.GameBridge = FakeBridge
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    terminalreporter.write_line(f"CALLS={CALLS}")
+"""
+
+
+def test_no_push_errors_passes_when_clean(pytester: pytest.Pytester) -> None:
+    """setup 记 marker（limit=0），teardown 查增量；无错误 → 用例过。"""
+    pytester.makeconftest(
+        _DIAG_CONFTEST_HEADER
+        + """
+class FakeBridge:
+    def __init__(self, port): pass
+    def errors(self, since=0, limit=100):
+        CALLS.append(f"errors:since={since},limit={limit}")
+        if limit == 0:
+            return {"marker": 7, "errors": [], "dropped": 0, "truncated": False}
+        return {"marker": 7, "errors": [], "dropped": 0, "truncated": False}
+    def release_all(self): pass
+    def close(self): pass
+"""
+        + _DIAG_CONFTEST_FOOTER
+    )
+    pytester.makepyfile(
+        """
+        def test_clean(no_push_errors):
+            pass
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert "errors:since=0,limit=0" in output, "setup 应做 limit=0 基线查询"
+    assert "errors:since=7,limit=100" in output, "teardown 应从 marker 起查增量"
+
+
+def test_no_push_errors_fails_on_new_error(pytester: pytest.Pytester) -> None:
+    """teardown 查到 error 级新增 → 用例红（teardown 失败 = pytest ERROR）。"""
+    pytester.makeconftest(
+        _DIAG_CONFTEST_HEADER
+        + """
+class FakeBridge:
+    def __init__(self, port): pass
+    def errors(self, since=0, limit=100):
+        if limit == 0:
+            return {"marker": 7, "errors": [], "dropped": 0, "truncated": False}
+        return {
+            "marker": 8,
+            "errors": [{
+                "type": "error",
+                "message": "npc sheet missing",
+                "source": "res://npc.gd:12 @ load_sheet",
+            }],
+            "dropped": 0,
+            "truncated": False,
+        }
+    def release_all(self): pass
+    def close(self): pass
+"""
+        + _DIAG_CONFTEST_FOOTER
+    )
+    pytester.makepyfile(
+        """
+        def test_silently_swallows(no_push_errors):
+            pass  # 业务断言全绿——但游戏内部 push_error 了
+        """
+    )
+    result = pytester.runpytest()
+    result.assert_outcomes(passed=1, errors=1)
+    output = result.stdout.str()
+    assert "npc sheet missing" in output
+    assert "res://npc.gd:12" in output
+
+
+def test_no_push_errors_ignores_warnings(pytester: pytest.Pytester) -> None:
+    """warning 级不触发失败（要更严格自己查 bridge.errors()）。"""
+    pytester.makeconftest(
+        _DIAG_CONFTEST_HEADER
+        + """
+class FakeBridge:
+    def __init__(self, port): pass
+    def errors(self, since=0, limit=100):
+        if limit == 0:
+            return {"marker": 0, "errors": [], "dropped": 0, "truncated": False}
+        return {
+            "marker": 1,
+            "errors": [{"type": "warning", "message": "deprecated thing"}],
+            "dropped": 0,
+            "truncated": False,
+        }
+    def release_all(self): pass
+    def close(self): pass
+"""
+        + _DIAG_CONFTEST_FOOTER
+    )
+    pytester.makepyfile(
+        """
+        def test_warn_only(no_push_errors):
+            pass
+        """
+    )
+    result = pytester.runpytest()
+    result.assert_outcomes(passed=1)
+
+
+def test_failure_screenshot_taken_when_not_headless(
+    pytester: pytest.Pytester,
+) -> None:
+    """非 headless + call 阶段失败 + 用了 bridge → 自动截图到 .cli_control/failures/。"""
+    pytester.makeconftest(
+        _DIAG_CONFTEST_HEADER
+        + """
+class FakeBridge:
+    def __init__(self, port): pass
+    def screenshot(self, path):
+        CALLS.append(f"screenshot:{path}")
+        return b"png"
+    def release_all(self): pass
+    def close(self): pass
+"""
+        + _DIAG_CONFTEST_FOOTER
+    )
+    pytester.makepyfile(
+        """
+        def test_boom(bridge):
+            assert False, "intentional"
+        """
+    )
+    result = pytester.runpytest("-s", "--godot-cli-no-headless")
+    result.assert_outcomes(failed=1)
+    output = result.stdout.str()
+    assert "screenshot:" in output, "失败后应自动截图"
+    assert ".cli_control" in output and "failures" in output
+    assert "test_boom" in output.split("screenshot:")[1].splitlines()[0]
+
+
+def test_failure_screenshot_skipped_when_headless(
+    pytester: pytest.Pytester,
+) -> None:
+    """headless（默认）失败不截图——dummy renderer 必 1006，纯浪费。"""
+    pytester.makeconftest(
+        _DIAG_CONFTEST_HEADER
+        + """
+class FakeBridge:
+    def __init__(self, port): pass
+    def screenshot(self, path):
+        CALLS.append(f"screenshot:{path}")
+        return b"png"
+    def release_all(self): pass
+    def close(self): pass
+"""
+        + _DIAG_CONFTEST_FOOTER
+    )
+    pytester.makepyfile(
+        """
+        def test_boom(bridge):
+            assert False, "intentional"
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(failed=1)
+    assert "screenshot:" not in result.stdout.str()

@@ -31,6 +31,7 @@ var _wait_api: WaitApi = null
 var _scene_api: SceneApi = null
 var _time_api: TimeApi = null
 var _render_api: RenderApi = null
+var _diag_api: DiagnosticsApi = null
 # 方法注册表：{method_name: {"callable": Callable, "kind": "sync"|"async"|"async_with_id"}}
 # - sync: handler(params) -> Dictionary，dispatcher 立即 send response
 # - async: handler(params) -> await Dictionary，dispatcher await 后 send response
@@ -71,6 +72,11 @@ func _ready() -> void:
 	_render_api = RenderApi.new()
 	_render_api.name = "RenderApi"
 	add_child(_render_api)
+	# DiagnosticsApi 尽早挂上：Logger 从注册那一刻起才开始捕获，挂得越早
+	# 「启动期 push_error」的可见窗口越大（issue #103）
+	_diag_api = DiagnosticsApi.new()
+	_diag_api.name = "DiagnosticsApi"
+	add_child(_diag_api)
 	# 启动倍速（issue #102）：非法值 parse 内已 printerr + 忽略，不挡启动
 	# 必须在 await _wait_first_frame_ready() 之前，保证「第 0 帧即倍速」
 	var startup_scale: float = TimeApi.parse_cmdline_time_scale(OS.get_cmdline_args())
@@ -238,6 +244,7 @@ func _register_methods() -> void:
 	_methods["scene_change"] = {"callable": _scene_api.scene_change_async, "kind": "async"}
 	# Time API（issue #102）
 	_methods["sprite_info"] = {"callable": _render_api.handle_sprite_info, "kind": "sync"}
+	_methods["errors"] = {"callable": _diag_api.handle_errors, "kind": "sync"}
 
 	_methods["time_scale"] = {"callable": _time_api.handle_time_scale, "kind": "sync"}
 	_methods["pause"] = {"callable": _time_api.handle_pause, "kind": "sync"}

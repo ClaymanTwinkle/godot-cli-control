@@ -189,6 +189,11 @@ class GameBridge:
         """渲染态聚合查询（issue #101）：texture/图集区域/翻转/帧号 一次拿齐。"""
         return self._run(self._client.sprite_info(path))
 
+    def errors(self, since: int = 0, limit: int = 100) -> dict:
+        """push_error/push_warning 增量查询（issue #103）。since 传上次 marker；
+        limit=0 纯拿基线。需 Godot 4.5+，老引擎 → RpcError 1012。"""
+        return self._run(self._client.errors(since=since, limit=limit))
+
     # ── 属性读写 ──
 
     def get_property(self, path: str, prop: str) -> Any:

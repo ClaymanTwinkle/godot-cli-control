@@ -995,3 +995,51 @@ async def test_screenshot_raw_exposes_region() -> None:
     finally:
         client_mod.GameClient.request = orig
     assert raw["region"] == [10, 20, 30, 40]
+
+
+# ---- issue #103: errors 增量查询 client 包装 ----
+
+
+@pytest.mark.asyncio
+async def test_errors_sends_since_and_limit() -> None:
+    """errors(since=42, limit=10) 发出 method="errors"，params 完整。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"errors": [], "marker": 42, "dropped": 0, "truncated": False}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.errors(since=42, limit=10)
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "errors"
+    assert captured["params"] == {"since": 42, "limit": 10}
+    assert result["marker"] == 42
+
+
+@pytest.mark.asyncio
+async def test_errors_defaults() -> None:
+    """errors() 默认 since=0 limit=100。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {"errors": [], "marker": 0, "dropped": 0, "truncated": False}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.errors()
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["params"] == {"since": 0, "limit": 100}

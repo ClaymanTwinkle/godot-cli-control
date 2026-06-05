@@ -100,6 +100,9 @@ class _StubClient:
     async def sprite_info(self, path: str) -> dict:
         return self._record("sprite_info", (path,), {})
 
+    async def errors(self, since: int = 0, limit: int = 100) -> dict:
+        return self._record("errors", (), {"since": since, "limit": limit})
+
     async def get_property(self, path: str, prop: str) -> Any:
         return self._record("get_property", (path, prop), {})
 
@@ -689,4 +692,14 @@ def test_step_frames_physics_flag_delegates_to_client(stub_client: dict) -> None
     c.returns["step_frames"] = {"stepped": 5, "paused": True}
     b.step_frames(5, physics=True)
     assert c.calls[-1] == ("step_frames", (5,), {"physics": True})
+    b.close()
+
+
+def test_errors_passes_cursor(stub_client: dict) -> None:
+    """errors 透传 since/limit 并原样返回（issue #103）。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["errors"] = {"errors": [], "marker": 5, "dropped": 0, "truncated": False}
+    result = b.errors(since=3, limit=7)
+    assert result["marker"] == 5
+    assert c.calls[-1] == ("errors", (), {"since": 3, "limit": 7})
     b.close()

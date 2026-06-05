@@ -94,6 +94,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `get_scene_tree(depth)` | `await client.get_scene_tree(depth=3)` |
 | `screenshot(node=None)` | `png_bytes = await client.screenshot()`; pass `node="/root/Game/Sprite"` to crop to that node's screen-space AABB; CLI: `screenshot <path> [--node <node-path>]` (errors: `1010` bounds undeterminable, `1011` off-screen) |
 | `sprite_info(path)` | `await client.sprite_info("/root/Game/Sprite")` — aggregate render-state query for `Sprite2D` / `AnimatedSprite2D` / `TextureRect` (texture, `effective_region`, `frame_texture`, flips, frame, modulate); headless-safe; CLI: `sprite-info <node-path>`; error `1010` for other node types |
+| `errors(since=0, limit=100)` | `await client.errors(since=marker)` — structured `push_error`/`push_warning` capture (ring of last 1000, cursor pagination via `marker`); needs Godot 4.5+ `Logger` (else `1012`); CLI: `errors [--since MARKER] [--limit N]` |
 | `wait_for_node(path, timeout)` | `await client.wait_for_node("/root/Boss", timeout=10.0)` |
 | `wait_game_time(seconds)` | `await client.wait_game_time(2.5)` |
 | `wait_property(path, prop, value, op, timeout, tolerance)` | `await client.wait_property("/root/Player", "position:x", 500, op="gt", timeout=3.0)` |
@@ -144,6 +145,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1009` | server | NOT_PAUSED: `step-frames` called while the scene tree is not paused. Call `pause` first. Precondition error — not a param error (distinct from `-32602`). |
 | `1010` | server | UNSUPPORTED_NODE_TYPE: `sprite-info` on a non-sprite node, or `screenshot --node` on a node whose bounds can't be determined. Schema-class — pick another node/command, don't retry. |
 | `1011` | server | NODE_NOT_ON_SCREEN: `screenshot --node` crop rect doesn't intersect the viewport (off-screen / zero size). State-class — bring the node into view, then retry. |
+| `1012` | server | FEATURE_UNAVAILABLE: the hosting engine lacks an API this RPC needs (currently: `errors` requires Godot 4.5+ `Logger`). Permanent for that engine — upgrade Godot, don't retry. |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold; also out-of-range values like a scene `timeout` outside `(0, 3600]` sent directly via `GameClient`) |

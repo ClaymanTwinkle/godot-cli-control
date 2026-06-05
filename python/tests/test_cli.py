@@ -2784,3 +2784,80 @@ def test_cmd_daemon_stop_single_project_daemonerror_exits_infra_with_1006(
     assert payload["ok"] is False
     assert payload["error"]["code"] == -1006
     assert "pid file not found" in payload["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# daemon logs（issue #103）
+# ---------------------------------------------------------------------------
+
+
+def test_daemon_logs_subcommand_parses() -> None:
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["daemon", "logs", "--tail", "20"])
+    assert ns.cmd == "daemon" and ns.action == "logs"
+    assert ns.tail == 20
+
+
+def test_daemon_logs_tail_default_50() -> None:
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["daemon", "logs"])
+    assert ns.tail == 50
+
+
+def test_daemon_logs_tail_out_of_range_is_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["daemon", "logs", "--tail", "0"])
+    cap = capsys.readouterr()
+    # 错误信息进 -1003 JSON 信封（stdout）；usage 行在 stderr（#82/#111 机制）
+    assert "1..1000" in (cap.out + cap.err)
+
+
+def test_daemon_logs_returns_tail_lines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """有日志文件 → JSON 信封带最后 N 行 + 路径，exit 0。"""
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_OK, cmd_daemon_logs
+
+    control = tmp_path / ".cli_control"
+    control.mkdir()
+    (control / "godot.log").write_text(
+        "\n".join(f"line{i}" for i in range(100)), encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    ns = __import__("argparse").Namespace(tail=10)
+    rc = cmd_daemon_logs(ns)
+    assert rc == EXIT_OK
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+    assert payload["result"]["lines"] == [f"line{i}" for i in range(90, 100)]
+    assert payload["result"]["returned"] == 10
+    assert payload["result"]["path"].endswith("godot.log")
+
+
+def test_daemon_logs_missing_file_is_infra_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """无 godot.log（daemon 从未启动）→ -1006，exit 2。"""
+    import json as _json
+
+    from godot_cli_control.cli import (
+        CLIENT_CODE_PRECONDITION,
+        EXIT_INFRA_ERROR,
+        cmd_daemon_logs,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    ns = __import__("argparse").Namespace(tail=50)
+    rc = cmd_daemon_logs(ns)
+    assert rc == EXIT_INFRA_ERROR
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == CLIENT_CODE_PRECONDITION
