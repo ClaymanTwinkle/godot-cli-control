@@ -532,6 +532,14 @@ func _err(code: int, message: String) -> Dictionary:
 
 
 func _has_property(node: Node, property: String) -> bool:
+	# #109 快拒：`in` 对 Object 是「可取成员」超集（属性/方法/信号/常量全 true，
+	# 实证见 PR）——false ⇒ 一定不在 property list，免掉整张 get_property_list()
+	# 的分配（wait_property 轮询缺失属性时逐帧打到这里）。true 不充分（方法名也
+	# true），仍需线性扫确认，保 1002 严格性。
+	# 顺带修掉一个潜伏缺陷：category/group 装饰条目（如 "Node2D"）以前会被线性扫
+	# 误判为属性（读出 null）；`in` 对它们是 false → 现在正确报 1002。
+	if not property in node:
+		return false
 	for prop: Dictionary in node.get_property_list():
 		if prop["name"] == property:
 			return true

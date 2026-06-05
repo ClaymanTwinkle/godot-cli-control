@@ -276,3 +276,163 @@ func test_wait_signal_emitted_has_no_reason() -> void:
 	})
 	assert_true(result["emitted"])
 	assert_does_not_have(result, "reason", "命中信号时不应有 reason 字段")
+
+
+# ── issue #109：raw 直比免物化路径 ──
+
+func test_wait_compare_raw_parity_matrix() -> void:
+	## 核心等价性守卫：_wait_compare_raw(raw, …) 必须与
+	## _wait_compare(encode_value(raw), …) 逐位一致。全类型 corpus ×
+	## corpus 编码形 + 殊形 × 6 op × 3 tolerance 笛卡尔积，分歧数必须为 0。
+	## 改 _wait_compare_raw / _encoded_eq_raw / encode_value / _deep_equal
+	## 任意一处，这个矩阵就是回归网。
+	var corpus: Array = [
+		null, true, false, 42, 3.5, -0.0, "s", "", NAN, INF, -INF,
+		&"sn", NodePath("/a/b"),
+		Vector2(1.5, 2.0), Vector2i(1, 2), Vector3(1.0, 2.0, 3.0), Vector3i(1, 2, 3),
+		Color(0.1, 0.2, 0.3, 1.0), Rect2(1.0, 2.0, 3.0, 4.0),
+		Quaternion(0.0, 0.0, 0.0, 1.0), Transform2D.IDENTITY,
+		[], [1, 2.0, "x"], [Vector2(1.0, 2.0), [3, [4]]], [NAN, INF],
+		{}, {"hp": 10.0, "pos": Vector2(1.0, 2.0)}, {"tags": ["a", "b"], "nest": {"k": 1}},
+		{1: "int-key", "s": 2}, {&"sn_key": 7},
+		{"pf": PackedFloat32Array([1.5]), "pi": PackedInt32Array([1])},
+		PackedByteArray([1, 2]), PackedInt32Array([1, 2, 3]), PackedInt64Array([9]),
+		PackedFloat32Array([1.5, 2.5]), PackedFloat64Array([1.5, INF]),
+		PackedStringArray(["a", "b"]),
+		PackedVector2Array([Vector2(1.0, 2.0)]), PackedVector3Array([Vector3(1.0, 2.0, 3.0)]),
+		PackedColorArray([Color(1.0, 0.0, 0.0, 1.0)]),
+	]
+	# >_MAX_ENCODE_DEPTH 嵌套：覆盖哨兵降级路径的镜像一致性
+	corpus.append(_build_deep_array(CliControlVariantCodec._MAX_ENCODE_DEPTH + 6))
+	var expecteds: Array = []
+	for raw: Variant in corpus:
+		expecteds.append(CliControlVariantCodec.encode_value(raw))
+	# 数值近差（tolerance 边界两侧）+ int/float 互通边界（数组吃、字典不吃）
+	# + 类型错配殊形
+	expecteds.append_array([
+		42.0005, 3.5005, [1, 2.0005, "x"], {"hp": 10.0005, "pos": [1.0, 2.0]},
+		{"hp": 10.0}, [1.0, 2.0], "nan", "inf", 5, 42.0,
+		[1.0, 2.0, "x"], {"hp": 10, "pos": [1.0, 2.0]},
+		{"tags": ["a", "b"], "nest": {"k": 1.0}},
+		{"pf": [1.5], "pi": [1.0]},
+	])
+	var checked: int = 0
+	var mismatches: Array = []
+	for raw: Variant in corpus:
+		var encoded: Variant = CliControlVariantCodec.encode_value(raw)
+		for expected: Variant in expecteds:
+			for op: String in ["eq", "ne", "gt", "lt", "ge", "le"]:
+				for tol: float in [0.0, 0.001, 0.5]:
+					checked += 1
+					var fast: bool = _api._wait_compare_raw(raw, expected, op, tol)
+					var slow: bool = _api._wait_compare(encoded, expected, op, tol)
+					if fast != slow:
+						mismatches.append("raw=%s expected=%s op=%s tol=%s fast=%s slow=%s" % [
+							raw, expected, op, tol, fast, slow,
+						])
+	assert_gt(checked, 30000, "矩阵规模异常缩水")
+	assert_eq(mismatches, [], "raw 直比与编码后比较出现分歧")
+
+
+func _build_deep_array(levels: int) -> Array:
+	var root: Array = []
+	var cur: Array = root
+	for _i in levels:
+		var nxt: Array = []
+		cur.append(nxt)
+		cur = nxt
+	cur.append(1)
+	return root
+
+
+func test_wait_compare_raw_tolerance_in_array_not_in_dictionary() -> void:
+	## 契约 pin（现状语义，免物化路径必须保持）：数组元素吃 tolerance 且
+	## int/float 数值互通；Dictionary 值不吃 tolerance（_deep_equal 对
+	## Dictionary 落引擎 ==，类型严格——int 与 float 在引擎深比较里**不**互通，
+	## 实证 {"a": 1} == {"a": 1.0} → false）。
+	assert_true(_api._wait_compare_raw([10.0005], [10.0], "eq", 0.001))
+	assert_true(_api._wait_compare_raw([10], [10.0], "eq", 0.0))
+	assert_false(_api._wait_compare_raw({"hp": 10.0005}, {"hp": 10.0}, "eq", 0.001))
+	assert_false(_api._wait_compare_raw({"hp": 10}, {"hp": 10.0}, "eq", 0.0))
+	assert_true(_api._wait_compare_raw({"hp": 10.0}, {"hp": 10.0}, "eq", 0.0))
+
+
+func test_wait_compare_cross_type_is_false_not_abort() -> void:
+	## #109 顺手修存量雷 pin：跨类型比较必须「干净地」返回 false——
+	## 旧版裸 `a == b` 是运行期脚本错误（中止函数、抛 Nil、每帧刷错误日志、
+	## 污染 #103 errors 缓冲）。assert_eq 严格比对 false（中止时会拿到 Nil，
+	## 能与 false 区分开）。
+	assert_eq(_api._wait_compare("str", 5, "eq", 0.0), false)
+	assert_eq(_api._wait_compare(true, 1, "eq", 0.0), false)
+	assert_eq(_api._wait_compare([1, 2], "x", "eq", 0.0), false)
+	assert_eq(_api._wait_compare(["a", 1], [1, "a"], "eq", 0.0), false)
+	assert_eq(_api._wait_compare_raw({"k": [1]}, {"k": "x"}, "eq", 0.0), false)
+	assert_eq(_api._wait_compare_raw(PackedStringArray(["a"]), [1], "eq", 0.0), false)
+
+
+func test_wait_property_dictionary_eq_end_to_end() -> void:
+	## 容器属性走免物化路径后，端到端 matched=true 且返回 payload 仍是编码形
+	## （Vector2 → [x, y]）。
+	var s := GDScript.new()
+	s.source_code = "extends Node2D\nvar stats: Dictionary = {\"hp\": 10.0, \"pos\": Vector2(1.0, 2.0)}\n"
+	s.reload()
+	var node: Node2D = s.new()
+	add_child_autofree(node)
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "stats",
+		"value": {"hp": 10.0, "pos": [1.0, 2.0]}, "timeout": 1.0,
+	})
+	assert_true(result["matched"])
+	assert_eq(result["value"], {"hp": 10.0, "pos": [1.0, 2.0]})
+
+
+func test_wait_property_memo_survives_node_swap() -> void:
+	## #109 memo 按实例 id：等待中把节点换成同名新实例（新 iid），
+	## memo 必须自动失效、回全检路径并照常命中。
+	var old := Node2D.new()
+	old.name = "SwapTarget"
+	old.position = Vector2(0.0, 0.0)
+	add_child(old)  # 不 autofree：50ms 后手动 free 换新
+	var parent: Node = old.get_parent()
+	var path: String = str(old.get_path())
+	get_tree().create_timer(0.05).timeout.connect(func() -> void:
+		old.free()
+		var fresh := Node2D.new()
+		fresh.name = "SwapTarget"
+		fresh.position = Vector2(7.0, 0.0)
+		parent.add_child(fresh)
+		autofree(fresh)
+	)
+	var result: Dictionary = await _api.wait_property_async({
+		"path": path, "property": "position:x", "value": 7.0, "timeout": 2.0,
+	})
+	assert_true(result["matched"])
+
+
+func test_wait_property_null_then_value_transition() -> void:
+	## 裸读读到 null 时降级全检：属性真值为 null 期间不误判 property_not_found，
+	## 变值后正常命中（覆盖 fast-read-null → 全检 fallback 分支）。
+	var s := GDScript.new()
+	s.source_code = "extends Node2D\nvar payload = null\n"
+	s.reload()
+	var node: Node2D = s.new()
+	add_child_autofree(node)
+	get_tree().create_timer(0.05).timeout.connect(func() -> void: node.set("payload", 5))
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "payload", "value": 5, "timeout": 2.0,
+	})
+	assert_true(result["matched"])
+	assert_eq(int(result["value"]), 5)
+
+
+func test_wait_property_missing_property_reason() -> void:
+	## 属性整段缺失：_has_property 的 `in` 快拒路径下 reason 仍是
+	## property_not_found（#109 不改诊断语义）。
+	var node := Node2D.new()
+	add_child_autofree(node)
+	var result: Dictionary = await _api.wait_property_async({
+		"path": str(node.get_path()), "property": "no_such_prop", "value": 1, "timeout": 0.1,
+	})
+	assert_false(result["matched"])
+	assert_eq(result["reason"], "property_not_found")
+	assert_null(result["value"])

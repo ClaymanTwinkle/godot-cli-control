@@ -66,6 +66,30 @@ func test_get_property_nonexistent_returns_1002() -> void:
 	assert_eq(int(result.error.code), 1002)
 
 
+func test_get_property_method_name_returns_1002() -> void:
+	## #109 守卫：`in` 操作符对方法名也为 true，但 _has_property 的快拒后仍有
+	## 线性扫确认——方法名不是属性，必须保持 1002（防止未来把快拒升级成单独判定，
+	## 否则 get("get_name") 会读出 Callable，破坏 get-property 严格性）。
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(_target.get_path()),
+		"property": "get_name",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1002)
+
+
+func test_get_property_category_entry_returns_1002() -> void:
+	## #109 顺手修复 pin：get_property_list 里的 category 装饰条目（如 "Node"，
+	## usage=PROPERTY_USAGE_CATEGORY）不是真属性。旧版线性扫会误判存在并读出
+	## null；`in` 快拒后正确报 1002。
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(_target.get_path()),
+		"property": "Node",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1002)
+
+
 func test_get_property_missing_param_returns_minus_32602() -> void:
 	var result: Dictionary = _api.handle_get_property({
 		"path": str(_target.get_path()),
