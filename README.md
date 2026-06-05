@@ -196,6 +196,8 @@ Both are rendered from the same template and pin the current CLI version + `--he
 godot-cli-control init --skills-only
 ```
 
+Re-running plain `godot-cli-control init` also works and additionally refreshes the bundled `addons/godot_cli_control/` plugin to the new version (pass `--keep-addon` if you've deliberately modified your copy).
+
 If you've hand-edited a `SKILL.md` and want to keep your version:
 
 - `godot-cli-control init --no-skills` — skip skill writes entirely going forward

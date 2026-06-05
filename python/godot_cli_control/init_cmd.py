@@ -3,7 +3,7 @@
 在目标 Godot 项目根执行后：
 
 1. 校验 ``project.godot`` 存在
-2. 复制插件物料到 ``addons/godot_cli_control/``
+2. 复制插件物料到 ``addons/godot_cli_control/``（已存在则默认整目录刷新，``--keep-addon`` 跳过）
 3. patch ``project.godot``：注入 ``[autoload]`` 与 ``[editor_plugins]`` 两节，
    绕过 Godot Editor GUI 启用步骤
 4. 自动检测 Godot 二进制，写入 ``.cli_control/godot_bin``，daemon 启动时
@@ -47,7 +47,7 @@ INIT_RESULT_ERROR_KEY = "__init_error_message__"
 
 def run_init(
     project_root: Path,
-    force: bool = False,
+    clobber_addon: bool = True,
     write_skills: bool = True,
     skills_only: bool = False,
     clobber_skills: bool = True,
@@ -57,6 +57,12 @@ def run_init(
     result: dict[str, Any] | None = None,
 ) -> int:
     """实施接入流程。返回进程 exit code。
+
+    ``clobber_addon=False``（CLI ``--keep-addon``）：已存在
+    ``addons/godot_cli_control/`` 时跳过插件复制，保留用户本地版本。
+    默认 True：每次 init 都 rmtree+copy 刷新 addon，保证与当前 CLI 版本
+    同步 —— 与 ``clobber_skills`` 默认覆盖同源的设计理由（CLI 升级后
+    GDScript 侧必须跟上，否则两侧协议错位）。
 
     ``skills_only=True``：跳过 1-4 步（插件复制 / project.godot patch /
     godot_bin 检测），只写 SKILL.md —— 用于 CLI 升级后单独刷新 skill。
@@ -126,13 +132,13 @@ def run_init(
         addons_dir = project_root / ADDONS_DIRNAME
         plugin_dst = addons_dir / PLUGIN_DIR_NAME
         if plugin_dst.exists():
-            if force:
+            if clobber_addon:
                 shutil.rmtree(plugin_dst)
                 _copy_plugin(plugin_src, plugin_dst)
                 _say(f"覆盖：{plugin_dst}")
                 _record(plugin_copied=True, plugin_overwritten=True)
             else:
-                _say(f"已存在：{plugin_dst}（用 --force 覆盖）")
+                _say(f"已存在：{plugin_dst}（--keep-addon 保留，未更新）")
         else:
             addons_dir.mkdir(parents=True, exist_ok=True)
             _copy_plugin(plugin_src, plugin_dst)

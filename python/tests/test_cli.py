@@ -184,6 +184,72 @@ def test_init_subcommand_rejects_both_flags() -> None:
         build_parser().parse_args(["init", "--no-skills", "--skills-only"])
 
 
+def test_init_subcommand_accepts_keep_addon_flag() -> None:
+    """--keep-addon：已存在 addon 时跳过插件复制的逃生口。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["init", "--keep-addon"])
+    assert ns.keep_addon is True
+    assert ns.force is False
+
+
+def test_init_subcommand_force_still_accepted_as_noop() -> None:
+    """--force 降为兼容 no-op：必须仍被 argparse 接受。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["init", "--force"])
+    assert ns.force is True
+    assert ns.keep_addon is False
+
+
+def test_init_subcommand_rejects_force_with_keep_addon() -> None:
+    """--force 与 --keep-addon 互斥（mutually_exclusive_group）。"""
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["init", "--force", "--keep-addon"])
+
+
+@pytest.mark.parametrize(
+    ("keep_addon", "expected_clobber"),
+    [(True, False), (False, True)],
+    ids=["keep-addon", "default-clobber"],
+)
+def test_cmd_init_wires_keep_addon_to_clobber_addon(
+    keep_addon: bool,
+    expected_clobber: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """cmd_init 的接线两个方向都钉死：--keep-addon → clobber_addon=False，
+    默认（keep_addon=False）→ clobber_addon=True（本次行为翻转的主线）。"""
+    import argparse
+
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_init
+
+    captured: dict = {}
+
+    def fake_run_init(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("godot_cli_control.init_cmd.run_init", fake_run_init)
+    ns = argparse.Namespace(
+        path=None,
+        force=False,
+        keep_addon=keep_addon,
+        no_skills=False,
+        skills_only=False,
+        skills_no_clobber=False,
+        no_gitignore=False,
+        output_format=OUTPUT_JSON,
+    )
+    assert cmd_init(ns) == 0
+    capsys.readouterr()
+    assert captured["clobber_addon"] is expected_clobber
+    assert "force" not in captured
+
+
 def test_version_flag_prints_version(capsys: pytest.CaptureFixture[str]) -> None:
     """``-V`` / ``--version`` 必须打印版本并 exit 0。SKILL.md 渲染依赖该版本号
     保持可用，回归保护。"""
@@ -721,6 +787,7 @@ def test_cmd_init_catches_unexpected_exception_into_envelope(
     ns = argparse.Namespace(
         path=str(tmp_path),
         force=False,
+        keep_addon=False,
         no_skills=False,
         skills_only=False,
         skills_no_clobber=False,
