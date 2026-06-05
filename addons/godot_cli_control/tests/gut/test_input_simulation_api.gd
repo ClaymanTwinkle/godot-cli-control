@@ -265,7 +265,7 @@ func test_press_feeds_input_event_pipeline() -> void:
 	add_child_autofree(probe)
 	_api.handle_action_press({"action": "ui_accept"})
 	# parse_input_event 注入的事件在输入泵分发；等两帧确保送达
-	await wait_frames(2)
+	await wait_process_frames(2)
 	assert_gt(probe.input_actions.size(), 0, "_input 应收到 InputEventAction")
 	var ev: InputEventAction = probe.input_actions[0]
 	assert_eq(String(ev.action), "ui_accept")
@@ -279,10 +279,10 @@ func test_release_feeds_release_event() -> void:
 	var probe := _EventProbe.new()
 	add_child_autofree(probe)
 	_api.handle_action_press({"action": "ui_accept"})
-	await wait_frames(2)
+	await wait_process_frames(2)
 	probe.input_actions.clear()
 	_api.handle_action_release({"action": "ui_accept"})
-	await wait_frames(2)
+	await wait_process_frames(2)
 	assert_gt(probe.input_actions.size(), 0, "release 也应产生事件")
 	var ev: InputEventAction = probe.input_actions[0]
 	assert_false(ev.pressed, "release 注入的事件应为 pressed=false")
