@@ -536,3 +536,167 @@ def test_time_scale_invalid_float_gives_usage_error(pytester: pytest.Pytester) -
     # pytest argparse usage error 退出码为 4
     assert result.ret == 4
     result.stderr.fnmatch_lines(["*invalid float value*"])
+
+
+# ---------------------------------------------------------------------------
+# bridge teardown 兜底还原 pause / time_scale（issue #124）
+# ---------------------------------------------------------------------------
+
+
+def test_bridge_teardown_restores_pause_and_time_scale(
+    pytester: pytest.Pytester,
+) -> None:
+    """pause / time_scale 是引擎全局状态：用例改了没还原，同一 daemon 下的
+    下一个用例会在冻住 / 加速的树上跑。teardown 必须 best-effort 兜底：
+    unpause + 把 time_scale 还原到 setup 时的快照值（不是盲写 1.0 ——
+    否则 --godot-cli-time-scale 5 的整套加速会在第一个用例后被砸掉）。
+    """
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+
+        LOG: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return True
+            def start(self, **kw): pass
+            def stop(self): return 0
+            def current_port(self): return 9877
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def time_scale(self, value=None):
+                LOG.append(f"time_scale:{value}")
+                return {"time_scale": 5.0}  # 模拟 daemon 以 5x 起的 baseline
+            def pause(self):
+                LOG.append("pause")
+                return {"paused": True}
+            def unpause(self):
+                LOG.append("unpause")
+                return {"paused": False}
+            def release_all(self): LOG.append("release_all")
+            def close(self): LOG.append("close")
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"LOG={LOG}")
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_messes_with_time(bridge):
+            bridge.pause()
+            bridge.time_scale(2.0)
+            raise RuntimeError("crash before restoring")
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(failed=1)
+    output = result.stdout.str()
+    # setup 快照读（None）→ 用例内 pause + 2.0 → teardown 还原到 5.0（非 1.0）
+    expected = (
+        "LOG=['time_scale:None', 'pause', 'time_scale:2.0', "
+        "'unpause', 'time_scale:5.0', 'release_all', 'close']"
+    )
+    assert expected in output, output
+
+
+def test_bridge_teardown_restore_robust_when_unpause_raises(
+    pytester: pytest.Pytester,
+) -> None:
+    """unpause 抛异常（连接断）→ time_scale 还原 / release_all / close 仍必须跑。"""
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+
+        LOG: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return True
+            def start(self, **kw): pass
+            def stop(self): return 0
+            def current_port(self): return 9877
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def time_scale(self, value=None):
+                LOG.append(f"time_scale:{value}")
+                return {"time_scale": 1.0}
+            def unpause(self):
+                raise ConnectionError("pipe broken")
+            def release_all(self): LOG.append("release_all")
+            def close(self): LOG.append("close")
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = FakeBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"LOG={LOG}")
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_a(bridge): pass
+        """
+    )
+    result = pytester.runpytest("-s")
+    # unpause 异常被吞，测试本身仍通过
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert (
+        "LOG=['time_scale:None', 'time_scale:1.0', 'release_all', 'close']" in output
+    ), output
+
+
+def test_bridge_time_scale_snapshot_failure_skips_restore(
+    pytester: pytest.Pytester,
+) -> None:
+    """setup 快照读 time_scale 失败（如旧版 addon 无此 RPC）→ 不还原 time_scale
+    （baseline 未知，盲写反而破坏），但 unpause / release_all / close 照常跑。
+    """
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+
+        LOG: list = []
+
+        class FakeDaemon:
+            def __init__(self, *a, **kw): pass
+            def is_running(self): return True
+            def start(self, **kw): pass
+            def stop(self): return 0
+            def current_port(self): return 9877
+
+        class OldAddonBridge:
+            def __init__(self, port): pass
+            def time_scale(self, value=None):
+                raise RuntimeError("RPC method not found: time_scale")
+            def unpause(self):
+                LOG.append("unpause")
+                return {"paused": False}
+            def release_all(self): LOG.append("release_all")
+            def close(self): LOG.append("close")
+
+        plugin.Daemon = FakeDaemon
+        plugin.GameBridge = OldAddonBridge
+
+        def pytest_terminal_summary(terminalreporter, exitstatus, config):
+            terminalreporter.write_line(f"LOG={LOG}")
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_a(bridge): pass
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert "LOG=['unpause', 'release_all', 'close']" in output, output

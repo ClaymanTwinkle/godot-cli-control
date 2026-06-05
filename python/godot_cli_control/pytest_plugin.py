@@ -102,16 +102,34 @@ def godot_daemon(request: pytest.FixtureRequest) -> Iterator[Daemon]:
 
 @pytest.fixture
 def bridge(godot_daemon: Daemon) -> Iterator[GameBridge]:
-    """Function-scoped: 每个测试单独连一个 bridge，结束 release_all + close。
+    """Function-scoped: 每个测试单独连一个 bridge，teardown 还原全局态 + release_all + close。
 
     release_all 是关键：上一个测试 hold 但没 release 的输入会污染下一个；
-    pytest 默认每 case 独立，fixture 替用户保证清理。
+    同理 pause / time_scale 是引擎全局状态（issue #124）：上一个用例 pause 后
+    崩溃没 unpause，下一个用例就在冻住的树上跑。teardown 统一 best-effort
+    兜底：unpause + 把 time_scale 还原到 setup 时的快照值——不是盲写 1.0，
+    否则 --godot-cli-time-scale 整套加速（或手动起的 5x daemon）会在第一个
+    用例后被砸回 1x。pytest 默认每 case 独立，fixture 替用户保证清理。
     """
     port = godot_daemon.current_port() or DEFAULT_PORT
     b = GameBridge(port=port)
+    baseline_time_scale: float | None = None
+    try:
+        baseline_time_scale = float(b.time_scale()["time_scale"])
+    except Exception:  # noqa: BLE001 — 旧版 addon 无 time_scale RPC；拿不到 baseline 就不还原
+        pass
     try:
         yield b
     finally:
+        try:
+            b.unpause()  # 幂等，未 pause 时也安全
+        except Exception:  # noqa: BLE001 — 关闭路径，吞掉异常保证后续清理一定跑
+            pass
+        try:
+            if baseline_time_scale is not None:
+                b.time_scale(baseline_time_scale)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             b.release_all()
         except Exception:  # noqa: BLE001 — 关闭路径，吞掉残留以保证 close 一定跑
