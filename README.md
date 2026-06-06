@@ -35,17 +35,14 @@ Godot ships great tools for *playing* a scene, but very little for *programmatic
 
 One install, one daemon, one consistent API across your editor, your tests, your CI, and your agents.
 
-## Recent changes
-
-**BREAKING (unreleased):** `get` now returns compound Variants (Vector2, Color, etc.) as a structured object `{"value": [x, y], "type": "Vector2"}` instead of the old `"(x, y)"` string. The `value` array is the same layout `set` accepts, so round-trips work directly. Also new: `get <path> <prop1> <prop2>` reads multiple properties atomically in one frame (`get_properties` RPC, #100).
-
 ## Highlights
 
 | | |
 |---|---|
 | **One-shot onboarding** | `godot-cli-control init` copies the addon, patches `project.godot`, autodetects the Godot binary, and writes AI-agent skill files. Idempotent. |
-| **Shell is canonical**  | 21+ subcommands cover the full RPC surface; output is single-line JSON envelope by default (`--text` for legacy strings). `GameClient` (async) / `GameBridge` (sync) are still there when you need to keep one connection across many steps. |
-| **pytest fixtures**     | Auto-loaded `godot_daemon` (session) + `bridge` (function) fixtures. Held inputs released between cases. |
+| **Shell is canonical**  | 30+ subcommands cover the full RPC surface; output is single-line JSON envelope by default (`--text` for legacy strings). `GameClient` (async) / `GameBridge` (sync) are still there when you need to keep one connection across many steps. |
+| **pytest fixtures**     | Auto-loaded `godot_daemon` (session) + `bridge` (function) fixtures, plus opt-in `fresh_scene` (per-test scene reload) and `no_push_errors` (fail on silent `push_error`). Held inputs / pause / time-scale restored between cases; failures auto-screenshot. |
+| **Deterministic waits** | `wait-prop` / `wait-signal` / `wait-frames` / `pause` + `step-frames` / `time-scale` — assert on real engine state instead of sleeping and hoping. |
 | **AI-agent ready**      | `init` ships `.claude/skills/.../SKILL.md` and `.codex/skills/.../SKILL.md` pinned to your installed CLI version. Includes exit-code semantics, error code reference, and JSON envelope contract. |
 | **Headless or GUI**     | Runs under `--headless` for CI, or with a real window for visual debugging. |
 | **Cross-platform**      | Linux, macOS, and native Windows (no WSL). |
@@ -159,12 +156,15 @@ Every RPC has both a CLI subcommand and a `GameClient` method — pick whichever
 
 | Category | CLI | GameClient |
 |---|---|---|
-| Scene tree | `tree`, `children`, `exists`, `wait-node` | `get_scene_tree`, `get_children`, `node_exists`, `wait_for_node` |
-| Inspection | `get`, `text`, `visible` | `get_property`, `get_text`, `is_visible` |
+| Scene tree | `tree`, `children`, `exists` | `get_scene_tree`, `get_children`, `node_exists` |
+| Inspection | `get` (multi-prop = atomic same-frame read), `text`, `visible`, `sprite-info` | `get_property`, `get_properties`, `get_text`, `is_visible`, `sprite_info` |
 | Mutation   | `set`, `call`, `click` | `set_property`, `call_method`, `click` |
 | Input      | `press`, `release`, `tap`, `hold`, `combo`, `combo-cancel`, `release-all`, `pressed`, `actions` | `action_press`, `action_release`, `action_tap`, `hold`, `combo`, `combo_cancel`, `release_all`, `get_pressed`, `list_input_actions` |
-| Render     | `screenshot` (path required) | `screenshot` |
-| Timing     | `wait-time` | `wait_game_time` |
+| Waiting    | `wait-node`, `wait-prop`, `wait-signal`, `wait-frames`, `wait-time` | `wait_for_node`, `wait_property`, `wait_signal`, `wait_frames`, `wait_game_time` |
+| Scene isolation | `scene-reload`, `scene-change` | `scene_reload`, `scene_change` |
+| Time control | `time-scale`, `pause`, `unpause`, `step-frames` | `time_scale`, `pause`, `unpause`, `step_frames` |
+| Render     | `screenshot` (path required, `--node` crops to a node's screen rect) | `screenshot` |
+| Diagnostics | `errors` (structured `push_error` log, Godot 4.5+), `daemon logs` | `errors` |
 
 Full RPC reference (signatures, error codes, blacklist): [plugin README](addons/godot_cli_control/README.md#rpc-reference). Output contract & exit codes: see the AI Quickstart in any project's `.claude/skills/godot-cli-control/SKILL.md`.
 
@@ -213,11 +213,14 @@ If you don't want `init`, copy the plugin manually and enable it from the editor
 
 ## Recent changes
 
-- **Default daemon port is now OS-assigned (was 9877).** The actual port is written to `.cli_control/port`; CLI subcommands and `GameClient()` (no port arg) auto-discover it. External scripts that hardcoded `127.0.0.1:9877` should either read `.cli_control/port` or pass `--port 9877` explicitly to `daemon start`.
-- **New: `godot-cli-control daemon ls`** — list daemons across all projects.
-- **New: `godot-cli-control daemon stop --all`** / **`--project <path>`** — batch / cross-project stop.
-- **New: `godot-cli-control daemon start --idle-timeout 30m`** — opt-in: auto-shutdown the Godot process after N minutes of no RPC activity. Default off. A project-level default can live in `.cli_control/config.json` (`{"idle_timeout": "30m"}`); an explicit flag always wins.
-- **New: `GODOT_CLI_LONG_OP_TIMEOUT=<seconds>`** — raise the 600s client-side ceiling on long operations (e.g. recordings longer than 10 minutes). Non-positive / non-numeric values are ignored.
+- **Wait primitives:** `wait-prop` (poll a property until it matches, with `--op` / `--tolerance`), `wait-signal` (arm before triggering), `wait-frames` (deterministic frame advance) — replace sleep-and-hope polling.
+- **Scene isolation:** `scene-reload` / `scene-change` block until the new scene is ready; the pytest `fresh_scene` fixture gives each test a pristine scene.
+- **Time control:** `time-scale` (read/write `Engine.time_scale`), `pause` / `unpause`, and `step-frames` for deterministic stepping while paused.
+- **Visual-state assertions:** `sprite-info` aggregates a sprite's render state (effective atlas region, frame, flips, modulate) in one call; `screenshot --node` crops to a node's screen rect for pixel-level asserts.
+- **Diagnostics:** `errors` queries structured `push_error` / `push_warning` logs with a cursor (Godot 4.5+); `daemon logs --tail N` reads the daemon log even post-mortem; pytest gains `no_push_errors` (fail on silent errors) and automatic failure screenshots.
+- **BREAKING (0.2.x):** `get` returns compound Variants (Vector2, Color, …) as `{"value": [x, y], "type": "Vector2"}` instead of the old `"(x, y)"` string — the `value` layout round-trips into `set`. `get <path> <prop1> <prop2>` reads multiple properties atomically in one frame.
+
+Full history: [`CHANGELOG`](addons/godot_cli_control/CHANGELOG.md).
 
 ## Status
 
