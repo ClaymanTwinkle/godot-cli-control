@@ -85,10 +85,9 @@ release.sh                  # 发版脚本
 
 ## 已知遗留 issue（PR 路过时顺手修）
 
-- #88 README 删除 godot-2d-skeleton 后缺 Used by 背书
 - #18 AssetLib 首次提交（需 maintainer 操作）
 
-code issue backlog 已清（截至 2026-06-06）。**「XX 落地（PR #YY）」的历史不再记在本文件**——变更进 CHANGELOG 的 `[Unreleased]`（发版时 `release.sh --roll-changelog` 自动归档版本段，非空未归档会拒绝打 tag），实现细节看 git log / PR。本节只留 open issue；过程中悟出的持久教训补到下面「易踩坑」，按主题归位、删旧合并，不要追加成流水账。
+code issue backlog 已清（截至 2026-06-06；#88 已 wontfix 关闭——无公开下游可挂背书）。**「XX 落地（PR #YY）」的历史不再记在本文件**——变更进 CHANGELOG 的 `[Unreleased]`（发版时 `release.sh --roll-changelog` 自动归档版本段，非空未归档会拒绝打 tag），实现细节看 git log / PR。本节只留 open issue；过程中悟出的持久教训补到下面「易踩坑」，按主题归位、删旧合并，不要追加成流水账。
 
 ## 易踩坑（动相关代码前先读）
 
