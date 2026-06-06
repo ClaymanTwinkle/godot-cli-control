@@ -80,7 +80,10 @@ def test_jump(godot_daemon, bridge):
 ```
 
 - `godot_daemon` (session-scoped) starts headless Godot once and stops it after all tests; if a daemon is already running it's reused (and not stopped at teardown — keeps your IDE workflow alive).
-- `bridge` (function-scoped) gives a fresh `GameBridge`; on teardown it calls `release_all()` so a `hold` left behind by one case can't bleed into the next, then closes the connection.
+- `bridge` (function-scoped) gives a fresh `GameBridge`; on teardown it best-effort restores global engine state — `unpause()`, `time_scale` back to its setup-time snapshot, `release_all()` — so a `hold`/`pause`/speed-up left behind by one case can't bleed into the next, then closes the connection.
+- `fresh_scene` (function-scoped, opt-in) calls `scene_reload()` at setup so the case starts on a pristine scene. Node references cached before the reload are invalid afterwards.
+- `no_push_errors` (function-scoped, opt-in) records an `errors` marker at setup and fails the case if any new `push_error` was emitted during it (warnings don't fail). Requires Godot 4.5+ (Logger API) — older engines raise `RpcError` 1012 at setup, loudly.
+- On a test failure (non-headless daemon only) a best-effort screenshot is saved to `.cli_control/failures/<nodeid>.png` and the path is attached to the pytest report.
 
 CLI options:
 
@@ -88,6 +91,7 @@ CLI options:
 --godot-cli-port=N           # GameBridge port (default: read from .cli_control/port)
 --godot-cli-no-headless      # open a real Godot window
 --godot-cli-project-root=DIR # default: pytest rootdir
+--godot-cli-time-scale=X     # Engine.time_scale applied at daemon startup (e.g. 5 to speed up the suite)
 ```
 
 ## CLI
@@ -102,17 +106,20 @@ godot-cli-control daemon start --record --movie-path X [--fps N]   # 录制需�
 godot-cli-control daemon stop [--all | --project PATH]
 godot-cli-control daemon status
 godot-cli-control daemon ls                  # list running daemons across all projects
+godot-cli-control daemon logs [--tail N]     # last N lines of .cli_control/godot.log (works post-mortem)
 godot-cli-control run <script.py> [--headless ...]
 
 # Read
 godot-cli-control tree [depth]
-godot-cli-control get      <node_path> <prop>
+godot-cli-control get      <node_path> <prop> [prop2 ...]   # multi-prop = atomic same-frame read
 godot-cli-control text     <node_path>
 godot-cli-control exists   <node_path>      # exit 0=true, 1=false, 2=infra
 godot-cli-control visible  <node_path>      # exit 0=true, 1=false, 2=infra
 godot-cli-control children <node_path> [type-filter]
 godot-cli-control pressed
 godot-cli-control actions [--all]
+godot-cli-control sprite-info <node_path>   # Sprite2D/AnimatedSprite2D/TextureRect render state in one call
+godot-cli-control errors [--since MARKER] [--limit N]   # structured push_error/push_warning log (Godot 4.5+)
 
 # Write / call
 godot-cli-control set   <node_path> <prop>   <json-value>
@@ -127,21 +134,33 @@ godot-cli-control combo --steps-json '[...]'   # or `combo file.json` / `combo -
 godot-cli-control combo-cancel
 godot-cli-control release-all
 
-# Wait
-godot-cli-control wait-node <node_path> [timeout]   # exit 0=found, 1=timeout
-godot-cli-control wait-time <seconds>
+# Wait (exit 0=hit, 1=timeout)
+godot-cli-control wait-node   <node_path> [timeout]
+godot-cli-control wait-prop   <node_path> <prop> <value> [--op gt|lt|ge|le|ne] [--timeout S] [--tolerance T]
+godot-cli-control wait-signal <node_path> <signal> [timeout]   # arm BEFORE triggering the action
+godot-cli-control wait-frames <n> [--physics]
+godot-cli-control wait-time <seconds>        # game time — scales with time-scale
+
+# Scene isolation
+godot-cli-control scene-reload [--timeout S]            # reload current scene, block until ready
+godot-cli-control scene-change <res://path.tscn>        # switch scene, block until ready
+
+# Time control
+godot-cli-control time-scale [value]         # read (no arg) or set Engine.time_scale, (0, 100]
+godot-cli-control pause | unpause
+godot-cli-control step-frames <n> [--physics]   # deterministic stepping while paused
 
 # Render (path is required as of 0.2.0)
-godot-cli-control screenshot <output.png>
+godot-cli-control screenshot <output.png> [--node <node_path>]   # --node crops to that node's screen rect
 ```
 
 ### Output contract
 
 - success: `{"ok": true, "result": <data>}` on stdout, exit 0
-- error:   `{"ok": false, "error": {"code": N, "message": "..."}}` on stdout, exit 1 (RPC) or 2 (connection / usage)
+- error:   `{"ok": false, "error": {"code": N, "message": "..."}}` on stdout, exit 1 (RPC), 2 (connection / infra), or 64 (usage)
 - `--text` / `--no-json` switches back to the legacy human-readable strings; errors then go to stderr.
 
-`exists` / `visible` / `wait-node` propagate their boolean result to the exit code, so shell `if` works:
+`exists` / `visible` and the `wait-*` commands propagate their boolean / hit-or-timeout result to the exit code, so shell `if` works:
 
 ```bash
 if godot-cli-control exists /root/Main/Boss; then
