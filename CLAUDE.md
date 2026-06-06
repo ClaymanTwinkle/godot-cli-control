@@ -82,14 +82,10 @@ release.sh                  # 发版脚本
 
 - 版本由 `hatch-vcs` 从 git tag 派生，写到 `python/godot_cli_control/_version.py`。
 - 改 SKILL.md 模板后想验证 `init` 注入正确：跑 `pytest python/tests/test_skills_install.py`。
+- 用户可见变更记入 CHANGELOG 的 `[Unreleased]`；`release.sh` 发版门禁会在该段非空时拒绝打 tag，`--roll-changelog` 自动滚动归档为版本段。
+- 遗留 issue 只记在 GitHub issues，本文件不镜像；落地历史看 CHANGELOG / git log。
 
-## 已知遗留 issue（PR 路过时顺手修）
-
-- #18 AssetLib 首次提交（需 maintainer 操作）
-
-code issue backlog 已清（截至 2026-06-06；#88 已 wontfix 关闭——无公开下游可挂背书）。**「XX 落地（PR #YY）」的历史不再记在本文件**——变更进 CHANGELOG 的 `[Unreleased]`（发版时 `release.sh --roll-changelog` 自动归档版本段，非空未归档会拒绝打 tag），实现细节看 git log / PR。本节只留 open issue；过程中悟出的持久教训补到下面「易踩坑」，按主题归位、删旧合并，不要追加成流水账。
-
-## 易踩坑（动相关代码前先读）
+## 易踩坑（动相关代码前先读；按主题归位、删旧合并，不要追加成流水账）
 
 - **wait 比较语义**：改 `wait_property` 比较 / `encode_value` / `_deep_equal` 任意一处，必须重跑 `test_wait_api` 的 38k parity 矩阵。GDScript 跨类型 `==` 是**运行期脚本错误**（中止函数抛 Nil、非静默 false），一律走 `_safe_eq` 守卫；引擎内部深比较类型严格（dict 内 int/float 不互通、不吃 tolerance），别按标量 `==` 直觉想当然。
 - **screenshot --node 双坐标系**：`compute_node_screen_rect` 出的 rect 在画布（逻辑设计分辨率）坐标系，取图侧 `get_image()` 在窗口物理像素系，必须乘 viewport final transform 换算（#137）；平窗 scale=1 两系重合、错了也不暴露，改动后跑 SubViewport `size_2d_override`(+stretch) 构造 scale≠1 的 GUT 回归（headless 可测）。
