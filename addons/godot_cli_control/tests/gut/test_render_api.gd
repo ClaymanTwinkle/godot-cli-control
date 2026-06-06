@@ -184,6 +184,25 @@ func test_screen_rect_sprite2d_centered_with_scale() -> void:
 	assert_eq(rect as Rect2, Rect2(92, 46, 16, 8))
 
 
+func test_screen_rect_applies_viewport_final_transform() -> void:
+	# content scale（hiDPI / stretch 窗口）回归（#137）：rect 必须落在取图侧
+	# get_image() 的物理像素系。SubViewport size(200,100) + size_2d_override(100,50)
+	# + stretch 构造 final transform = scale 2：Control (10,20,30,40) → (20,40,60,80)。
+	# 漏乘 final transform 时返回画布坐标 (10,20,30,40)，hiDPI 下裁剪整体错位。
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(200, 100)
+	viewport.size_2d_override = Vector2i(100, 50)
+	viewport.size_2d_override_stretch = true
+	add_child_autofree(viewport)
+	var ctl := Control.new()
+	ctl.position = Vector2(10, 20)
+	ctl.size = Vector2(30, 40)
+	viewport.add_child(ctl)
+	var rect: Variant = RenderApiScript.compute_node_screen_rect(ctl)
+	assert_true(rect is Rect2, "stretch viewport 内 Control 应能算出 Rect2，实际: %s" % [rect])
+	assert_eq(rect as Rect2, Rect2(20, 40, 60, 80))
+
+
 func test_screen_rect_non_canvas_item_returns_1010() -> void:
 	var plain := Node.new()
 	plain.name = "PlainNode"

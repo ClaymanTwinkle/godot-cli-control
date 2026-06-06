@@ -30,8 +30,8 @@ func handle_sprite_info(params: Dictionary) -> Dictionary:
 	)
 
 
-## screenshot --node 的边界计算：节点 local rect → 经 canvas/camera 变换的
-## 视口像素坐标 AABB。返回 Rect2，失败返回 error Dictionary（1010）。
+## screenshot --node 的边界计算：节点 local rect → 经 canvas/camera + content
+## scale 变换的物理像素坐标 AABB。返回 Rect2，失败返回 error Dictionary（1010）。
 ## static：只依赖传入节点自身的变换链，便于 GUT 直接单测（无需真渲染）。
 static func compute_node_screen_rect(node: Node) -> Variant:
 	if not (node is CanvasItem):
@@ -51,9 +51,16 @@ static func compute_node_screen_rect(node: Node) -> Variant:
 					% node.get_class(),
 			}
 		}
-	# get_global_transform_with_canvas 含 CanvasLayer / Camera2D 变换，
-	# 结果即视口像素坐标；Transform2D * Rect2 返回旋转后四角的 AABB。
+	# get_global_transform_with_canvas 含 CanvasLayer / Camera2D 变换，结果是画布
+	# （逻辑设计分辨率）坐标；再乘 viewport.get_final_transform()（content scale 的
+	# stretch 缩放 + letterbox 偏移）才与取图侧 get_image() 的物理像素系对齐——
+	# 漏乘时 hiDPI / 拉伸窗口下裁剪整体偏左上且偏小（#137）。平窗（物理 == 逻辑）
+	# 环境 final transform 为 identity，行为不变。Transform2D * Rect2 返回旋转后
+	# 四角的 AABB。
 	var xform: Transform2D = (node as CanvasItem).get_global_transform_with_canvas()
+	var viewport: Viewport = (node as CanvasItem).get_viewport()
+	if viewport != null:
+		xform = viewport.get_final_transform() * xform
 	return xform * (local_rect_or_null as Rect2)
 
 
