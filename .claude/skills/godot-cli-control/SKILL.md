@@ -626,7 +626,7 @@ options:
 GODOT_BIN 查找顺序：
   1. 环境变量 GODOT_BIN
   2. 项目根 .cli_control/godot_bin 文件（init 检测到时会写入）
-  3. macOS /Applications/Godot*.app/Contents/MacOS/Godot
+  3. macOS /Applications 与 ~/Applications 下的 Godot*.app/Contents/MacOS/Godot（系统级优先）
   4. PATH 上的 godot4 / godot / Godot，及 mono 别名 godot4-mono / godot-mono / godot_mono / Godot_mono
   5. Windows Program Files\Godot*\Godot*.exe
 都没找到时 init 会打 warning，daemon start 会直接报错。

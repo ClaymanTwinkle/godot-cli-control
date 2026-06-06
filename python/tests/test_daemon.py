@@ -177,6 +177,58 @@ def test_find_godot_binary_prefers_standard_over_mono(
     assert find_godot_binary() == "/usr/bin/godot"
 
 
+def _fake_godot_app(base: Path, app_name: str) -> Path:
+    """在 base 下伪造 <app_name>/Contents/MacOS/Godot 可执行结构，返回二进制路径。"""
+    binary = base / app_name / "Contents" / "MacOS" / "Godot"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("")
+    binary.chmod(0o755)
+    return binary
+
+
+def _patch_macos_scan(
+    monkeypatch: pytest.MonkeyPatch, system_dir: Path, user_dir: Path
+) -> None:
+    """把 macOS .app 扫描钉到两个 tmp 目录：平台固定 darwin、PATH 全空。
+
+    扫描目录必须可注入——开发机 /Applications 里有真 Godot.app，
+    不注入的话用户级兜底永远测不到。
+    """
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("godot_cli_control.daemon.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._macos_app_dirs",
+        lambda: (system_dir, user_dir),
+        raising=False,
+    )
+
+
+def test_find_godot_binary_scans_user_applications(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """系统 /Applications 没有时兜底扫 ~/Applications（#135）；空目录不炸。"""
+    system_dir = tmp_path / "Applications"  # 不存在：glob 应安静返回空
+    user_dir = tmp_path / "home" / "Applications"
+    binary = _fake_godot_app(user_dir, "Godot_mono.app")
+
+    _patch_macos_scan(monkeypatch, system_dir, user_dir)
+    assert find_godot_binary() == str(binary)
+
+
+def test_find_godot_binary_prefers_system_applications_over_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """系统级与用户级都有时优先 /Applications。"""
+    system_dir = tmp_path / "Applications"
+    user_dir = tmp_path / "home" / "Applications"
+    system_binary = _fake_godot_app(system_dir, "Godot.app")
+    _fake_godot_app(user_dir, "Godot.app")
+
+    _patch_macos_scan(monkeypatch, system_dir, user_dir)
+    assert find_godot_binary() == str(system_binary)
+
+
 def test_stop_handles_missing_pid_file(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
     assert daemon.stop() == 0  # noop
