@@ -415,12 +415,22 @@ def discover_port(project_root: Path | None = None) -> int | None:
 # ── Godot 二进制发现 ──
 
 
+def _macos_app_dirs() -> tuple[Path, ...]:
+    """macOS .app 扫描目录序：系统级 /Applications 优先于用户级（#135）。
+
+    无管理员权限的用户常把 app 拖进 ~/Applications；目录不存在时 glob
+    安静返回空，无需预检。单测靠 monkeypatch 本函数注入 tmp 目录。
+    """
+    return (Path("/Applications"), Path.home() / "Applications")
+
+
 def find_godot_binary() -> str | None:
     """查找可用的 Godot 二进制。
 
-    优先级：``GODOT_BIN`` env > macOS /Applications > PATH > Windows Program Files。
+    优先级：``GODOT_BIN`` env > macOS /Applications + ~/Applications（系统级
+    优先）> PATH > Windows Program Files。
     PATH 候选名含 .NET/mono 版常见别名（godot4-mono / godot-mono / godot_mono /
-    Godot_mono），排标准名之后——两版都装时优先轻量的标准版。macOS /Applications
+    Godot_mono），排标准名之后——两版都装时优先轻量的标准版。macOS Applications
     与 Windows Program Files 两级的 glob 天然匹配 ``Godot_mono.app`` / mono exe
     （mono 版 .app 内部可执行文件仍叫 ``Godot``），无需单列。
     """
@@ -429,11 +439,12 @@ def find_godot_binary() -> str | None:
         return env_bin
 
     if sys.platform == "darwin":
-        # macOS 默认安装位置 + 同目录所有 Godot*.app
-        for app in sorted(Path("/Applications").glob("Godot*.app")):
-            candidate = app / "Contents" / "MacOS" / "Godot"
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return str(candidate)
+        # macOS 默认安装位置 + 各目录下所有 Godot*.app
+        for base in _macos_app_dirs():
+            for app in sorted(base.glob("Godot*.app")):
+                candidate = app / "Contents" / "MacOS" / "Godot"
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
 
     for name in (
         "godot4",
