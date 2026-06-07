@@ -47,7 +47,7 @@ EXIT_INFRA_ERROR = 2  # 连接 / 超时 / 用户输入解析失败
 # `daemon stop --all` 专用：至少一条 stop 失败。不复用 EXIT_INFRA_ERROR(=2) —— 单个项目
 # stop rc=2 是「daemon 已停但 ffmpeg 转码失败」的合法成功旁路；--all 聚合若也用 2，
 # 调用方分不清「全停成功只是某个 transcode 失败」与「真有 daemon 没停掉」。
-EXIT_PARTIAL = 3
+EXIT_PARTIAL = 3  # 聚合操作（daemon stop --all / --instance all 广播）部分或全部目标失败
 EXIT_USAGE = 64  # 命令组合无效（如 combo 既无文件又无 --steps-json）
 
 # RPC 错误统一信封（无论 --json 还是 --text）的连接/超时占位 code。GD 端
@@ -2688,6 +2688,75 @@ async def _run_rpc(
     return EXIT_OK
 
 
+async def _run_rpc_broadcast(
+    spec: RpcSpec, ns: argparse.Namespace, fmt: str
+) -> int:
+    """``--instance all``（#145）：对 cwd 项目全部活实例并发执行同一 RPC，聚合信封。
+
+    * 目标 = ``list_live_instances(cwd)``（与 ``daemon stop --all --project`` 同一
+      枚举路径）；0 个活实例 → -1006 + exit 2。legacy 平铺 daemon 不在目标内
+      （``instances/`` 不存在时枚举为空），与 default 实例的 legacy 探活语义一致。
+    * 逐实例 entry 复刻单命令信封（``ok`` + ``result``|``error``）+ ``instance`` +
+      ``rc``——agent 复用同一套解析。``rc`` 按原命令语义算（exit_code_from /
+      RPC 错=1 / 连接错=2）。数组按实例名排序。
+    * 聚合退出码：全 0 → 0；任一非 0 → EXIT_PARTIAL(3)。顶层 ``ok`` 恒 true
+      （广播本身执行了就算 ok，沿 stop --all 先例），失败细节在 entry。
+    * asyncio.gather 并发：「同时给 4 个 client 截图」≈ 同一时刻；wait-* 总耗时
+      = 最慢实例而非求和。单实例异常逐个捕获，不拖死其他。
+    """
+    from .daemon import Daemon, list_live_instances
+
+    root = Path.cwd()
+    names = list_live_instances(root)
+    if not names:
+        _emit_envelope_error(
+            fmt,
+            CLIENT_CODE_PRECONDITION,
+            "no live instances to broadcast —— --instance all 只对 "
+            ".cli_control/instances/ 下的活实例生效（legacy 平铺 daemon 不算）；"
+            "先 daemon start --name <inst>",
+        )
+        return EXIT_INFRA_ERROR
+
+    async def _one(name: str) -> dict[str, Any]:
+        inst_ns = _namespace_for_instance(ns, name)
+        try:
+            port = Daemon(root, instance=name).current_port()
+            if port is None:
+                # 探活与读端口之间实例死了 / 启动中：瞬态，按连接错处理。
+                raise ConnectionError(f"instance {name!r}: port file not readable")
+            async with GameClient(port=port) as client:
+                result = await spec.handler(client, inst_ns)
+        except Exception as e:  # noqa: BLE001 — 单实例失败落 entry，不拖死其他
+            code, msg, rc = _rpc_failure_envelope(e)
+            return {
+                "instance": name,
+                "ok": False,
+                "error": {"code": code, "message": msg},
+                "rc": rc,
+            }
+        rc = spec.exit_code_from(result) if spec.exit_code_from is not None else EXIT_OK
+        return {"instance": name, "ok": True, "result": result, "rc": rc}
+
+    entries = list(await asyncio.gather(*(_one(n) for n in names)))
+    # list_live_instances 已排序、gather 保序；显式再排一次把输出契约钉死。
+    entries.sort(key=lambda e: e["instance"])
+    agg_rc = EXIT_OK if all(e["rc"] == EXIT_OK for e in entries) else EXIT_PARTIAL
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload({"instances": entries, "rc": agg_rc})
+    else:
+        for e in entries:
+            if e["ok"]:
+                print(f"[{e['instance']}] {spec.text_formatter(e['result'])}")
+            else:
+                print(
+                    f"[{e['instance']}] error: [{e['error']['code']}] "
+                    f"{e['error']['message']}",
+                    file=sys.stderr,
+                )
+    return agg_rc
+
+
 def main() -> None:
     parser = build_parser()
     ns = parser.parse_args()
@@ -2725,6 +2794,11 @@ def main() -> None:
                 else:
                     print(f"错误：{e}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
+
+        # --instance all：广播路径（#145）——逐实例并发 + 聚合信封，
+        # 不走单实例端口发现（preflight 已在上面跑过，screenshot 守卫等生效）。
+        if ns.instance == "all":
+            sys.exit(asyncio.run(_run_rpc_broadcast(spec, ns, fmt)))
 
         port = ns.port
         if port is None:
