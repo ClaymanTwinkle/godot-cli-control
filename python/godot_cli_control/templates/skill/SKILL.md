@@ -53,7 +53,7 @@ godot-cli-control daemon stop --all --project .
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`/`wait-prop`/`wait-signal`=timeout, `daemon status`=stopped |
 | 2 | Connection / IO error (daemon not running) or infra pre-condition failure (daemon failed to start, `daemon stop` encountered a system error — these carry client code `-1006`). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
 | 3 | `daemon stop --all` partial failure: at least one daemon in the registry failed to stop. Per-record `rc` is in the JSON `result.stopped[]`. |
-| 64 | Usage error — argparse parse failure (missing / invalid args, unknown subcommand), a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing), **or** `run <script>` given a non-existent path / a script with no `run(bridge)` function, **or** a multi-instance targeting error (≥ 2 instances running without `--instance` / `--name`, an explicitly named instance that is not running, or `--instance` and `--name` given conflicting values). All carry client code `-1003` and consistently exit 64 (#82 / #111). |
+| 64 | Usage error — argparse parse failure (missing / invalid args, unknown subcommand), a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing), **or** `run <script>` given a non-existent path / a script with no `run(bridge)` function, **or** a multi-instance targeting error (≥ 2 instances running without `--instance` / `--name`, an explicitly named instance that is not running, `--instance` and `--name` given conflicting values, or a selected instance whose port file is not readable yet — daemon still starting, retry in a moment). All carry client code `-1003` and consistently exit 64 (#82 / #111). |
 
 Shell-`if` works:
 
@@ -126,6 +126,8 @@ godot-cli-control daemon stop --all --project .
 | ≥ 2 | **error -1003, exit 64** — lists names in message | error -1003, exit 64 |
 
 > **Note**: "forgot `--instance`" (≥ 2 running, none selected) and "named instance not running" are two distinct error cases with different messages. When an explicit `--instance <name>` refers to an instance that is not running, the error message includes the list of currently-running instance names so you can pick a valid target without a separate `daemon ls` call.
+
+> **Transient case**: if the selected instance is alive but its port file is not readable yet (the daemon is mid-startup, a millisecond-scale window), you also get `-1003` / exit 64 with a *"port file is not readable yet … retry in a moment"* message instead of a silent 30s connection hang — just re-run the command.
 
 When ≥ 2 instances are running and you omit `--instance`, the error JSON is:
 
@@ -530,6 +532,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 ## Common pitfalls
 
 - **Multiple instances running and you forgot `--instance`** — exit 64 / code `-1003`, message lists all running instance names: `"multiple instances running: client1, server — pass --instance <name>"`. Read the message, pick the name you want, and re-run with `godot-cli-control --instance <name> <subcommand>`. The same applies to `daemon` subcommands (use `--name <instance>` instead of `--instance`).
+- **`-1003` with "port file is not readable yet … retry in a moment"** — the target instance is alive but mid-startup (its pid file exists, its port file doesn't yet). This is a transient race, not a config problem: re-run the command. You'll mostly see it when firing RPCs immediately after `daemon start` returns in a parallel script.
 - **`{"ok": false, "error": {"code": -1001, ...}}` on every RPC** — daemon isn't running. Run `godot-cli-control daemon status` to confirm, then `daemon start`.
 - **Node paths must be absolute** — start with `/root/...`. Relative paths return `node not found`.
 - **`InvalidMessage` / `did not receive a valid HTTP response`** — `all_proxy` / `http_proxy` env var is hijacking localhost. The client sets `proxy=None` to defend, but if you see weird handshake errors, `unset all_proxy` first.

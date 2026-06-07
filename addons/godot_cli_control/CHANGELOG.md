@@ -16,6 +16,12 @@
 
 ### Changed
 - **多实例选靶语义（处处一致）**：0 个在跑 → 选 default（legacy fallback）；1 个在跑 → 自动选中；≥2 个在跑且未指定 `--instance` / `--name` → `-1003` / exit 64，message 列出在跑实例名（`"multiple instances running: ... — pass --instance <name>"`）。显式 `--instance nope` 但该实例未在跑 → `-1003` / exit 64，message 附当前在跑实例列表。`--instance` 与 `--port` 互斥。
+- **选中实例 live 但 port 文件尚不可读（daemon 启动中的瞬态）→ `-1003` / exit 64 并提示稍后重试**（#144）：此前静默回退默认端口、连接失败干等 30s，agent 拿不到「正在启动，请重试」的信号。
+
+### Fixed
+- **`daemon stop --all --project <path>` 对没有任何 daemon 在跑的项目不再伪造 `default` 条目**（#144）：text 输出 `(no running daemons)`、JSON `{"stopped": [], "rc": 0}`，与 `--all` 全局空注册表的形状一致。
+- **旧版本 CLI 启动的录像 daemon 用新版 `daemon stop` 停止时录像正常转码**（#144）：此前 legacy 平铺路径的 `movie_path` 无人消费，录像静默残留；legacy `last_exit_code` 死文件也一并清理。
+- **kill -9 留下的死实例目录 `.cli_control/instances/<name>/` 在状态文件清空后自动回收**（#144）：`godot.log` 等诊断文件在场时目录保留不动。
 
 ## [0.2.17] - 2026-06-06
 

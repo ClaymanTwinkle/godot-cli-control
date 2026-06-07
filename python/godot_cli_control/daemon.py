@@ -25,10 +25,11 @@ class DaemonError(RuntimeError):
 
 
 class InstanceAmbiguityError(RuntimeError):
-    """实例无法唯一确定（≥2 在跑且未显式指定，或显式指定的不在跑）。
+    """实例无法唯一确定或暂不可连（≥2 在跑且未显式指定、显式指定的不在跑、
+    或选中实例 live 但 port 文件尚不可读 —— 启动中 / 刚死的瞬态，#144）。
 
     CLI 把它映射成 -1003 + exit 64 的 preflight 用法错；message 自带在跑
-    实例清单，agent 看单行 JSON 即知下一步传什么（spec 2026-06-07）。
+    实例清单或重试指引，agent 看单行 JSON 即知下一步做什么（spec 2026-06-07）。
     """
 
     def __init__(self, message: str, names: list[str]) -> None:
@@ -38,6 +39,14 @@ class InstanceAmbiguityError(RuntimeError):
 
 # 实例名校验正则：要落进文件路径与注册表文件名，必须文件系统安全（spec 2026-06-07）。
 _INSTANCE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _rmdir_if_empty(path: Path) -> None:
+    """目录已空则删除（实例目录卫生回收，#144）；非空 / 不存在 / IO 错静默保留。"""
+    try:
+        path.rmdir()
+    except OSError:
+        pass
 
 
 def validate_instance_name(name: str) -> str:
@@ -306,13 +315,21 @@ class Daemon:
         self._cleanup_state_files()
         print("Godot 已停止", file=sys.stderr)
 
-        # 录制转码（即使失败也认为 stop 成功；返回非 0 让 CI 感知）
-        if self.movie_path_file.exists():
-            movie_path = Path(self.movie_path_file.read_text().strip())
-            self.movie_path_file.unlink(missing_ok=True)
-            if not _transcode_movie(movie_path, self.control_dir):
-                return 2
-        return 0
+        # 录制转码（即使失败也认为 stop 成功；返回非 0 让 CI 感知）。
+        # default 实例额外消费 legacy 平铺路径的 movie_path（#144）：旧版本 CLI
+        # 启动的录像 daemon 升级后用新 CLI stop，录像也要正常转码而非静默残留。
+        # 两路径实际互斥（同一进程只会由一个版本启动），循环只为统一处理。
+        rc = 0
+        movie_candidates = [self.movie_path_file]
+        if self.instance == "default":
+            movie_candidates.append(self._legacy_dir / "movie_path")
+        for mp_file in movie_candidates:
+            if mp_file.exists():
+                movie_path = Path(mp_file.read_text().strip())
+                mp_file.unlink(missing_ok=True)
+                if not _transcode_movie(movie_path, self.control_dir):
+                    rc = 2
+        return rc
 
     # ── 内部 ──
 
@@ -332,9 +349,23 @@ class Daemon:
         if self.instance == "default":
             (self._legacy_dir / "godot.pid").unlink(missing_ok=True)
             (self._legacy_dir / "port").unlink(missing_ok=True)
+            # legacy last_exit_code 没有任何读取方（read_last_exit_code 只读新
+            # 布局），停掉 legacy daemon 后留着就是永久死文件（#144）。
+            # legacy godot.log 保留 —— stop 后回溯日志是 #38 的明确语义。
+            (self._legacy_dir / "last_exit_code").unlink(missing_ok=True)
         # start 失败回滚路径还没 register 时，unregister 是 unlink(missing_ok=True)，
         # 行为一致；保持一处兜底比让所有 caller 记得手动 unregister 更不易遗漏。
         _registry.unregister(self.project_root, instance=self.instance)
+        # 实例目录已空 → 顺手 rmdir（#144）。godot.log / last_exit_code 等诊断文件
+        # 在场时 rmdir 自然失败、目录保留（#38 的回溯语义不受影响）；项目级
+        # .cli_control/（config.json / godot_bin 的家）永远不动。
+        # 仅标准 instances/ 布局才清 —— 显式 override 的 control_dir 归注入方管，
+        # 删它（或它的 parent）越权。
+        if self.control_dir == (
+            self.project_root / ".cli_control" / "instances" / self.instance
+        ):
+            _rmdir_if_empty(self.control_dir)
+            _rmdir_if_empty(self.control_dir.parent)  # 空 instances/ 一并清
 
     def read_godot_bin_pref(self) -> str | None:
         """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。
@@ -489,6 +520,23 @@ def list_live_instances(project_root: Path | None = None) -> list[str]:
     )
 
 
+def _require_port(d: Daemon) -> int:
+    """已确认 live 的实例必须有可读端口，否则抛异常而非静默 None（#144）。
+
+    实例 live 但 port 文件不可读只发生在毫秒级竞态窗口（daemon 刚写 pid 还没写
+    port，或刚死文件被并发清理）。静默返回 None 会让调用方回退 DEFAULT_PORT、
+    连接失败干等 30s retry —— agent 拿不到「正在启动 / 刚死，稍后重试」的信号。
+    """
+    port = d.current_port()
+    if port is None:
+        raise InstanceAmbiguityError(
+            f"instance {d.instance!r} is running but its port file is not"
+            " readable yet — daemon may still be starting; retry in a moment",
+            [d.instance],
+        )
+    return port
+
+
 def discover_port(
     project_root: Path | None = None, instance: str | None = None
 ) -> int | None:
@@ -507,8 +555,11 @@ def discover_port(
       - N = 0 → 走 default 实例的 ``current_port()``，自带 legacy 只读 fallback（Task 1）；
         如此「legacy daemon 在跑 + instances/ 不存在」时仍能返回正确端口。
 
-    ``project_root`` 默认 ``Path.cwd()``（与 CLI 工作目录约定一致）。无 port 文件
-    或解析失败返回 ``None``，由调用方决定回退值。
+    选中的实例（显式 / N=1 自动）live 但 port 文件不可读 → 抛
+    ``InstanceAmbiguityError`` 提示稍后重试（``_require_port``，#144），不再静默
+    ``None``。``None`` 只出现在 N=0 分支（legacy fallback 也无 port 文件），
+    由调用方决定回退值。``project_root`` 默认 ``Path.cwd()``（与 CLI 工作目录
+    约定一致）。
 
     端口文件路径：``.cli_control/instances/<name>/port``（多实例布局）；
     legacy ``.cli_control/port`` 作为 fallback 仍可读取（单实例旧布局兼容）。
@@ -524,7 +575,7 @@ def discover_port(
                 + (f"; running: {', '.join(live)}" if live else "; none running"),
                 live,
             )
-        return d.current_port()
+        return _require_port(d)
 
     live = list_live_instances(root)
     if len(live) > 1:
@@ -533,7 +584,7 @@ def discover_port(
             live,
         )
     if len(live) == 1:
-        return Daemon(root, instance=live[0]).current_port()
+        return _require_port(Daemon(root, instance=live[0]))
     # 0 个在跑：default 实例的 current_port 自带 legacy 只读 fallback（Task 1）
     return Daemon(root).current_port()
 

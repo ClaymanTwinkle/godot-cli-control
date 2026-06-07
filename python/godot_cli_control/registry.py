@@ -115,6 +115,18 @@ def list_all() -> list[DaemonRecord]:
     return live
 
 
+def _rmdir_if_empty(path: Path) -> None:
+    """目录已空则删除（死实例目录卫生回收，#144）；非空 / 不存在 / IO 错静默保留。
+
+    与 daemon._rmdir_if_empty 同形 —— registry 不能 import daemon（反向依赖），
+    与 _process_alive 的处理方式一致，各自持有一份。
+    """
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
 def _prune(record: DaemonRecord, registry_file: Path) -> None:
     registry_file.unlink(missing_ok=True)
     root = Path(record.project_root)
@@ -122,6 +134,10 @@ def _prune(record: DaemonRecord, registry_file: Path) -> None:
     inst_dir = root / ".cli_control" / "instances" / record.instance
     (inst_dir / "godot.pid").unlink(missing_ok=True)
     (inst_dir / "port").unlink(missing_ok=True)
+    # 死实例目录已空（无 godot.log 等诊断文件）→ 连目录回收，防止孤儿目录
+    # 永久滞留（#144）；非空保留 —— log 是 kill -9 后唯一的现场。
+    _rmdir_if_empty(inst_dir)
+    _rmdir_if_empty(inst_dir.parent)  # 空 instances/ 一并清
     # default 实例同时清理旧版本的平铺路径（.cli_control/godot.pid 等），覆盖旧格式记录
     # 被读为 instance="default" 的场景，防止 legacy 文件残留让 fallback 误报存活。
     if record.instance == "default":
