@@ -314,13 +314,21 @@ class Daemon:
         self._cleanup_state_files()
         print("Godot 已停止", file=sys.stderr)
 
-        # 录制转码（即使失败也认为 stop 成功；返回非 0 让 CI 感知）
-        if self.movie_path_file.exists():
-            movie_path = Path(self.movie_path_file.read_text().strip())
-            self.movie_path_file.unlink(missing_ok=True)
-            if not _transcode_movie(movie_path, self.control_dir):
-                return 2
-        return 0
+        # 录制转码（即使失败也认为 stop 成功；返回非 0 让 CI 感知）。
+        # default 实例额外消费 legacy 平铺路径的 movie_path（#144）：旧版本 CLI
+        # 启动的录像 daemon 升级后用新 CLI stop，录像也要正常转码而非静默残留。
+        # 两路径实际互斥（同一进程只会由一个版本启动），循环只为统一处理。
+        rc = 0
+        movie_candidates = [self.movie_path_file]
+        if self.instance == "default":
+            movie_candidates.append(self._legacy_dir / "movie_path")
+        for mp_file in movie_candidates:
+            if mp_file.exists():
+                movie_path = Path(mp_file.read_text().strip())
+                mp_file.unlink(missing_ok=True)
+                if not _transcode_movie(movie_path, self.control_dir):
+                    rc = 2
+        return rc
 
     # ── 内部 ──
 
@@ -340,6 +348,10 @@ class Daemon:
         if self.instance == "default":
             (self._legacy_dir / "godot.pid").unlink(missing_ok=True)
             (self._legacy_dir / "port").unlink(missing_ok=True)
+            # legacy last_exit_code 没有任何读取方（read_last_exit_code 只读新
+            # 布局），停掉 legacy daemon 后留着就是永久死文件（#144）。
+            # legacy godot.log 保留 —— stop 后回溯日志是 #38 的明确语义。
+            (self._legacy_dir / "last_exit_code").unlink(missing_ok=True)
         # start 失败回滚路径还没 register 时，unregister 是 unlink(missing_ok=True)，
         # 行为一致；保持一处兜底比让所有 caller 记得手动 unregister 更不易遗漏。
         _registry.unregister(self.project_root, instance=self.instance)

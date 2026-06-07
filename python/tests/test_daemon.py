@@ -907,6 +907,76 @@ def test_stop_returns_0_when_no_movie_to_transcode(
     assert transcode_called == [], "无 movie_path_file 时不该调转码"
 
 
+def test_stop_consumes_legacy_movie_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧版本 daemon 开着录像（movie_path 在平铺路径），新 CLI stop 也要触发转码（#144）。"""
+    legacy = tmp_path / ".cli_control"
+    legacy.mkdir()
+    (legacy / "godot.pid").write_text(str(os.getpid()))
+    legacy_movie = legacy / "movie_path"
+    legacy_movie.write_text(str(tmp_path / "rec.avi"))
+
+    transcode_called: list = []
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_alive", lambda pid: True
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_is_godot", lambda pid: True
+    )
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._transcode_movie",
+        lambda *a, **k: transcode_called.append(a) or True,
+    )
+
+    daemon = Daemon(tmp_path)  # default 实例，pid 经 legacy fallback 探到
+    assert daemon.stop() == 0
+    assert len(transcode_called) == 1, "legacy movie_path 也应触发转码"
+    assert transcode_called[0][0] == tmp_path / "rec.avi"
+    assert not legacy_movie.exists(), "legacy movie_path 消费后应清掉"
+
+
+def test_stop_named_instance_ignores_legacy_movie_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """命名实例 stop 不碰 legacy movie_path（legacy fallback 只属于 default）。"""
+    legacy = tmp_path / ".cli_control"
+    legacy.mkdir()
+    legacy_movie = legacy / "movie_path"
+    legacy_movie.write_text(str(tmp_path / "rec.avi"))
+
+    transcode_called: list = []
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_alive", lambda pid: True
+    )
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._process_is_godot", lambda pid: True
+    )
+    monkeypatch.setattr(Daemon, "_terminate", lambda self, pid, **kw: None)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon._transcode_movie",
+        lambda *a, **k: transcode_called.append(a) or True,
+    )
+
+    daemon = Daemon(tmp_path, instance="server")
+    daemon.control_dir.mkdir(parents=True)
+    daemon.pid_file.write_text(str(os.getpid()))
+    assert daemon.stop() == 0
+    assert transcode_called == []
+    assert legacy_movie.exists(), "命名实例不该消费 legacy movie_path"
+
+
+def test_cleanup_clears_legacy_exit_code(tmp_path: Path) -> None:
+    """default 实例清理时连 legacy last_exit_code 一并清（无人再读的死文件，#144）。"""
+    legacy = tmp_path / ".cli_control"
+    legacy.mkdir()
+    (legacy / "last_exit_code").write_text("1")
+    daemon = Daemon(tmp_path)
+    daemon._cleanup_state_files()
+    assert not (legacy / "last_exit_code").exists()
+
+
 # ── _process_alive 边界 ──
 
 
