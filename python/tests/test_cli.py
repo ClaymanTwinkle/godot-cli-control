@@ -3332,58 +3332,29 @@ def test_rpc_ambiguity_is_preflight(
 
     discover_port 在本地 FS 即可判定歧义（N≥2），CLI 必须在 _run_rpc 之前
     报错，不让 agent 等 30s connection retry（CLAUDE.md 契约 #5）。
+
+    驱动真实 main()，而非复现其内部逻辑——防止 port-discovery 分支重构后测试失联。
     """
-    import argparse
     import json as _json
 
     import godot_cli_control.cli as cli_mod
-    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, RPC_BY_NAME
+    from godot_cli_control.cli import EXIT_USAGE, main
 
     _make_two_live_instances(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    # 断言 _run_rpc 没有被调用（即使调用了，AsyncMock 也会立即抛以防漏过）
-    _run_rpc_called: list[bool] = []
+    # 哨兵：_run_rpc 一旦被调就 fail——preflight 必须在它之前短路
+    async def _sentinel(*_a: Any, **_kw: Any) -> int:
+        pytest.fail("_run_rpc 不应被调用：preflight 应在 InstanceAmbiguityError 时短路")
+        return 0  # 永不到达，满足类型检查
 
-    async def _fake_run_rpc(*_a: Any, **_kw: Any) -> int:
-        _run_rpc_called.append(True)
-        return 0
+    monkeypatch.setattr(cli_mod, "_run_rpc", _sentinel)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "tree"])
 
-    monkeypatch.setattr(cli_mod, "_run_rpc", _fake_run_rpc)
+    with pytest.raises(SystemExit) as exc:
+        main()
 
-    ns = argparse.Namespace(
-        cmd="tree",
-        port=None,
-        instance=None,  # 顶层 --instance 未传
-        output_format=OUTPUT_JSON,
-    )
-    spec = RPC_BY_NAME["tree"]
-    # 直接调用 main() 路径等价物：复用 main 内的 RPC 分支逻辑
-    # 用 monkeypatch 补上 preflight = None 的 spec，直接走 port 发现分支
-    import asyncio
-
-    from godot_cli_control.cli import (
-        CLIENT_CODE_USAGE,
-        _emit_error_payload,
-        _output_format,
-    )
-    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
-
-    fmt = _output_format(ns)
-    port = ns.port
-    error_emitted = False
-    exit_code_got: int | None = None
-    if port is None:
-        try:
-            port = discover_port(instance=ns.instance) or 7777
-        except InstanceAmbiguityError as e:
-            _emit_error_payload(CLIENT_CODE_USAGE, str(e))
-            error_emitted = True
-            exit_code_got = EXIT_USAGE
-
-    assert error_emitted, "应在 InstanceAmbiguityError 时直接报错"
-    assert exit_code_got == EXIT_USAGE
-    assert not _run_rpc_called, "_run_rpc 不应被调用"
+    assert exc.value.code == EXIT_USAGE
     out = capsys.readouterr().out.strip()
     payload = _json.loads(out)
     assert payload["ok"] is False
@@ -3397,12 +3368,15 @@ def test_rpc_explicit_instance_not_running_preflight(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """只有 server 活、--instance nope → 64/-1003，message 含运行中实例名。"""
+    """只有 server 活、--instance nope → 64/-1003，message 含运行中实例名。
+
+    驱动真实 main()，而非复现其内部逻辑——防止 port-discovery 分支重构后测试失联。
+    """
     import json as _json
     import os
 
-    from godot_cli_control.cli import CLIENT_CODE_USAGE, EXIT_USAGE, _emit_error_payload
-    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
 
     inst_dir = tmp_path / ".cli_control" / "instances" / "server"
     inst_dir.mkdir(parents=True)
@@ -3410,14 +3384,18 @@ def test_rpc_explicit_instance_not_running_preflight(
     (inst_dir / "port").write_text("7042")
     monkeypatch.chdir(tmp_path)
 
-    try:
-        discover_port(instance="nope")
-        pytest.fail("应抛 InstanceAmbiguityError")
-    except InstanceAmbiguityError as e:
-        _emit_error_payload(CLIENT_CODE_USAGE, str(e))
-        exit_code = EXIT_USAGE
+    # 哨兵：_run_rpc 一旦被调就 fail
+    async def _sentinel(*_a: Any, **_kw: Any) -> int:
+        pytest.fail("_run_rpc 不应被调用：--instance nope 应在连接前报错")
+        return 0
 
-    assert exit_code == EXIT_USAGE
+    monkeypatch.setattr(cli_mod, "_run_rpc", _sentinel)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "--instance", "nope", "tree"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_USAGE
     out = capsys.readouterr().out.strip()
     payload = _json.loads(out)
     assert payload["ok"] is False
@@ -3430,11 +3408,14 @@ def test_rpc_single_instance_auto_selected(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """唯一实例 server（port 7042）→ _run_rpc 收到 port=7042。"""
-    import asyncio
+    """唯一实例 server（port 7042）→ main() 经 discover_port 把 port=7042 传给 _run_rpc。
+
+    驱动真实 main()，而非复现其内部逻辑——防止 port-discovery 分支重构后测试失联。
+    """
     import os
 
     import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import main
 
     inst_dir = tmp_path / ".cli_control" / "instances" / "server"
     inst_dir.mkdir(parents=True)
@@ -3449,28 +3430,12 @@ def test_rpc_single_instance_auto_selected(
         return 0
 
     monkeypatch.setattr(cli_mod, "_run_rpc", _fake_run_rpc)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "tree"])
 
-    # 直接调用 main 的 RPC 分支逻辑（discover_port + _run_rpc）
-    from godot_cli_control.cli import DEFAULT_PORT, RPC_BY_NAME, _output_format
-    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
+    with pytest.raises(SystemExit) as exc:
+        main()
 
-    import argparse
-
-    ns = argparse.Namespace(
-        cmd="tree",
-        port=None,
-        instance=None,
-        output_format="json",
-    )
-    fmt = _output_format(ns)
-    spec = RPC_BY_NAME["tree"]
-    port = ns.port
-    if port is None:
-        try:
-            port = discover_port(instance=ns.instance) or DEFAULT_PORT
-        except InstanceAmbiguityError:
-            pytest.fail("单实例不应歧义")
-    asyncio.run(cli_mod._run_rpc(spec, ns, port, fmt))
+    assert exc.value.code == 0
     assert captured_port == [7042], f"应选 7042，实际 {captured_port}"
 
 
@@ -3479,16 +3444,30 @@ def test_rpc_explicit_instance_resolves_port(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """两实例活，--instance client1（port 7002）→ discover_port 返回 7002。"""
-    import os
+    """两实例活，--instance client1（port 7002）→ main() 把 port=7002 传给 _run_rpc。
 
-    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
+    驱动真实 main()，验证 --instance 选靶经过完整 CLI 路径正确解析到 7002。
+    """
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import main
 
     _make_two_live_instances(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    port = discover_port(instance="client1")
-    assert port == 7002, f"应返回 7002，实际 {port}"
+    captured_port: list[int] = []
+
+    async def _fake_run_rpc(spec: Any, ns: Any, port: int, fmt: str) -> int:
+        captured_port.append(port)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_run_rpc", _fake_run_rpc)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "--instance", "client1", "tree"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    assert captured_port == [7002], f"应选 7002，实际 {captured_port}"
 
 
 def test_run_ambiguous_without_name(
