@@ -92,7 +92,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `is_visible(path)` | `await client.is_visible("/root/UI/Panel")` |
 | `get_children(path, type_filter?)` | `await client.get_children("/root/Map", "Node2D")` |
 | `get_scene_tree(depth)` | `await client.get_scene_tree(depth=3)` |
-| `screenshot(node=None)` | `png_bytes = await client.screenshot()`; pass `node="/root/Game/Sprite"` to crop to that node's screen-space AABB; CLI: `screenshot <path> [--node <node-path>]` (errors: `1010` bounds undeterminable, `1011` off-screen) |
+| `screenshot(node=None)` | `png_bytes = await client.screenshot()`; pass `node="/root/Game/Sprite"` to crop to that node's screen-space AABB; CLI: `screenshot <path> [--node <node-path>]` (errors: `1010` bounds undeterminable, `1011` off-screen, `1013` daemon can't write the path). `screenshot_raw(node=None, path=None)`: pass an **absolute** `path` to have the daemon write the PNG to disk itself — response is `{path, bytes}` metadata only, no base64 crosses the socket (#149); parent dir must already exist |
 | `sprite_info(path)` | `await client.sprite_info("/root/Game/Sprite")` — aggregate render-state query for `Sprite2D` / `AnimatedSprite2D` / `TextureRect` (texture, `effective_region`, `frame_texture`, flips, frame, modulate); headless-safe; CLI: `sprite-info <node-path>`; error `1010` for other node types |
 | `errors(since=0, limit=100)` | `await client.errors(since=marker)` — structured `push_error`/`push_warning` capture (ring of last 1000, cursor pagination via `marker`); needs Godot 4.5+ `Logger` (else `1012`); CLI: `errors [--since MARKER] [--limit N]` |
 | `wait_for_node(path, timeout)` | `await client.wait_for_node("/root/Boss", timeout=10.0)` |
@@ -116,7 +116,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `unpause()` | `await client.unpause()` — resume scene tree; idempotent; CLI: `unpause` |
 | `step_frames(frames, physics=False)` | `await client.step_frames(10)` — while paused, advance exactly N frames (1..3600) then stop; CLI: `step-frames <n> [--physics]`; error `1009` if tree not paused |
 
-> **CLI note**: as a shell subcommand, `screenshot` **requires an output path** — `godot-cli-control screenshot /tmp/shot.png` — and writes the PNG to that file. Returning base64 over stdout is intentionally unsupported, to keep large binary payloads out of an automating agent's context window.
+> **CLI note**: as a shell subcommand, `screenshot` **requires an output path** — `godot-cli-control screenshot /tmp/shot.png`. The PNG is written by the **daemon process directly to disk** (#149), so image size is unlimited — no payload crosses the WebSocket, and hiDPI / 4K fullscreen captures work without shrinking the window. Returning base64 over stdout is intentionally unsupported, to keep large binary payloads out of an automating agent's context window.
 
 > **`--wait`**: `tap` / `hold` / `combo` return as soon as the input is armed, *before* the motion finishes. Add `--wait` (e.g. `hold run 1.5 --wait`) to block until the action's duration elapses (game-time) so the next read sees the settled state — equivalent to following the command with `wait-time <duration>` on the same connection.
 
@@ -146,13 +146,14 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1010` | server | UNSUPPORTED_NODE_TYPE: `sprite-info` on a non-sprite node, or `screenshot --node` on a node whose bounds can't be determined. Schema-class — pick another node/command, don't retry. |
 | `1011` | server | NODE_NOT_ON_SCREEN: `screenshot --node` crop rect doesn't intersect the viewport (off-screen / zero size). State-class — bring the node into view, then retry. |
 | `1012` | server | FEATURE_UNAVAILABLE: the hosting engine lacks an API this RPC needs (currently: `errors` requires Godot 4.5+ `Logger`). Permanent for that engine — upgrade Godot, don't retry. |
+| `1013` | server | WRITE_FAILED: the daemon process couldn't write the `screenshot` PNG to the requested path (parent dir missing / no permission). Distinct from `-1004` (CLI-side IO). Permanent — fix the path, don't retry. |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold; also out-of-range values like a scene `timeout` outside `(0, 3600]` sent directly via `GameClient`) |
 | `-1001` | client | Connection failure (daemon not running, port wrong, proxy hijacking localhost) |
 | `-1002` | client | Timeout waiting for response |
 | `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `scene-change` path not starting with `res://`/`uid://`, a `scene-reload`/`scene-change` `--timeout` outside `(0, 3600]`, a `set`/`call` value that fails JSON parsing, script path not found, script missing `run(bridge)`, **multi-instance ambiguity** (≥2 instances running and no `--instance`/`--name` given), **named instance not running** (explicit `--instance nope` but that instance isn't up), **instance port not readable yet** (alive but mid-startup — transient, retry), or `--instance` / `--name` conflict). Always exits **64** (#82 / #111). |
-| `-1004` | client | Local file IO error (e.g. screenshot can't write the destination) |
+| `-1004` | client | Local file IO error in the CLI process (e.g. screenshot can't create the destination's parent dir); daemon-side write failures are `1013` |
 | `-1005` | client | `run <script>` user script raised an uncaught exception — fix the script |
 | `-1006` | client | Infra pre-condition failure (`daemon start`/`stop`/`run` auto-start failed at OS level — port conflict, Godot binary not found, etc.). Always exits **2** (#92). |
 | `-1099` | client | Internal CLI bug — please file an issue |

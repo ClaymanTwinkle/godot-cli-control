@@ -1764,6 +1764,109 @@ def test_run_rpc_separates_local_io_error_from_connection(
     )
 
 
+def test_screenshot_server_side_write_reports_daemon_result(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """screenshot 落盘走 daemon 直写（issue #149）：CLI 建好父目录、把绝对
+    路径递给 RPC，信封字节数取自 daemon 回报，base64 不再过 WS。"""
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["screenshot"]
+    out = tmp_path / "sub" / "shot.png"
+    ns = __import__("argparse").Namespace(output_path=str(out), node=None)
+
+    mock_client = AsyncMock()
+    mock_client.screenshot_raw = AsyncMock(
+        return_value={"path": str(out.resolve()), "bytes": 7}
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+    assert payload["result"] == {"path": str(out), "bytes": 7}
+    # 路径必须绝对化（daemon 的 CWD 是项目目录，相对路径会写错地方）
+    mock_client.screenshot_raw.assert_awaited_once_with(
+        None, path=str(out.resolve())
+    )
+    # 父目录由 CLI 创建（同机），daemon 端只管写文件
+    assert out.parent.is_dir()
+
+
+def test_screenshot_server_side_write_node_region_passthrough(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """--node 裁剪在 daemon 直写协议下 region/node 信封字段不丢（issue #149）。"""
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["screenshot"]
+    out = tmp_path / "crop.png"
+    ns = __import__("argparse").Namespace(output_path=str(out), node="/root/S")
+
+    mock_client = AsyncMock()
+    mock_client.screenshot_raw = AsyncMock(
+        return_value={"path": str(out.resolve()), "bytes": 3, "region": [1, 2, 3, 4]}
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["result"] == {
+        "path": str(out),
+        "bytes": 3,
+        "node": "/root/S",
+        "region": [1, 2, 3, 4],
+    }
+    mock_client.screenshot_raw.assert_awaited_once_with(
+        "/root/S", path=str(out.resolve())
+    )
+
+
+def test_screenshot_legacy_addon_base64_fallback(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """旧 addon 不认 path 参数、照旧回 {"image": base64}：CLI 必须本地解码
+    落盘（版本错位窗口的优雅降级，issue #149；addon 一跑 init 即同步）。"""
+    import base64 as _b64
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["screenshot"]
+    out = tmp_path / "legacy.png"
+    ns = __import__("argparse").Namespace(output_path=str(out), node=None)
+
+    mock_client = AsyncMock()
+    mock_client.screenshot_raw = AsyncMock(
+        return_value={"image": _b64.b64encode(b"fake png bytes").decode()}
+    )
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+        rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["result"] == {"path": str(out), "bytes": len(b"fake png bytes")}
+    assert out.read_bytes() == b"fake png bytes"
+
+
 def test_combo_dash_rejects_tty_stdin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

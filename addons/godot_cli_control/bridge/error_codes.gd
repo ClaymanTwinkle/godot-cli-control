@@ -44,6 +44,10 @@ const NODE_NOT_ON_SCREEN: int = 1011
 # 老引擎上该 RPC 永久不可用。与 1006 区分：不是 transient，升级引擎前
 # 重试无意义；与 1010 区分：错的不是目标节点，是宿主引擎版本。
 const FEATURE_UNAVAILABLE: int = 1012
+# screenshot 服务端落盘失败（issue #149）：path 打不开（父目录不存在 /
+# 无写权限 / 路径非法）。与客户端 -1004 区分：那是 CLI 进程本地写不进，
+# 这是 daemon 进程写不进。永久错（与 1002/1003 同族）——修路径前重试无意义。
+const WRITE_FAILED: int = 1013
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600

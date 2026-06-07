@@ -385,14 +385,25 @@ async def cmd_screenshot(client: GameClient, ns: argparse.Namespace) -> dict:
 
     ``--node``（issue #101）：按节点屏幕 AABB 裁剪小图；信封带回实际裁剪
     region（视口像素坐标）便于排查「裁到的不是我想的区域」。
+
+    落盘走 daemon 直写（issue #149）：daemon 与 CLI 必然同机（localhost-only
+    是安全前提），PNG 由 daemon 进程直接写到绝对路径（两进程 CWD 不同，
+    必须 resolve），base64 不再过 WS——hiDPI 全屏大图曾撞 1MB 消息上限被
+    close 1009，误报 -1001 连接错。父目录仍由 CLI 创建。旧 addon 不认 path
+    参数、照旧回 base64 → 本地解码落盘兜底（版本错位窗口的优雅降级，跑
+    一次 ``init`` 即同步 addon）。
     """
     node: str | None = getattr(ns, "node", None)
-    raw = await client.screenshot_raw(node)
-    data = base64.b64decode(raw.get("image", ""))
     output = Path(ns.output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(data)
-    result: dict = {"path": str(output), "bytes": len(data)}
+    raw = await client.screenshot_raw(node, path=str(output.resolve()))
+    if "image" in raw:  # 旧 addon 回退：base64 过 WS，本地解码落盘
+        data = base64.b64decode(raw["image"])
+        output.write_bytes(data)
+        nbytes = len(data)
+    else:
+        nbytes = int(raw["bytes"])
+    result: dict = {"path": str(output), "bytes": nbytes}
     if node:
         result["node"] = node
         result["region"] = raw.get("region")

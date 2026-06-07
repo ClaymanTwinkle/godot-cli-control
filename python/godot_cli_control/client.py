@@ -164,6 +164,12 @@ class GameClient:
                     # 与 websockets 当前默认对齐，防库升级悄悄改默认。
                     ping_interval=20,  # 每 20s 无流量发一次 ping
                     ping_timeout=20,   # pong 20s 未回 → 关连接（≈40s 内可发现死链）
+                    # 放开库默认 1MB 消息上限（issue #149）：hiDPI 全屏截图的
+                    # base64 轻松超 1MB，库会以 close 1009 关连接 → 误报 -1001
+                    # 连接错，症状像随机失败。daemon 是 localhost 上自家进程
+                    # （outbound 默认 10MB 封顶），信任其输出。screenshot 新协议
+                    # 已走服务端落盘，这里兜旧 addon base64 回退 + bytes API。
+                    max_size=None,
                 )
                 self._listen_task = asyncio.create_task(self._listen())
                 logger.info("Connected to GameBridge on port %d", self._port)
@@ -219,8 +225,12 @@ class GameClient:
                     if req_id in self._pending:
                         self._pending[req_id].set_result(msg)
                         del self._pending[req_id]
-        except websockets.ConnectionClosed:
-            close_reason = "Connection closed by server"
+        except websockets.ConnectionClosed as e:
+            # 带上 close code/reason（issue #149 排查教训）：1009 (message too
+            # big) 之类的根因不能被笼统的 "Connection closed" 吞掉——否则
+            # 症状呈现为随机连接失败，下游对着 -1001 排查极贵。str(e) 形如
+            # "received 1009 (message too big) ...; then sent ..."。
+            close_reason = f"Connection closed by server: {e}"
             logger.info(close_reason)
         finally:
             reason = close_reason or "listen task stopped"
@@ -321,14 +331,26 @@ class GameClient:
         result = await self.screenshot_raw(node)
         return base64.b64decode(result.get("image", ""))
 
-    async def screenshot_raw(self, node: str | None = None) -> dict:
-        """screenshot 的原始响应：``{"image": <base64>, "region": [x,y,w,h]?}``。
+    async def screenshot_raw(
+        self, node: str | None = None, path: str | None = None
+    ) -> dict:
+        """screenshot 的原始响应。
 
         ``region`` 仅在传 ``node`` 时出现，是实际裁剪到的视口像素矩形
         （已与视口求交，可能小于节点 AABB）。CLI 信封需要它，故与
         :meth:`screenshot` 的 bytes 便捷形式拆开。
+
+        ``path``（issue #149）：传**绝对路径**让 daemon 直接把 PNG 落盘
+        （同机，localhost-only），响应只回 ``{"path", "bytes"}`` 元数据，
+        base64 不过 WS——大图不再受消息大小限制。父目录须已存在（CLI /
+        bridge 调用前已 mkdir）。旧 addon 不认识该参数，会照旧返回
+        ``{"image": <base64>}``，调用方需兜底（CLI 与 bridge 都有 fallback）。
         """
-        params: dict = {"node": node} if node else {}
+        params: dict = {}
+        if node:
+            params["node"] = node
+        if path:
+            params["path"] = path
         return await self.request("screenshot", params)
 
     async def sprite_info(self, path: str) -> dict:

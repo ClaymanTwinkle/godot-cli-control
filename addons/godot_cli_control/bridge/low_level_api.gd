@@ -505,6 +505,29 @@ func take_screenshot_async(params: Dictionary = {}) -> Dictionary:
 		image = image.get_region(region)
 		response["region"] = [region.position.x, region.position.y, region.size.x, region.size.y]
 	var png_buffer: PackedByteArray = image.save_png_to_buffer()
+	# 服务端直写落盘（issue #149）：daemon 与 CLI 必然同机（localhost-only
+	# 是本工具的安全前提），PNG 不必过 WS——大图曾把 client 默认 1MB
+	# max_size 撞出 close 1009，误报成连接错误。path 必须是绝对路径
+	# （CLI 侧已 resolve；daemon 的 CWD 是项目目录，相对路径会写错地方）。
+	# 父目录不替调用方创建：CLI/bridge 已先 mkdir，raw RPC 调用方自理。
+	var save_path: String = params.get("path", "") as String
+	if not save_path.is_empty():
+		var f: FileAccess = FileAccess.open(save_path, FileAccess.WRITE)
+		if f == null:
+			return _err(
+				CliControlErrorCodes.WRITE_FAILED,
+				(
+					"screenshot: cannot write '%s': %s (parent dir must exist and be writable)"
+					% [save_path, error_string(FileAccess.get_open_error())]
+				),
+			)
+		f.store_buffer(png_buffer)
+		f.close()
+		response["path"] = save_path
+		response["bytes"] = png_buffer.size()
+		return response
+	# 无 path：legacy base64 通道（旧 CLI / bridge.screenshot() bytes API）。
+	# 受 outbound buffer（默认 10MB，ProjectSettings 可调）限制。
 	var base64_str: String = Marshalls.raw_to_base64(png_buffer)
 	response["image"] = base64_str
 	return response
