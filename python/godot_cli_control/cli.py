@@ -47,7 +47,7 @@ EXIT_INFRA_ERROR = 2  # 连接 / 超时 / 用户输入解析失败
 # `daemon stop --all` 专用：至少一条 stop 失败。不复用 EXIT_INFRA_ERROR(=2) —— 单个项目
 # stop rc=2 是「daemon 已停但 ffmpeg 转码失败」的合法成功旁路；--all 聚合若也用 2，
 # 调用方分不清「全停成功只是某个 transcode 失败」与「真有 daemon 没停掉」。
-EXIT_PARTIAL = 3
+EXIT_PARTIAL = 3  # 聚合操作（daemon stop --all / --instance all 广播）部分或全部目标失败
 EXIT_USAGE = 64  # 命令组合无效（如 combo 既无文件又无 --steps-json）
 
 # RPC 错误统一信封（无论 --json 还是 --text）的连接/超时占位 code。GD 端
@@ -206,6 +206,19 @@ def _preflight_combo(ns: argparse.Namespace) -> None:
     把解析结果缓存到 ``ns._combo_steps``：stdin 只能读一次，handler 不能再读第二次。
     """
     ns._combo_steps = _read_combo_steps(ns)
+
+
+def _preflight_screenshot(ns: argparse.Namespace) -> None:
+    """广播（--instance all）下 output_path 必须带 ``{instance}`` 占位符（#145）。
+
+    多实例写同一路径会互相覆盖且不报错——典型静默坑，preflight 拦在连接前
+    （契约 #5）。非广播模式零约束。
+    """
+    if getattr(ns, "instance", None) == "all" and "{instance}" not in ns.output_path:
+        raise ValueError(
+            "broadcast screenshot：output_path 必须包含 {instance} 占位符"
+            "（如 shot-{instance}.png），否则各实例写同一文件互相覆盖"
+        )
 
 
 def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
@@ -849,6 +862,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         example="screenshot out.png --node /root/Game/Player/Sprite",
         extra_args=_register_screenshot_args,
         text_formatter=_fmt_screenshot_text,
+        preflight=_preflight_screenshot,
     ),
     RpcSpec(
         name="sprite-info",
@@ -1282,6 +1296,10 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         )
         return EXIT_USAGE
     inst = merged or "default"
+    if inst == "all":
+        # #145：start 不经 _resolve_daemon_instance，需独立守卫顶层 --instance all。
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=_BROADCAST_NOT_FOR_DAEMON_MSG)
+        return EXIT_USAGE
     daemon = Daemon(Path.cwd(), instance=inst)
     try:
         daemon.start(
@@ -1972,6 +1990,28 @@ def _emit_rpc_result(spec: RpcSpec, fmt: str, result: Any) -> None:
             print(text)
 
 
+def _instance_substituted(value: Any, instance: str) -> Any:
+    """递归把字符串里的 ``{instance}`` 换成实例名（str/list/dict；其余原样）。
+
+    通用机制：screenshot 路径、set/call 的 JSON 字面量、combo 缓存 steps 都吃
+    同一规则——agent 只须记一条。无转义口子（YAGNI），SKILL.md pitfall 注明。
+    """
+    if isinstance(value, str):
+        return value.replace("{instance}", instance)
+    if isinstance(value, list):
+        return [_instance_substituted(v, instance) for v in value]
+    if isinstance(value, dict):
+        return {k: _instance_substituted(v, instance) for k, v in value.items()}
+    return value
+
+
+def _namespace_for_instance(ns: argparse.Namespace, instance: str) -> argparse.Namespace:
+    """广播：拷贝 namespace 并做 {instance} 替换，原 ns 不动（#145）。"""
+    return argparse.Namespace(
+        **{k: _instance_substituted(v, instance) for k, v in vars(ns).items()}
+    )
+
+
 # ── argparse 装配 ──
 
 
@@ -2044,6 +2084,14 @@ def _instance_name_arg(value: str) -> str:
         raise argparse.ArgumentTypeError(str(e))
 
 
+def _instance_arg_allow_all(value: str) -> str:
+    """顶层 ``--instance`` 的 argparse type：放行广播哨兵 ``all``（#145），
+    其余走常规实例名校验。``--name`` 不放行——'all' 不可用作实例名。"""
+    if value == "all":
+        return value
+    return _instance_name_arg(value)
+
+
 def _add_instance_name_flag(p: argparse.ArgumentParser) -> None:
     """daemon 子命令的实例选择 flag。独立于 _add_daemon_flags：后者全是
     start 专属 flag（--record/--headless/...），挂到 status/logs/stop 会污染。"""
@@ -2053,6 +2101,13 @@ def _add_instance_name_flag(p: argparse.ArgumentParser) -> None:
         default=None,
         help="实例名（默认 default；多实例并行时用于选靶，等价顶层 --instance；两者同时传值须一致）",
     )
+
+
+# #145：--instance all 仅对 RPC 子命令广播；daemon / run 是单靶或已有 --all 语义。
+_BROADCAST_NOT_FOR_DAEMON_MSG = (
+    "--instance all 仅对 RPC 子命令广播；daemon/run 子命令请用 --name <inst> "
+    "指定单实例（停全部实例用 daemon stop --all）"
+)
 
 
 def _merge_instance_flags(ns: argparse.Namespace) -> tuple[str | None, bool]:
@@ -2086,6 +2141,10 @@ def _resolve_daemon_instance(ns: argparse.Namespace, project_root: Path) -> str 
             code=CLIENT_CODE_USAGE,
             message=f"--name {sub!r} 与顶层 --instance {top!r} 冲突，二选一",
         )
+        return None
+    if inst == "all":
+        # #145：广播哨兵只在 RPC 路径有意义；daemon/run 单靶路径明确拒绝并指路。
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=_BROADCAST_NOT_FOR_DAEMON_MSG)
         return None
     if inst is not None:
         return inst
@@ -2269,11 +2328,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     conn_grp.add_argument(
         "--instance",
-        type=_instance_name_arg,
+        type=_instance_arg_allow_all,
         default=None,
         help=(
             "目标实例名；RPC 与 run/daemon 子命令通用（daemon 子命令的 --name 是等价写法）。"
-            "多实例并行时必传；与 --port 互斥。"
+            "多实例并行时必传；与 --port 互斥。传 all 对全部活实例广播（仅 RPC 子命令）。"
         ),
     )
     _add_output_format_flags(parser)
@@ -2574,6 +2633,37 @@ def _emit_envelope_error(fmt: str, code: int, message: str) -> None:
         print(f"错误：[{code}] {message}", file=sys.stderr)
 
 
+def _rpc_failure_envelope(e: Exception) -> tuple[int, str, int]:
+    """异常 → ``(client code, message, exit code)``，_run_rpc 与广播路径共用。
+
+    isinstance 判定顺序必须与原 except 链一致：ConnectionError 与（3.11+ 的）
+    TimeoutError 都是 OSError 子类，先窄后宽，否则错码漂移。
+
+    各分支语义（原样搬运自 _run_rpc，历史注释见 git blame）：
+    * RpcError → 服务端业务/协议错，exit 1。
+    * ConnectionError → -1001，exit 2。
+    * asyncio.TimeoutError → -1002，exit 2。
+    * OSError → socket 类算 connection（-1001）；文件 IO 类（screenshot 写盘
+      失败常见）走 -1004，不让 agent 误以为 daemon 挂了。exit 2。
+    * ValueError / JSONDecodeError → 用法错 -1003，恒 exit 64（#82）。
+    * 其余 Exception → 客户端内部 bug：traceback 留给 stderr 帮人 debug，
+      stdout 信封只带异常类名（-1099），exit 2。
+    """
+    if isinstance(e, RpcError):
+        return e.code, e.message, EXIT_RPC_ERROR
+    if isinstance(e, ConnectionError):
+        return CLIENT_CODE_CONNECTION, str(e) or e.__class__.__name__, EXIT_INFRA_ERROR
+    if isinstance(e, asyncio.TimeoutError):
+        return CLIENT_CODE_TIMEOUT, str(e) or "timed out", EXIT_INFRA_ERROR
+    if isinstance(e, OSError):
+        code = CLIENT_CODE_CONNECTION if _is_network_oserror(e) else CLIENT_CODE_IO
+        return code, str(e) or e.__class__.__name__, EXIT_INFRA_ERROR
+    if isinstance(e, (ValueError, json.JSONDecodeError)):
+        return CLIENT_CODE_USAGE, str(e), EXIT_USAGE
+    traceback.print_exc(file=sys.stderr)
+    return CLIENT_CODE_INTERNAL, f"{type(e).__name__}: {e}", EXIT_INFRA_ERROR
+
+
 async def _run_rpc(
     spec: RpcSpec, ns: argparse.Namespace, port: int, fmt: str
 ) -> int:
@@ -2587,50 +2677,87 @@ async def _run_rpc(
     try:
         async with GameClient(port=port) as client:
             result = await spec.handler(client, ns)
-    except RpcError as e:
-        _emit_envelope_error(fmt, e.code, e.message)
-        return EXIT_RPC_ERROR
-    except ConnectionError as e:
-        msg = str(e) or e.__class__.__name__
-        _emit_envelope_error(fmt, CLIENT_CODE_CONNECTION, msg)
-        return EXIT_INFRA_ERROR
-    except asyncio.TimeoutError as e:
-        msg = str(e) or "timed out"
-        _emit_envelope_error(fmt, CLIENT_CODE_TIMEOUT, msg)
-        return EXIT_INFRA_ERROR
-    except OSError as e:
-        # 拆开：socket 层 OSError 还算 connection；文件 IO 类（PermissionError /
-        # FileNotFoundError，screenshot 写盘失败时常见）走独立的 IO 码，
-        # 不让 agent 误以为 daemon 挂了。
-        code = (
-            CLIENT_CODE_CONNECTION
-            if _is_network_oserror(e)
-            else CLIENT_CODE_IO
-        )
-        msg = str(e) or e.__class__.__name__
+    except Exception as e:  # noqa: BLE001 — 全部收口成信封（契约 1）；KeyboardInterrupt/SystemExit 照常传播
+        code, msg, rc = _rpc_failure_envelope(e)
         _emit_envelope_error(fmt, code, msg)
-        return EXIT_INFRA_ERROR
-    except (ValueError, json.JSONDecodeError) as e:
-        # 用法错误：set/call 的 value JSON 解析失败等（这些命令无 preflight）。
-        # 统一退 EXIT_USAGE(64)，与 preflight 路径（combo/hold）一致 —— 同一客户端
-        # 码 -1003 必须恒等于 exit 64，否则 agent 拿到 -1003 无法据此推断退出码
-        # （issue #82，破坏「单 code 字段无歧义」契约）。
-        _emit_envelope_error(fmt, CLIENT_CODE_USAGE, str(e))
-        return EXIT_USAGE
-    except Exception as e:  # noqa: BLE001
-        # 兜底：客户端内部 bug（AttributeError、KeyError、协议解析意外等）
-        # 也要落进信封，否则 ``--json`` 契约对 AI agent 不再可信。把异常类
-        # 名带上方便 issue 复现，但不把 traceback 塞进 message —— stdout JSON
-        # 不是吐 traceback 的地方。完整 traceback 仍留给 stderr 帮人 debug。
-        traceback.print_exc(file=sys.stderr)
-        msg = f"{type(e).__name__}: {e}"
-        _emit_envelope_error(fmt, CLIENT_CODE_INTERNAL, msg)
-        return EXIT_INFRA_ERROR
+        return rc
 
     _emit_rpc_result(spec, fmt, result)
     if spec.exit_code_from is not None:
         return spec.exit_code_from(result)
     return EXIT_OK
+
+
+async def _run_rpc_broadcast(
+    spec: RpcSpec, ns: argparse.Namespace, fmt: str
+) -> int:
+    """``--instance all``（#145）：对 cwd 项目全部活实例并发执行同一 RPC，聚合信封。
+
+    * 目标 = ``list_live_instances(cwd)``（与 ``daemon stop --all --project`` 同一
+      枚举路径）；0 个活实例 → -1006 + exit 2。legacy 平铺 daemon 不在目标内
+      （``instances/`` 不存在时枚举为空），与 default 实例的 legacy 探活语义一致。
+    * 逐实例 entry 复刻单命令信封（``ok`` + ``result``|``error``）+ ``instance`` +
+      ``rc``——agent 复用同一套解析。``rc`` 按原命令语义算（exit_code_from /
+      RPC 错=1 / 连接错=2）。数组按实例名排序。
+    * 聚合退出码：全 0 → 0；任一非 0 → EXIT_PARTIAL(3)。顶层 ``ok`` 恒 true
+      （广播本身执行了就算 ok，沿 stop --all 先例），失败细节在 entry。
+    * asyncio.gather 并发：「同时给 4 个 client 截图」≈ 同一时刻；wait-* 总耗时
+      = 最慢实例而非求和。单实例异常逐个捕获，不拖死其他。
+    """
+    from .daemon import Daemon, list_live_instances
+
+    root = Path.cwd()
+    names = list_live_instances(root)
+    if not names:
+        _emit_envelope_error(
+            fmt,
+            CLIENT_CODE_PRECONDITION,
+            "no live instances to broadcast —— --instance all 只对 "
+            ".cli_control/instances/ 下的活实例生效（legacy 平铺 daemon 不算）；"
+            "先 daemon start --name <inst>",
+        )
+        return EXIT_INFRA_ERROR
+
+    async def _one(name: str) -> dict[str, Any]:
+        inst_ns = _namespace_for_instance(ns, name)
+        try:
+            port = Daemon(root, instance=name).current_port()
+            if port is None:
+                # 探活与读端口之间实例死了 / 启动中：瞬态，按连接错处理。
+                raise ConnectionError(f"instance {name!r}: port file not readable")
+            async with GameClient(port=port) as client:
+                result = await spec.handler(client, inst_ns)
+        except Exception as e:  # noqa: BLE001 — 单实例失败落 entry，不拖死其他
+            code, msg, rc = _rpc_failure_envelope(e)
+            return {
+                "instance": name,
+                "ok": False,
+                "error": {"code": code, "message": msg},
+                "rc": rc,
+            }
+        rc = spec.exit_code_from(result) if spec.exit_code_from is not None else EXIT_OK
+        return {"instance": name, "ok": True, "result": result, "rc": rc}
+
+    entries = list(await asyncio.gather(*(_one(n) for n in names)))
+    # list_live_instances 已排序、gather 保序；显式再排一次把输出契约钉死。
+    entries.sort(key=lambda e: e["instance"])
+    agg_rc = EXIT_OK if all(e["rc"] == EXIT_OK for e in entries) else EXIT_PARTIAL
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload({"instances": entries, "rc": agg_rc})
+    else:
+        for e in entries:
+            if e["ok"]:
+                # 空 formatter 输出（如 pressed 空列表）退化为裸 [name] 行，
+                # 不留尾空格——广播下省略整行会让 agent 误以为实例丢了。
+                text = spec.text_formatter(e["result"])
+                print(f"[{e['instance']}] {text}" if text else f"[{e['instance']}]")
+            else:
+                print(
+                    f"[{e['instance']}] error: [{e['error']['code']}] "
+                    f"{e['error']['message']}",
+                    file=sys.stderr,
+                )
+    return agg_rc
 
 
 def main() -> None:
@@ -2670,6 +2797,11 @@ def main() -> None:
                 else:
                     print(f"错误：{e}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
+
+        # --instance all：广播路径（#145）——逐实例并发 + 聚合信封，
+        # 不走单实例端口发现（preflight 已在上面跑过，screenshot 守卫等生效）。
+        if ns.instance == "all":
+            sys.exit(asyncio.run(_run_rpc_broadcast(spec, ns, fmt)))
 
         port = ns.port
         if port is None:
