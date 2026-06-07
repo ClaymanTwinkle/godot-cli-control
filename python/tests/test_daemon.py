@@ -42,7 +42,7 @@ def test_is_running_false_when_no_pid_file(tmp_path: Path) -> None:
 def test_is_running_false_when_pid_dead(tmp_path: Path) -> None:
     """一个永远不会存在的 PID（极大数）应被识别为非存活。"""
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.pid_file.write_text("999999999")  # 极大概率不存在
     assert _process_alive(999999999) is False
     assert daemon.is_running() is False
@@ -50,14 +50,14 @@ def test_is_running_false_when_pid_dead(tmp_path: Path) -> None:
 
 def test_current_port_reads_file(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.port_file.write_text("12345\n")
     assert daemon.current_port() == 12345
 
 
 def test_current_port_none_when_garbage(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.port_file.write_text("not a port\n")
     assert daemon.current_port() is None
 
@@ -115,7 +115,12 @@ def test_start_rejects_when_godot_bin_missing(
 
 
 def test_read_godot_bin_pref_file(tmp_path: Path) -> None:
-    """init 写的 .cli_control/godot_bin 优先于自动检测。"""
+    """init 写的 .cli_control/godot_bin（项目级）优先于自动检测。
+
+    godot_bin 是项目级偏好（init_cmd.py 写到 .cli_control/），不随实例迁入
+    instances/；read_godot_bin_pref 必须从 _legacy_dir 读，而非 control_dir
+    （spec 2026-06-07）。
+    """
     fake_bin = tmp_path / "godot_fake"
     fake_bin.write_text("")
     fake_bin.chmod(0o755)
@@ -123,8 +128,9 @@ def test_read_godot_bin_pref_file(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
     daemon = Daemon(project)
-    daemon.control_dir.mkdir()
-    (daemon.control_dir / "godot_bin").write_text(str(fake_bin) + "\n")
+    # init 写到项目级 .cli_control/godot_bin，不是 instances/default/godot_bin
+    daemon._legacy_dir.mkdir(parents=True, exist_ok=True)
+    (daemon._legacy_dir / "godot_bin").write_text(str(fake_bin) + "\n")
 
     assert daemon.read_godot_bin_pref() == str(fake_bin)
 
@@ -136,8 +142,8 @@ def test_read_godot_bin_pref_ignores_missing_file(tmp_path: Path) -> None:
 
 def test_read_godot_bin_pref_ignores_dead_path(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
-    (daemon.control_dir / "godot_bin").write_text("/not/real/godot\n")
+    daemon._legacy_dir.mkdir(parents=True, exist_ok=True)
+    (daemon._legacy_dir / "godot_bin").write_text("/not/real/godot\n")
     assert daemon.read_godot_bin_pref() is None
 
 
@@ -236,7 +242,7 @@ def test_stop_handles_missing_pid_file(tmp_path: Path) -> None:
 
 def test_stop_cleans_dead_pid_file(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.pid_file.write_text("999999999")
     assert daemon.stop() == 0
     assert not daemon.pid_file.exists()
@@ -245,7 +251,7 @@ def test_stop_cleans_dead_pid_file(tmp_path: Path) -> None:
 def test_stop_cleans_port_file_when_pid_dead(tmp_path: Path) -> None:
     """死 PID 路径也清 port_file —— 避免 stale port 把 RPC 引向错误端点。"""
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.pid_file.write_text("999999999")
     daemon.port_file.write_text("12345")
     assert daemon.stop() == 0
@@ -619,7 +625,7 @@ def test_stop_refuses_when_pid_not_godot(
 ) -> None:
     """PID 复用情景：现役进程名不像 Godot → 拒绝 SIGTERM 以免误杀别人的进程。"""
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.pid_file.write_text(str(os.getpid()))  # 当前 python 进程，肯定 alive
     monkeypatch.setattr(
         "godot_cli_control.daemon._process_alive", lambda pid: True
@@ -855,7 +861,7 @@ def test_stop_returns_2_when_transcode_fails(
 ) -> None:
     """录制转码失败但进程已停 → stop 返回 2，让 CI 能感知录制问题。"""
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.pid_file.write_text(str(os.getpid()))
     daemon.movie_path_file.write_text(str(tmp_path / "rec.avi"))
     (tmp_path / "rec.avi").write_bytes(b"data")
@@ -881,7 +887,7 @@ def test_stop_returns_0_when_no_movie_to_transcode(
 ) -> None:
     """常规 stop（没开录制）→ 不调 _transcode_movie，返回 0。"""
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.pid_file.write_text(str(os.getpid()))
 
     transcode_called: list = []
@@ -1291,7 +1297,7 @@ def test_start_clears_stale_exit_code(
 
 def test_read_last_exit_code_handles_garbage(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
-    daemon.control_dir.mkdir()
+    daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.exit_code_file.write_text("not a number")
     assert daemon.read_last_exit_code() is None
 
@@ -1543,3 +1549,60 @@ def test_start_rejects_time_scale_above_max(tmp_path: Path) -> None:
     daemon = Daemon(tmp_path)
     with pytest.raises(DaemonError, match="time-scale"):
         daemon.start(time_scale=101)
+
+
+# ---------------------------------------------------------------------------
+# Task 1：多实例状态目录隔离（spec 2026-06-07）
+# ---------------------------------------------------------------------------
+
+
+import godot_cli_control.daemon as daemon_mod  # noqa: E402  模块级引用，方便 monkeypatch
+
+
+class TestInstanceLayout:
+    def test_default_instance_uses_instances_dir(self, tmp_path: Path) -> None:
+        """默认实例状态目录应落在 instances/default/，而非旧平铺路径。"""
+        d = daemon_mod.Daemon(tmp_path)
+        assert d.control_dir == tmp_path / ".cli_control" / "instances" / "default"
+        assert d.pid_file == d.control_dir / "godot.pid"
+        assert d.port_file == d.control_dir / "port"
+
+    def test_named_instance_dir(self, tmp_path: Path) -> None:
+        """命名实例目录应与实例名一致。"""
+        d = daemon_mod.Daemon(tmp_path, instance="server")
+        assert d.control_dir == tmp_path / ".cli_control" / "instances" / "server"
+
+    def test_explicit_control_dir_wins(self, tmp_path: Path) -> None:
+        """显式传入 control_dir 时 override 优先，不受 instance 影响。"""
+        custom = tmp_path / "custom"
+        d = daemon_mod.Daemon(tmp_path, custom, instance="server")
+        assert d.control_dir == custom
+
+    @pytest.mark.parametrize("bad", ["", "a/b", "a b", "x" * 33, "中文", "a.b"])
+    def test_invalid_instance_name_rejected(self, tmp_path: Path, bad: str) -> None:
+        """非法实例名应在构造时立即抛 DaemonError，message 含 'instance'。"""
+        with pytest.raises(daemon_mod.DaemonError, match="instance"):
+            daemon_mod.Daemon(tmp_path, instance=bad)
+
+    def test_default_read_pid_falls_back_to_legacy(self, tmp_path: Path) -> None:
+        """default 实例：新路径无文件时，read_pid/current_port 应 fallback 到旧平铺路径。
+
+        这是防双开的安全网（spec 2026-06-07）：旧版本 daemon 写在 .cli_control/
+        平铺路径，升级后 default 实例必须还能探活到它们。
+        """
+        legacy = tmp_path / ".cli_control"
+        legacy.mkdir()
+        (legacy / "godot.pid").write_text(str(os.getpid()))
+        (legacy / "port").write_text("12345")
+        d = daemon_mod.Daemon(tmp_path)  # default 实例
+        assert d.read_pid() == os.getpid()      # legacy fallback
+        assert d.current_port() == 12345
+        assert d.is_running()                   # 防双开：legacy 存活 = running
+
+    def test_named_instance_no_legacy_fallback(self, tmp_path: Path) -> None:
+        """命名实例不应读 legacy 平铺路径（只有 default 才有 fallback）。"""
+        legacy = tmp_path / ".cli_control"
+        legacy.mkdir()
+        (legacy / "godot.pid").write_text(str(os.getpid()))
+        d = daemon_mod.Daemon(tmp_path, instance="server")
+        assert d.read_pid() is None             # 命名实例不读 legacy

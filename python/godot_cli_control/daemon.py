@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -23,6 +24,19 @@ class DaemonError(RuntimeError):
     """Daemon 启停过程中可恢复的错误（用户应看到 message，不必看 traceback）。"""
 
 
+# 实例名校验正则：要落进文件路径与注册表文件名，必须文件系统安全（spec 2026-06-07）。
+_INSTANCE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def validate_instance_name(name: str) -> str:
+    """校验实例名合法性，合法则原样返回，不合法抛 DaemonError（spec 2026-06-07）。"""
+    if not _INSTANCE_NAME_RE.fullmatch(name):
+        raise DaemonError(
+            f"非法 instance 名 {name!r}：只允许 [A-Za-z0-9_-]，长度 1-32"
+        )
+    return name
+
+
 class Daemon:
     """管理本地 Godot 实例的状态文件 + 进程。
 
@@ -30,9 +44,20 @@ class Daemon:
     ``movie_path``。文件名/语义与原 bash 版一致，使两者可互换。
     """
 
-    def __init__(self, project_root: Path, control_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        control_dir: Path | None = None,
+        *,
+        instance: str = "default",
+    ) -> None:
         self.project_root = Path(project_root).resolve()
-        self.control_dir = control_dir or (self.project_root / ".cli_control")
+        self.instance = validate_instance_name(instance)
+        # 多实例：状态文件按实例隔离到 instances/<name>/（spec 2026-06-07）。
+        # 显式 control_dir 仍全权 override（既有测试注入语义不变）。
+        self.control_dir = control_dir or (
+            self.project_root / ".cli_control" / "instances" / self.instance
+        )
         self.pid_file = self.control_dir / "godot.pid"
         self.port_file = self.control_dir / "port"
         self.movie_path_file = self.control_dir / "movie_path"
@@ -43,26 +68,40 @@ class Daemon:
         # 直接报「last exit: <code>」，省下一轮回溯。stop / 新一轮 start 会
         # 清掉。issue #38。
         self.exit_code_file = self.control_dir / "last_exit_code"
+        # legacy 平铺路径（迁移前布局 —— 版本升级前 default 实例写在这里）：
+        # default 实例用于只读 fallback + 防双开探活（spec 2026-06-07）。
+        # godot_bin 偏好（init 命令写）属于项目级，永远放在这里，不跟 instances/ 搬。
+        self._legacy_dir = self.project_root / ".cli_control"
 
     # ── 状态查询 ──
 
     def read_pid(self) -> int | None:
-        if not self.pid_file.exists():
-            return None
-        try:
-            return int(self.pid_file.read_text().strip())
-        except (ValueError, OSError):
-            return None
+        pid = self._read_int(self.pid_file)
+        if pid is None and self.instance == "default":
+            # default 实例 fallback：读旧平铺路径防双开（spec 2026-06-07）。
+            # 旧版本 daemon 把 pid 写到 .cli_control/godot.pid；
+            # 升级后若 instances/default/ 还不存在，依靠此 fallback 感知仍在跑的老进程。
+            pid = self._read_int(self._legacy_dir / "godot.pid")
+        return pid
 
     def is_running(self) -> bool:
         pid = self.read_pid()
         return pid is not None and _process_alive(pid)
 
     def current_port(self) -> int | None:
-        if not self.port_file.exists():
+        port = self._read_int(self.port_file)
+        if port is None and self.instance == "default":
+            # default 实例 fallback：读旧平铺路径（spec 2026-06-07）。
+            port = self._read_int(self._legacy_dir / "port")
+        return port
+
+    @staticmethod
+    def _read_int(path: Path) -> int | None:
+        """安全读单行整数文件，不存在或解析失败均返回 None。"""
+        if not path.exists():
             return None
         try:
-            return int(self.port_file.read_text().strip())
+            return int(path.read_text().strip())
         except (ValueError, OSError):
             return None
 
@@ -270,16 +309,28 @@ class Daemon:
         三者同生同死 —— ``start()`` 成功后一并写入；任何 stop 路径（包括 start
         途中失败的回滚清理）必须把它们一并清掉，否则下次 ``daemon ls`` / 启动
         校验会误以为还有进程在跑。``movie_path`` 在 stop 流程中独立处理。
+
+        default 实例额外清理旧平铺路径的残留文件（spec 2026-06-07）：
+        停掉由旧版本启动的 legacy daemon 后，不应把那两个文件留在磁盘上充「僵尸」，
+        否则下次 fallback 探活会误报有进程在跑。
         """
         self.pid_file.unlink(missing_ok=True)
         self.port_file.unlink(missing_ok=True)
+        if self.instance == "default":
+            (self._legacy_dir / "godot.pid").unlink(missing_ok=True)
+            (self._legacy_dir / "port").unlink(missing_ok=True)
         # start 失败回滚路径还没 register 时，unregister 是 unlink(missing_ok=True)，
         # 行为一致；保持一处兜底比让所有 caller 记得手动 unregister 更不易遗漏。
         _registry.unregister(self.project_root)
 
     def read_godot_bin_pref(self) -> str | None:
-        """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。"""
-        pref = self.control_dir / "godot_bin"
+        """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。
+
+        godot_bin 属于**项目级**偏好（由 init_cmd.py 写到平铺路径）；
+        必须从 _legacy_dir（即 .cli_control/）读取，不能跟 instances/ 搬——
+        否则命名实例（如 server）读不到 init 写的 bin 偏好（spec 2026-06-07）。
+        """
+        pref = self._legacy_dir / "godot_bin"
         if not pref.exists():
             return None
         try:
