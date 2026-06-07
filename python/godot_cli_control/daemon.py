@@ -267,6 +267,7 @@ class Daemon:
             port=actual_port,
             godot_bin=bin_path,
             log_path=str(self.log_file),
+            instance=self.instance,
         )
         return proc.pid
 
@@ -321,7 +322,7 @@ class Daemon:
             (self._legacy_dir / "port").unlink(missing_ok=True)
         # start 失败回滚路径还没 register 时，unregister 是 unlink(missing_ok=True)，
         # 行为一致；保持一处兜底比让所有 caller 记得手动 unregister 更不易遗漏。
-        _registry.unregister(self.project_root)
+        _registry.unregister(self.project_root, instance=self.instance)
 
     def read_godot_bin_pref(self) -> str | None:
         """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。

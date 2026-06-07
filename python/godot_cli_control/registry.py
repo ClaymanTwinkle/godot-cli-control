@@ -1,8 +1,9 @@
 """Global cross-project daemon registry，目录按平台惯例选址（见 ``_user_state_dir``）。
 
-每个守护进程一份 ``<project_hash>.json``，记录 PID / 端口 / 项目路径 / 启动时刻。
-``list_all()`` 顺手探活并清理死记录。无文件锁 —— 每条记录文件名以 project_hash
-区分，写入幂等。
+每个守护进程一份 ``<project_hash>-<instance>.json``，记录 PID / 端口 / 项目路径 /
+启动时刻 / 实例名。旧格式（``<project_hash>.json``，无 instance 字段）被向后兼容
+读为 ``instance="default"``。``list_all()`` 顺手探活并清理死记录。无文件锁 ——
+每条记录文件名以 project_hash + instance 区分，写入幂等。
 """
 from __future__ import annotations
 
@@ -42,10 +43,11 @@ class DaemonRecord:
     started_at: str
     godot_bin: str
     log_path: str
+    instance: str = "default"   # 旧记录无此字段 → default（spec 2026-06-07）
 
     @property
     def record_file(self) -> Path:
-        return _REGISTRY_DIR / f"{project_hash(Path(self.project_root))}.json"
+        return _REGISTRY_DIR / f"{project_hash(Path(self.project_root))}-{self.instance}.json"
 
 
 def project_hash(project_root: Path) -> str:
@@ -59,6 +61,7 @@ def register(
     port: int,
     godot_bin: str,
     log_path: str,
+    instance: str = "default",
 ) -> None:
     _REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -68,18 +71,26 @@ def register(
         "started_at": _dt.datetime.now(_dt.timezone.utc).astimezone().isoformat(timespec="seconds"),
         "godot_bin": godot_bin,
         "log_path": log_path,
+        "instance": instance,
     }
     # 原子写：先写 .tmp 再 os.replace，避免被 SIGKILL / OOM 打断后留下 0 字节
     # 文件让 list_all 误删尚未完成的注册。docstring 的"幂等"才真正成立。
-    target = _REGISTRY_DIR / f"{project_hash(project_root)}.json"
+    # 文件名含实例名，同项目多实例各自独立记录（spec 2026-06-07）。
+    target = _REGISTRY_DIR / f"{project_hash(project_root)}-{instance}.json"
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
     os.replace(tmp, target)
 
 
-def unregister(project_root: Path) -> None:
-    target = _REGISTRY_DIR / f"{project_hash(project_root)}.json"
+def unregister(project_root: Path, instance: str = "default") -> None:
+    # 删除新格式文件名（<hash>-<instance>.json）。
+    target = _REGISTRY_DIR / f"{project_hash(project_root)}-{instance}.json"
     target.unlink(missing_ok=True)
+    # default 实例额外清理旧格式文件名（<hash>.json），防止 legacy daemon 停掉后
+    # 残留旧记录让 list_all 误以为还有进程在跑（spec 2026-06-07）。
+    if instance == "default":
+        legacy = _REGISTRY_DIR / f"{project_hash(project_root)}.json"
+        legacy.unlink(missing_ok=True)
 
 
 def list_all() -> list[DaemonRecord]:
@@ -90,7 +101,10 @@ def list_all() -> list[DaemonRecord]:
     for f in sorted(_REGISTRY_DIR.glob("*.json")):
         try:
             data = json.loads(f.read_text())
-            r = DaemonRecord(**{k: data[k] for k in DaemonRecord.__dataclass_fields__})
+            # 按 data 现有键过滤构造，而非按 fields 去 data 取值：
+            # 旧记录缺 instance 字段时不触发 KeyError，dataclass 默认值 "default" 生效。
+            # 必填六键缺失时 dataclass 构造自然 TypeError，仍落入 except 清理分支。
+            r = DaemonRecord(**{k: data[k] for k in data if k in DaemonRecord.__dataclass_fields__})
         except (OSError, json.JSONDecodeError, KeyError, TypeError):
             f.unlink(missing_ok=True)
             continue
@@ -103,9 +117,17 @@ def list_all() -> list[DaemonRecord]:
 
 def _prune(record: DaemonRecord, registry_file: Path) -> None:
     registry_file.unlink(missing_ok=True)
-    ctrl = Path(record.project_root) / ".cli_control"
-    (ctrl / "godot.pid").unlink(missing_ok=True)
-    (ctrl / "port").unlink(missing_ok=True)
+    root = Path(record.project_root)
+    # 新格式：状态文件在 instances/<instance>/ 子目录（spec 2026-06-07）。
+    inst_dir = root / ".cli_control" / "instances" / record.instance
+    (inst_dir / "godot.pid").unlink(missing_ok=True)
+    (inst_dir / "port").unlink(missing_ok=True)
+    # default 实例同时清理旧版本的平铺路径（.cli_control/godot.pid 等），覆盖旧格式记录
+    # 被读为 instance="default" 的场景，防止 legacy 文件残留让 fallback 误报存活。
+    if record.instance == "default":
+        legacy_ctrl = root / ".cli_control"
+        (legacy_ctrl / "godot.pid").unlink(missing_ok=True)
+        (legacy_ctrl / "port").unlink(missing_ok=True)
 
 
 def _process_alive(pid: int) -> bool:

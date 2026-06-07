@@ -1460,7 +1460,8 @@ def test_start_registers_in_global_registry(
 
     # 注册表隔离由 autouse fixture _isolate_registry 统一重定向到 tmp_path/reg。
     daemon, _ = _setup_start_env(tmp_path, monkeypatch)
-    record_file = tmp_path / "reg" / f"{registry.project_hash(tmp_path)}.json"
+    # 文件名格式：<hash>-<instance>.json（spec 2026-06-07）
+    record_file = tmp_path / "reg" / f"{registry.project_hash(tmp_path)}-default.json"
 
     daemon.start(port=0)
     assert record_file.exists(), "start() 后注册表 JSON 应存在"

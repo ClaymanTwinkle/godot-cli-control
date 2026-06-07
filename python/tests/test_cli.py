@@ -971,8 +971,9 @@ def test_daemon_status_stopped_includes_last_log(
     import godot_cli_control.daemon as daemon_mod
 
     monkeypatch.chdir(tmp_path)
-    control_dir = tmp_path / ".cli_control"
-    control_dir.mkdir()
+    # Task 1 后状态文件移入 instances/default/（spec 2026-06-07）
+    control_dir = tmp_path / ".cli_control" / "instances" / "default"
+    control_dir.mkdir(parents=True)
     log = control_dir / "godot.log"
     log.write_text("ERROR: autoload failed\n")
 
@@ -1000,8 +1001,9 @@ def test_daemon_status_stopped_includes_last_exit_code(
     import godot_cli_control.daemon as daemon_mod
 
     monkeypatch.chdir(tmp_path)
-    control_dir = tmp_path / ".cli_control"
-    control_dir.mkdir()
+    # Task 1 后状态文件移入 instances/default/（spec 2026-06-07）
+    control_dir = tmp_path / ".cli_control" / "instances" / "default"
+    control_dir.mkdir(parents=True)
     (control_dir / "godot.log").write_text("FATAL\n")
     (control_dir / "last_exit_code").write_text("137")
 
@@ -1026,8 +1028,9 @@ def test_daemon_status_stopped_text_mode_includes_last_log(
     import godot_cli_control.daemon as daemon_mod
 
     monkeypatch.chdir(tmp_path)
-    control_dir = tmp_path / ".cli_control"
-    control_dir.mkdir()
+    # Task 1 后状态文件移入 instances/default/（spec 2026-06-07）
+    control_dir = tmp_path / ".cli_control" / "instances" / "default"
+    control_dir.mkdir(parents=True)
     (control_dir / "godot.log").write_text("crash\n")
     (control_dir / "last_exit_code").write_text("11")
 
@@ -2893,8 +2896,9 @@ def test_daemon_logs_returns_tail_lines(
 
     from godot_cli_control.cli import EXIT_OK, cmd_daemon_logs
 
-    control = tmp_path / ".cli_control"
-    control.mkdir()
+    # Task 1 后日志文件移入 instances/default/（spec 2026-06-07）
+    control = tmp_path / ".cli_control" / "instances" / "default"
+    control.mkdir(parents=True)
     (control / "godot.log").write_text(
         "\n".join(f"line{i}" for i in range(100)), encoding="utf-8"
     )

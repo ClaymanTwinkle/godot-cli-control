@@ -126,3 +126,75 @@ def test_user_state_dir_posix_keeps_xdg_state(
     assert registry._user_state_dir() == Path.home() / ".local" / "state" / "godot-cli-control"
     monkeypatch.setattr(registry.sys, "platform", "darwin")
     assert registry._user_state_dir() == Path.home() / ".local" / "state" / "godot-cli-control"
+
+
+# ── 多实例支持（spec 2026-06-07）──
+
+
+def test_register_with_instance_filename(reg_dir: Path, tmp_path: Path) -> None:
+    """instance 参数应改变注册表文件名为 <hash>-<instance>.json。"""
+    proj = tmp_path / "p1"
+    proj.mkdir()
+    registry.register(proj, pid=os.getpid(), port=1, godot_bin="x",
+                      log_path="x", instance="server")
+    files = list(reg_dir.glob("*.json"))
+    assert len(files) == 1
+    assert files[0].name == f"{registry.project_hash(proj)}-server.json"
+    r = registry.list_all()[0]
+    assert r.instance == "server"
+
+
+def test_same_project_two_instances_coexist(reg_dir: Path, tmp_path: Path) -> None:
+    """同一项目的两个实例可以同时在注册表中共存（各自独立的 JSON 文件）。"""
+    proj = tmp_path / "p1"
+    proj.mkdir()
+    registry.register(proj, pid=os.getpid(), port=1, godot_bin="x",
+                      log_path="x", instance="server")
+    registry.register(proj, pid=os.getpid(), port=2, godot_bin="x",
+                      log_path="x", instance="client1")
+    assert {r.instance for r in registry.list_all()} == {"server", "client1"}
+
+
+def test_legacy_record_read_as_default(reg_dir: Path, tmp_path: Path) -> None:
+    """无 instance 字段的旧格式记录被读为 instance="default"（向后兼容）。"""
+    import json as _json
+
+    proj = tmp_path / "p1"
+    proj.mkdir()
+    reg_dir.mkdir(parents=True, exist_ok=True)
+    legacy = reg_dir / f"{registry.project_hash(proj)}.json"
+    legacy.write_text(_json.dumps({
+        "project_root": str(proj.resolve()), "pid": os.getpid(), "port": 7,
+        "started_at": "2026-01-01T00:00:00+00:00", "godot_bin": "x", "log_path": "x",
+    }))  # 旧格式：无 instance 字段
+    r = registry.list_all()[0]
+    assert r.instance == "default"
+
+
+def test_unregister_targets_instance(reg_dir: Path, tmp_path: Path) -> None:
+    """unregister 精确删除指定实例；不存在的实例是 no-op；删存在的才清除记录。"""
+    proj = tmp_path / "p1"
+    proj.mkdir()
+    registry.register(proj, pid=os.getpid(), port=1, godot_bin="x",
+                      log_path="x", instance="server")
+    registry.unregister(proj, instance="client1")  # 不存在的实例 → no-op
+    assert len(registry.list_all()) == 1
+    registry.unregister(proj, instance="server")
+    assert registry.list_all() == []
+
+
+def test_prune_dead_new_format_cleans_instance_dir(
+    reg_dir: Path, tmp_path: Path, dead_pid: int
+) -> None:
+    """dead PID 的新格式记录被 prune 时，会清理 instances/<name>/ 下的状态文件。"""
+    proj = tmp_path / "p1"
+    proj.mkdir()
+    inst_dir = proj / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(dead_pid))
+    (inst_dir / "port").write_text("1")
+    registry.register(proj, pid=dead_pid, port=1, godot_bin="x",
+                      log_path="x", instance="server")
+    assert registry.list_all() == []
+    assert not (inst_dir / "godot.pid").exists()
+    assert not (inst_dir / "port").exists()
