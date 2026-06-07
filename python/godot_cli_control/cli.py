@@ -1310,6 +1310,25 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _emit_stop_summary(
+    results: list[dict[str, Any]], had_failure: bool, fmt: str
+) -> int:
+    """``stop --all`` 两分支共用的收尾：JSON/text 汇总输出 + 聚合退出码（#144）。
+
+    rc 含义同既有：0=全成功；EXIT_PARTIAL=至少一条 DaemonError。
+    """
+    rc_total = EXIT_PARTIAL if had_failure else EXIT_OK
+    if fmt == OUTPUT_JSON:
+        _emit_success_payload({"stopped": results, "rc": rc_total})
+    else:
+        failed = sum(1 for x in results if "error" in x)
+        print(
+            f"summary: {len(results) - failed}/{len(results)} stopped"
+            + (f", {failed} failed" if failed else "")
+        )
+    return rc_total
+
+
 def cmd_daemon_stop(ns: argparse.Namespace) -> int:
     """停止 daemon。
 
@@ -1339,9 +1358,20 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
             # --all --project：停指定项目下所有活实例（扫 instances/ 不查注册表）
             from .daemon import list_live_instances
             target = ns.project.resolve()
-            # 空列表回退 "default"：legacy daemon（平铺布局在跑）不出现在 instances/ 扫描里，
-            # 但 default 实例的 read_pid 带 legacy fallback，仍能停到它。
-            names = list_live_instances(target) or ["default"]
+            names = list_live_instances(target)
+            if not names:
+                # legacy daemon（平铺布局在跑）不出现在 instances/ 扫描里，但
+                # default 实例的 is_running 带 legacy fallback，仍能停到它；
+                # 真没东西在跑时不伪造 default 条目（#144），空汇总输出与
+                # --all 全局空注册表的先例形状对齐。
+                if Daemon(target).is_running():
+                    names = ["default"]
+                else:
+                    if fmt == OUTPUT_JSON:
+                        _emit_success_payload({"stopped": [], "rc": 0})
+                    else:
+                        print("(no running daemons)")
+                    return EXIT_OK
             results: list[dict[str, Any]] = []
             had_failure = False
             for inst_name in names:
@@ -1364,16 +1394,7 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
                     had_failure = True
                     print(f"[{target}:{inst_name}] {e}", file=sys.stderr)
                 results.append(entry)
-            rc_total = EXIT_PARTIAL if had_failure else EXIT_OK
-            if fmt == OUTPUT_JSON:
-                _emit_success_payload({"stopped": results, "rc": rc_total})
-            else:
-                failed = sum(1 for x in results if "error" in x)
-                print(
-                    f"summary: {len(results) - failed}/{len(results)} stopped"
-                    + (f", {failed} failed" if failed else "")
-                )
-            return rc_total
+            return _emit_stop_summary(results, had_failure, fmt)
 
         # --all（无 --project）：全局注册表，以记录的 instance 字段构造 Daemon
         records = registry.list_all()
@@ -1406,17 +1427,7 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
                 # 单条失败不阻止其余收尾
                 print(f"[{r.project_root}:{r.instance}] {e}", file=sys.stderr)
             all_results.append(r_entry)
-        # rc 含义同既有：0=全成功；EXIT_PARTIAL=至少一条 DaemonError
-        rc_total_global = EXIT_PARTIAL if had_failure_global else EXIT_OK
-        if fmt == OUTPUT_JSON:
-            _emit_success_payload({"stopped": all_results, "rc": rc_total_global})
-        else:
-            failed_global = sum(1 for x in all_results if "error" in x)
-            print(
-                f"summary: {len(all_results) - failed_global}/{len(all_results)} stopped"
-                + (f", {failed_global} failed" if failed_global else "")
-            )
-        return rc_total_global
+        return _emit_stop_summary(all_results, had_failure_global, fmt)
 
     # 单停
     target = (ns.project.resolve() if getattr(ns, "project", None) else Path.cwd())

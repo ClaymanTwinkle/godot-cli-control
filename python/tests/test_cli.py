@@ -3150,6 +3150,87 @@ def test_stop_all_project_combination(
     assert payload["ok"] is True
 
 
+def test_stop_all_project_empty_emits_no_running(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--all --project <空项目>：无活实例且无 legacy daemon 时不伪造 default 条目（#144）。
+
+    JSON 输出空数组，与 --all 全局空注册表的先例形状一致。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_OK, OUTPUT_JSON, cmd_daemon_stop
+
+    ns = __import__("argparse").Namespace(
+        all=True,
+        name=None,
+        project=tmp_path,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_OK
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+    assert payload["result"] == {"stopped": [], "rc": 0}
+
+
+def test_stop_all_project_empty_text_no_fake_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--all --project <空项目> text 模式：输出 (no running daemons) 而非 1/1 stopped（#144）。"""
+    from godot_cli_control.cli import EXIT_OK, OUTPUT_TEXT, cmd_daemon_stop
+
+    ns = __import__("argparse").Namespace(
+        all=True,
+        name=None,
+        project=tmp_path,
+        output_format=OUTPUT_TEXT,
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_OK
+    out = capsys.readouterr().out
+    assert "(no running daemons)" in out
+    assert "stopped" not in out.replace("(no running daemons)", "")
+
+
+def test_stop_all_project_legacy_daemon_still_stopped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--all --project：instances/ 为空但 legacy 平铺 daemon 在跑 → 仍回退 default 停掉它。"""
+    import os
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_OK, OUTPUT_JSON, cmd_daemon_stop
+
+    # legacy 平铺布局：.cli_control/godot.pid（无 instances/ 目录）
+    legacy = tmp_path / ".cli_control"
+    legacy.mkdir()
+    (legacy / "godot.pid").write_text(str(os.getpid()))
+
+    stop_calls: list[str] = []
+
+    def _fake_stop(self: Any) -> int:
+        stop_calls.append(self.instance)
+        return 0
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _fake_stop)
+
+    ns = __import__("argparse").Namespace(
+        all=True,
+        name=None,
+        project=tmp_path,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_OK
+    assert stop_calls == ["default"]
+    capsys.readouterr()
+
+
 def test_ls_json_includes_instance(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
