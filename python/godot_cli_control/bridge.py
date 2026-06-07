@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -185,13 +186,25 @@ class GameBridge:
 
         ``node``（issue #101）：按节点屏幕 AABB 裁剪成小图（像素级断言用）。
         屏幕外 → 1011，算不出边界 → 1010。
+
+        ``path`` 给定时走 daemon 直写（issue #149）：daemon 与本进程同机
+        （localhost-only），PNG 由 daemon 写到 path，base64 不过 WS——大图
+        不再受消息大小限制；本方法从文件读回字节，返回值契约不变。旧 addon
+        不认 path 参数、照旧回 base64 → 自动回退本地写盘。
+        不传 path 仍走 base64 通道（受 daemon outbound buffer 限制，默认 10MB）。
         """
-        data = self._run(self._client.screenshot(node=node))
         if path:
-            p = Path(path)
+            p = Path(path).expanduser()
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(data)
-        return data
+            raw = self._run(
+                self._client.screenshot_raw(node=node, path=str(p.resolve()))
+            )
+            if "image" in raw:  # 旧 addon 回退
+                data = base64.b64decode(raw["image"])
+                p.write_bytes(data)
+                return data
+            return p.read_bytes()
+        return self._run(self._client.screenshot(node=node))
 
     def sprite_info(self, path: str) -> dict:
         """渲染态聚合查询（issue #101）：texture/图集区域/翻转/帧号 一次拿齐。"""

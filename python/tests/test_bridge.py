@@ -98,6 +98,11 @@ class _StubClient:
     async def screenshot(self, node: str | None = None) -> bytes:
         return self._record("screenshot", (), {"node": node})
 
+    async def screenshot_raw(
+        self, node: str | None = None, path: str | None = None
+    ) -> dict:
+        return self._record("screenshot_raw", (), {"node": node, "path": path})
+
     async def sprite_info(self, path: str) -> dict:
         return self._record("sprite_info", (path,), {})
 
@@ -424,15 +429,41 @@ def test_screenshot_no_path_returns_bytes(stub_client: dict) -> None:
     b.close()
 
 
-def test_screenshot_with_path_writes_file(
+def test_screenshot_with_path_server_side_write(
     stub_client: dict, tmp_path: Path
 ) -> None:
+    """screenshot(path=...) 走 daemon 直写（issue #149）：绝对路径递给
+    screenshot_raw，bytes 从落盘文件读回，base64 不过 WS。"""
     b, c = _make_bridge(stub_client)
-    c.returns["screenshot"] = b"\x89PNG\r\nfake"
+    out = tmp_path / "subdir" / "shot.png"
+    # 模拟新版 addon：daemon 进程已把 PNG 写到目标路径
+    out.parent.mkdir(parents=True)
+    out.write_bytes(b"\x89PNG\r\nserver")
+    c.returns["screenshot_raw"] = {"path": str(out.resolve()), "bytes": 12}
+    data = b.screenshot(str(out), node="/root/Game/Sprite")
+    assert data == b"\x89PNG\r\nserver"
+    assert c.calls[-1] == (
+        "screenshot_raw",
+        (),
+        {"node": "/root/Game/Sprite", "path": str(out.resolve())},
+    )
+    b.close()
+
+
+def test_screenshot_with_path_legacy_base64_fallback(
+    stub_client: dict, tmp_path: Path
+) -> None:
+    """旧 addon 不认 path 参数、照旧回 base64：bridge 本地解码落盘，返回值
+    与父目录自动创建契约不变（issue #149 优雅降级）。"""
+    import base64 as _b64
+
+    b, c = _make_bridge(stub_client)
+    c.returns["screenshot_raw"] = {
+        "image": _b64.b64encode(b"\x89PNG\r\nfake").decode()
+    }
     out = tmp_path / "subdir" / "shot.png"
     data = b.screenshot(str(out))
     assert data == b"\x89PNG\r\nfake"
-    assert out.exists()
     assert out.read_bytes() == b"\x89PNG\r\nfake"
     # 父目录自动创建
     assert out.parent.is_dir()

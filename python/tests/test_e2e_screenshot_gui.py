@@ -231,3 +231,56 @@ def test_windowed_screenshot_node_offscreen_1011(gui_daemon: Any, tmp_path: Path
         # 还原位置，避免污染同 module 的其它用例（gui_daemon 是 function 级，
         # 但 godot_project 是 module 级 —— daemon 重启不重建场景文件，保险起见还原）
         _run_cli(project, "set", "/root/Main/Patch", "position", "[40, 30]")
+
+
+def test_screenshot_raw_server_side_write_no_base64(
+    gui_daemon: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """daemon 直写协议（issue #149）：传 path 时 PNG 由 daemon 落盘，响应只回
+    ``{path, bytes}`` 元数据、**不含 base64**。
+
+    这是「大图不过 WS」的直接证据 —— CLI 信封在新旧协议下长得一样（回退
+    透明），只有 raw 响应能区分 daemon 直写与本地回退。"""
+    import asyncio
+
+    from godot_cli_control.client import GameClient
+
+    project = gui_daemon
+    monkeypatch.chdir(project)  # 端口 auto-discover 读 CWD 的 .cli_control
+    out = (tmp_path / "raw.png").resolve()
+
+    async def go() -> dict:
+        async with GameClient() as client:
+            return await client.screenshot_raw(path=str(out))
+
+    raw = asyncio.run(go())
+    assert "image" not in raw, f"path 模式不得回 base64：keys={list(raw)}"
+    assert raw["path"] == str(out)
+    data = out.read_bytes()
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    assert raw["bytes"] == len(data)
+
+
+def test_screenshot_server_write_failure_reports_1013(
+    gui_daemon: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """daemon 落盘失败（父目录不存在）→ 1013 WRITE_FAILED，信息带路径。
+
+    CLI 正常路径建好父目录打不到这里；这是 raw RPC 调用方的契约测试
+    （issue #149：fail-loud，不能静默回 ok）。"""
+    import asyncio
+
+    from godot_cli_control.client import GameClient, RpcError
+
+    project = gui_daemon
+    monkeypatch.chdir(project)
+    missing = tmp_path / "no_such_dir" / "x.png"
+
+    async def go() -> None:
+        async with GameClient() as client:
+            await client.screenshot_raw(path=str(missing))
+
+    with pytest.raises(RpcError) as ei:
+        asyncio.run(go())
+    assert ei.value.code == 1013, f"应报 1013 WRITE_FAILED：{ei.value}"
+    assert "no_such_dir" in ei.value.message

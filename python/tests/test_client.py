@@ -43,6 +43,27 @@ async def test_connect_passes_proxy_none_explicitly() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connect_passes_max_size_none() -> None:
+    """#149：websockets 默认 1MB max_size 会把大截图 base64 拦成 close 1009，
+    误报 -1001 连接错（症状像随机失败）。daemon 是 localhost 上自家进程，
+    信任其输出，必须显式 max_size=None 放开上限。"""
+    fake_ws = AsyncMock()
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ) as mock_connect:
+        client = GameClient(port=9999)
+        try:
+            await client.connect(retries=1)
+        finally:
+            if client._listen_task:
+                client._listen_task.cancel()
+        _, kwargs = mock_connect.call_args
+        assert "max_size" in kwargs and kwargs["max_size"] is None, \
+            "GameClient.connect() 必须显式 max_size=None，否则大 payload 撞 1MB 上限"
+
+
+@pytest.mark.asyncio
 async def test_connect_uses_ipv4_literal_not_localhost() -> None:
     """URL 必须是 ``ws://127.0.0.1:...``，不能用 hostname。
 
@@ -136,6 +157,44 @@ async def test_listen_clears_pending_on_disconnect() -> None:
         assert "fake_id" not in client._pending
         assert future.done()
         with pytest.raises(ConnectionError):
+            future.result()
+
+
+@pytest.mark.asyncio
+async def test_listen_close_reason_carries_close_code() -> None:
+    """连接被关时 pending future 的错误信息必须带 close code/reason。
+
+    #149 排查教训：大 payload 撞 max_size 时库以 close 1009 关连接，
+    旧文案只有笼统 "Connection closed by server"——根因被吞掉，
+    症状呈现为随机连接失败，下游排查极贵。"""
+    from websockets.exceptions import ConnectionClosedError
+    from websockets.frames import Close
+
+    fake_ws = AsyncMock()
+
+    async def fake_iter():
+        raise ConnectionClosedError(Close(1009, "message too big"), None)
+        yield  # noqa: W0101 —— 仅为让函数成为 async generator，永远到不了
+
+    fake_ws.__aiter__ = lambda self: fake_iter()
+    fake_ws.close = AsyncMock()
+
+    with patch(
+        "godot_cli_control.client.websockets.connect",
+        new=AsyncMock(return_value=fake_ws),
+    ):
+        client = GameClient(port=9999)
+        await client.connect(retries=1)
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        client._pending["fake_id"] = future
+
+        if client._listen_task:
+            await client._listen_task
+
+        assert future.done()
+        with pytest.raises(ConnectionError, match="1009"):
             future.result()
 
 
@@ -997,6 +1056,31 @@ async def test_screenshot_raw_exposes_region() -> None:
     finally:
         client_mod.GameClient.request = orig
     assert raw["region"] == [10, 20, 30, 40]
+
+
+@pytest.mark.asyncio
+async def test_screenshot_raw_passes_path_param() -> None:
+    """screenshot_raw(path=...)（issue #149）：path 进 params，daemon 端直写
+    PNG 落盘，响应只回元数据，base64 不过 WS。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"path": "/abs/shot.png", "bytes": 7}
+
+    client = client_mod.GameClient(port=1)
+    orig = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        raw = await client.screenshot_raw("/root/S", path="/abs/shot.png")
+    finally:
+        client_mod.GameClient.request = orig
+    assert captured["method"] == "screenshot"
+    assert captured["params"] == {"node": "/root/S", "path": "/abs/shot.png"}
+    assert raw == {"path": "/abs/shot.png", "bytes": 7}
 
 
 # ---- issue #103: errors 增量查询 client 包装 ----
