@@ -53,7 +53,13 @@ def test_fixtures_listed(pytester: pytest.Pytester) -> None:
         """
     )
     result = pytester.runpytest("--fixtures")
-    for name in ("godot_daemon", "bridge", "fresh_scene", "no_push_errors"):
+    for name in (
+        "godot_daemon",
+        "bridge",
+        "fresh_scene",
+        "no_push_errors",
+        "godot_instances",
+    ):
         result.stdout.fnmatch_lines([f"{name}*-- *pytest_plugin.py*"])
 
 
@@ -857,6 +863,324 @@ class FakeBridge:
     assert "screenshot:" in output, "失败后应自动截图"
     assert ".cli_control" in output and "failures" in output
     assert "test_boom" in output.split("screenshot:")[1].splitlines()[0]
+
+
+# ---------------------------------------------------------------------------
+# godot_instances 多实例工厂 fixture（issue #143）
+# ---------------------------------------------------------------------------
+
+# 共享假桩：Daemon 记 instance 维度的调用流水，Bridge 记端口维度的；
+# PORTS 给每个实例固定不同端口，断言「各连各的」不串台。
+
+_INSTANCES_CONFTEST = """
+from __future__ import annotations
+import godot_cli_control.pytest_plugin as plugin
+
+CALLS: list = []
+PORTS = {"server": 9001, "client1": 9002}
+
+class FakeDaemon:
+    def __init__(self, project_root, instance="default", **kw):
+        CALLS.append(f"Daemon:{instance}")
+        self.instance = instance
+    def is_running(self): return False
+    def start(self, **kw):
+        CALLS.append(
+            f"start:{self.instance}:headless={kw.get('headless')},"
+            f"port={kw.get('port')},time_scale={kw.get('time_scale')}"
+        )
+    def stop(self):
+        CALLS.append(f"stop:{self.instance}")
+        return 0
+    def current_port(self): return PORTS.get(self.instance, 9999)
+
+class FakeBridge:
+    def __init__(self, port):
+        CALLS.append(f"Bridge:{port}")
+        self.port = port
+    def release_all(self): CALLS.append(f"release_all:{self.port}")
+    def close(self): CALLS.append(f"close:{self.port}")
+
+plugin.Daemon = FakeDaemon
+plugin.GameBridge = FakeBridge
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    terminalreporter.write_line(f"CALLS={CALLS}")
+"""
+
+
+def test_instances_scope_option_registered_in_help(
+    pytester: pytest.Pytester,
+) -> None:
+    """--godot-cli-instances-scope 出现在 --help，默认 function。"""
+    result = pytester.runpytest("--help")
+    result.stdout.fnmatch_lines(["*--godot-cli-instances-scope*"])
+
+
+def test_instances_scope_invalid_value_gives_usage_error(
+    pytester: pytest.Pytester,
+) -> None:
+    """--godot-cli-instances-scope bogus → argparse choices 用法错（exit 4）。"""
+    result = pytester.runpytest("--godot-cli-instances-scope", "bogus")
+    assert result.ret == 4
+    result.stderr.fnmatch_lines(["*invalid choice*"])
+
+
+def test_instances_two_instances_lifecycle(pytester: pytest.Pytester) -> None:
+    """start 两实例：Daemon 各带 instance 名构造、各 start 一次、bridge 各连各端口；
+    teardown 对每个实例 release_all → close → stop（close 先于 stop）。
+    """
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_two(godot_instances):
+            server = godot_instances.start("server")
+            client = godot_instances.start("client1")
+            assert server is not client
+            assert server.port == 9001
+            assert client.port == 9002
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    for needle in (
+        "Daemon:server",
+        "Daemon:client1",
+        "'Bridge:9001'",
+        "'Bridge:9002'",
+        "stop:server",
+        "stop:client1",
+        "close:9001",
+        "close:9002",
+    ):
+        assert needle in output, f"missing {needle}: {output}"
+    assert output.count("start:server") == 1
+    assert output.count("start:client1") == 1
+    # 每实例：close 先于 stop（先断连接再杀进程）
+    calls_line = [ln for ln in output.splitlines() if ln.startswith("CALLS=")][0]
+    assert calls_line.index("close:9001") < calls_line.index("stop:server")
+    assert calls_line.index("close:9002") < calls_line.index("stop:client1")
+
+
+def test_instances_start_idempotent(pytester: pytest.Pytester) -> None:
+    """同名重复 start 返回同一 bridge 对象，Daemon.start 只调一次（get-or-start）。"""
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_idem(godot_instances):
+            a = godot_instances.start("server")
+            b = godot_instances.start("server")
+            assert a is b
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert output.count("start:server") == 1
+    assert output.count("'Bridge:9001'") == 1
+
+
+def test_instances_daemon_accessor(pytester: pytest.Pytester) -> None:
+    """daemon(name) 返回底层 Daemon；未 start 的名字 → KeyError。"""
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        import pytest
+
+        def test_accessor(godot_instances):
+            godot_instances.start("server")
+            assert godot_instances.daemon("server").current_port() == 9001
+            with pytest.raises(KeyError):
+                godot_instances.daemon("nope")
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+
+
+def test_instances_global_options_and_per_call_override(
+    pytester: pytest.Pytester,
+) -> None:
+    """headless / time_scale 默认跟全局选项（--godot-cli-time-scale 3 + 默认 headless），
+    start() 的关键字参数可逐实例覆盖。port 默认恒 0（OS 自动分配，多实例不能共享
+    --godot-cli-port 的固定端口）。
+    """
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_opts(godot_instances):
+            godot_instances.start("server")
+            godot_instances.start("client1", headless=False, time_scale=1.5)
+        """
+    )
+    result = pytester.runpytest("-s", "--godot-cli-time-scale", "3")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert "start:server:headless=True,port=0,time_scale=3.0" in output, output
+    assert "start:client1:headless=False,port=0,time_scale=1.5" in output, output
+
+
+def test_instances_reuses_running_daemon(pytester: pytest.Pytester) -> None:
+    """实例已在跑（开发者手动起的）→ 不重启、teardown 不杀，但连接照常建照常收。"""
+    pytester.makeconftest(
+        _INSTANCES_CONFTEST.replace(
+            "    def is_running(self): return False",
+            "    def is_running(self): return True",
+        )
+    )
+    pytester.makepyfile(
+        """
+        def test_borrow(godot_instances):
+            godot_instances.start("server")
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert "start:server" not in output, "已运行的实例不应被重启"
+    assert "stop:server" not in output, "fixture 没起的实例 teardown 不该杀它"
+    assert "close:9001" in output, "借用的实例 teardown 仍要断开连接"
+
+
+def test_instances_explicit_stop_allows_restart(
+    pytester: pytest.Pytester,
+) -> None:
+    """stop(name) 中途显式停（掉线类场景）→ 立即 close + stop；之后可重新 start。"""
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_restart(godot_instances):
+            godot_instances.start("server")
+            godot_instances.stop("server")
+            godot_instances.start("server")
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert output.count("start:server") == 2
+    assert output.count("stop:server") == 2  # 显式 1 次 + teardown 1 次
+    assert output.count("close:9001") == 2
+
+
+def test_instances_stop_unknown_name_raises(pytester: pytest.Pytester) -> None:
+    """stop 一个没 start 过的名字 → KeyError（抓 typo，不静默吞）。"""
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        import pytest
+
+        def test_unknown(godot_instances):
+            with pytest.raises(KeyError) as exc_info:
+                godot_instances.stop("nope")
+            assert "nope" in str(exc_info.value)
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=1)
+
+
+def test_instances_start_failure_fails_loud(pytester: pytest.Pytester) -> None:
+    """Daemon.start 抛 DaemonError → pytest.fail 透传原始原因（不吞）。"""
+    pytester.makeconftest(
+        """
+        from __future__ import annotations
+        import godot_cli_control.pytest_plugin as plugin
+        from godot_cli_control.daemon import DaemonError
+
+        class FailDaemon:
+            def __init__(self, project_root, instance="default", **kw): pass
+            def is_running(self): return False
+            def start(self, **kw):
+                raise DaemonError("Godot binary not found")
+            def stop(self): return 0
+            def current_port(self): return None
+
+        class FakeBridge:
+            def __init__(self, port): pass
+            def release_all(self): pass
+            def close(self): pass
+
+        plugin.Daemon = FailDaemon
+        plugin.GameBridge = FakeBridge
+        """
+    )
+    pytester.makepyfile(
+        """
+        def test_boom(godot_instances):
+            godot_instances.start("server")
+        """
+    )
+    result = pytester.runpytest()
+    result.assert_outcomes(failed=1)
+    output = result.stdout.str()
+    assert "Godot binary not found" in output
+    assert "server" in output, "失败消息应指明是哪个实例起不来"
+
+
+def test_instances_teardown_runs_even_when_test_raises(
+    pytester: pytest.Pytester,
+) -> None:
+    """用户测试体抛异常 → 全部已起实例仍被 close + stop（不留泄漏进程）。"""
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_crash(godot_instances):
+            godot_instances.start("server")
+            godot_instances.start("client1")
+            raise RuntimeError("user code went bang")
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(failed=1)
+    output = result.stdout.str()
+    for needle in ("close:9001", "stop:server", "close:9002", "stop:client1"):
+        assert needle in output, f"missing {needle}: {output}"
+
+
+def test_instances_function_scope_isolates_tests_by_default(
+    pytester: pytest.Pytester,
+) -> None:
+    """默认 function scope：两个用例各起各停（互不共享实例）。"""
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_a(godot_instances):
+            godot_instances.start("server")
+
+        def test_b(godot_instances):
+            godot_instances.start("server")
+        """
+    )
+    result = pytester.runpytest("-s")
+    result.assert_outcomes(passed=2)
+    output = result.stdout.str()
+    assert output.count("start:server") == 2
+    assert output.count("stop:server") == 2
+
+
+def test_instances_session_scope_shares_across_tests(
+    pytester: pytest.Pytester,
+) -> None:
+    """--godot-cli-instances-scope session：跨用例共享实例，start 1 次、
+    session 末 stop 1 次（联机 e2e 套件起一组 server/client 全程复用）。
+    """
+    pytester.makeconftest(_INSTANCES_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_a(godot_instances):
+            godot_instances.start("server")
+
+        def test_b(godot_instances):
+            godot_instances.start("server")
+        """
+    )
+    result = pytester.runpytest("-s", "--godot-cli-instances-scope", "session")
+    result.assert_outcomes(passed=2)
+    output = result.stdout.str()
+    assert output.count("start:server") == 1
+    assert output.count("stop:server") == 1
 
 
 def test_failure_screenshot_skipped_when_headless(
