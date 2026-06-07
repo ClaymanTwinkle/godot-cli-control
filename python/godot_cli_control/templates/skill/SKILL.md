@@ -429,6 +429,7 @@ godot-cli-control daemon stop          # → produces out.mp4
 Key constraints:
 
 - `--record` **requires** `--movie-path` (daemon refuses to start otherwise).
+- `--movie-path` must end in **`.avi` or `.png`** (case-insensitive) — that's all Godot Movie Maker can write. Anything else (e.g. `.mp4`) used to make Godot log "Can't find movie writer" and keep running **without recording anything** (false-success exit 0); the CLI now rejects other extensions up front with a `-1003` usage error (exit 64). Want an `.mp4`? Pass `.avi` — the transcode at `daemon stop` produces it.
 - `--record` needs a **real renderer**, so it cannot run with `--headless`: Godot Movie Maker's `add_frame()` reads the viewport texture, which the headless dummy renderer leaves null → SIGSEGV on the first frame. The daemon therefore **rejects `--record --headless` with exit code 2** before launching Godot. You don't need to pass `--gui`: when `--record` is set the daemon auto-opens a window even in a non-TTY (subagent / pipe / CI) shell that would otherwise default to headless.
 - The `.mp4` is produced **only when `daemon stop` runs**; `kill -9` leaves the raw `.avi` behind.
 - `ffmpeg` must be on `PATH` for transcoding. If transcoding fails, the raw `.avi` is kept and `daemon stop` exits with code `2` (transcode log at `.cli_control/ffmpeg.log`).

@@ -6,6 +6,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **#152 `--movie-path` 非 .avi/.png 时启动前拒绝（-1003 / exit 64）**：此前传 `.mp4` 等后缀 Godot 打 "Can't find movie writer" 后继续正常跑——脚本照常执行、exit 0，但什么都没录（假成功）。现 `daemon start` / `run` 的 `--record` 在 argparse 层校验扩展名（大小写不敏感），错误信息指路「传 .avi，stop 时自动转码出 .mp4」；直接调 `Daemon.start()` 的 API 路径同样拒绝（DaemonError）。
+
 ## [0.3.0] - 2026-06-07
 
 ### Added

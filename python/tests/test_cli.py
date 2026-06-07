@@ -2201,6 +2201,69 @@ def test_daemon_start_time_scale_rejects_bad_value(
     assert payload["error"]["code"] == -1003
 
 
+@pytest.mark.parametrize("bad_path", ["demo.mp4", "demo.mov", "demo"])
+def test_daemon_start_movie_path_rejects_bad_extension(
+    bad_path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon start --movie-path 非 .avi/.png → exit 64 + -1003 信封（#152）。
+
+    Godot Movie Maker 只认 .avi/.png；传 .mp4 时 Godot 静默不录、exit 0 假成功，
+    所以必须在启动前 argparse type 校验挡掉，错误信息要指路 .avi + 自动转码。"""
+    import json as _json
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["godot-cli-control", "daemon", "start", "--record", "--movie-path", bad_path],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert ".avi" in payload["error"]["message"]
+
+
+def test_run_movie_path_rejects_bad_extension(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """run 与 daemon start 共用 _add_daemon_flags，同样的扩展名校验（#152）。
+
+    断言信息含 .avi——必须在 argparse 层挡住，不能靠后面的「找不到脚本」
+    凑出同样的 64/-1003 假通过。"""
+    import json as _json
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["godot-cli-control", "run", "script.py", "--record", "--movie-path", "demo.mp4"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert ".avi" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("good_path", ["demo.avi", "DEMO.AVI", "frames.png"])
+def test_daemon_start_movie_path_accepts_avi_png(good_path: str) -> None:
+    """.avi/.png（大小写不敏感）通过 argparse 校验，值原样保留。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(
+        ["daemon", "start", "--record", "--movie-path", good_path]
+    )
+    assert ns.movie_path == good_path
+
+
 def test_tree_accepts_max_nodes_flag() -> None:
     from godot_cli_control.cli import build_parser
 
