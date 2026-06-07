@@ -26,12 +26,19 @@ Pipe straight into `jq` or `json.loads`. Add `--text` (or `--no-json`) to switch
 # One-time per Godot project (already done if you're reading this file):
 godot-cli-control init
 
-# Per session:
+# Per session (single instance):
 godot-cli-control daemon start --headless         # boots Godot in the background
 godot-cli-control daemon status                   # exit 0 = running, 1 = stopped
 godot-cli-control tree 2 | jq .result             # confirm RPC works
 # ... your work ...
 godot-cli-control daemon stop
+
+# Per session (multiple instances, e.g. server + client):
+godot-cli-control daemon start --name server --headless
+godot-cli-control daemon start --name client1 --headless
+godot-cli-control --instance server tree 2 | jq .result
+godot-cli-control --instance client1 click /root/Game/JoinButton
+godot-cli-control daemon stop --all --project .
 ```
 
 > As of this version, `daemon start` autodetects headless mode by checking `stdout.isatty()`. Pipes, CI, and agent shell-outs run headless by default; an interactive terminal still gets a window. The explicit flags below are only needed to override: `--headless` forces headless even in a TTY; `--gui` forces a window even when stdout is piped.
@@ -59,22 +66,76 @@ fi
 ## Daemon management
 
 ```bash
-godot-cli-control daemon start             # boot daemon for cwd project
-godot-cli-control daemon start --time-scale 5  # start at 5× game speed (applies Engine.time_scale from frame 0)
-godot-cli-control daemon status            # exit 0 = running, 1 = stopped
-godot-cli-control daemon stop              # stop cwd-project daemon (rc 0; rc 2 = ffmpeg transcode failed)
+godot-cli-control daemon start                           # boot daemon for cwd project (instance "default")
+godot-cli-control daemon start --name server             # boot a named instance
+godot-cli-control daemon start --name client1 --port 0   # second instance on an OS-assigned port
+godot-cli-control daemon start --time-scale 5            # start at 5× game speed
+godot-cli-control daemon status                          # exit 0 = running, 1 = stopped
+godot-cli-control daemon status --name server            # status for a specific instance
+godot-cli-control daemon stop                            # stop cwd-project daemon (auto-selects if 1 running)
+godot-cli-control daemon stop --name server              # stop a named instance
 godot-cli-control daemon stop --project /path/to/other/godot/project
-godot-cli-control daemon stop --all        # stop every registered daemon; exit 3 if any failed
-godot-cli-control daemon ls                # list all running daemons (cross-project, walks the registry)
-godot-cli-control daemon logs --tail 50    # last N lines of godot.log (works after the daemon died, too)
+godot-cli-control daemon stop --all                      # stop every registered daemon; exit 3 if any failed
+godot-cli-control daemon stop --all --project /path/to/project  # stop all instances of one project
+godot-cli-control daemon ls                              # list all running daemons (cross-project, with instance column)
+godot-cli-control daemon logs --tail 50                  # last N lines of godot.log (works after the daemon died, too)
+godot-cli-control daemon logs --name server --tail 50    # logs for a specific instance
 ```
 
-- **`daemon status` payload when running**: `{"state": "running", "pid": N, "port": M}`.
-- **`daemon status` payload when stopped**: `{"state": "stopped"}`. If the previous launch wrote `.cli_control/godot.log` or recorded an exit code, the envelope also includes `"last_log": "<path>"` and/or `"last_exit_code": <int>` — use these to diagnose why the daemon died without manually grepping under `.cli_control/`.
-- **`daemon ls` payload**: `{"daemons": [{"project_root", "pid", "port", "started_at", "godot_bin", "log_path"}, ...]}`. Dead records (PID gone) are auto-pruned on each call, so this is the canonical list of *actually-alive* daemons across all projects on the machine.
-- **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-project stop result; the top-level `rc` is the aggregate exit code.
-- **`daemon logs [--tail N]` payload**: `{"path": "<godot.log>", "lines": [...], "returned": N}` (default 50, max 1000). Reads the file client-side — **no RPC**, so it works post-mortem after the daemon crashed or stopped (the companion to `daemon status`'s `last_log` hint: status tells you where the log is, `logs` hands you the tail directly). No log file yet → `-1006`, exit 2.
+- **`daemon status` payload when running**: `{"state": "running", "pid": N, "port": M, "instance": "<name>"}`.
+- **`daemon status` payload when stopped**: `{"state": "stopped"}`. If the previous launch wrote `.cli_control/instances/<name>/godot.log` or recorded an exit code, the envelope also includes `"last_log": "<path>"` and/or `"last_exit_code": <int>` — use these to diagnose why the daemon died without manually grepping under `.cli_control/`.
+- **`daemon ls` payload**: `{"daemons": [{"project_root", "pid", "port", "instance", "started_at", "godot_bin", "log_path"}, ...]}`. Dead records (PID gone) are auto-pruned on each call, so this is the canonical list of *actually-alive* daemons across all projects on the machine. Text output columns: `pid\tport\tinstance\tproject_root\tstarted_at`.
+- **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","instance","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-instance stop result; the top-level `rc` is the aggregate exit code.
+- **`daemon logs [--tail N]` payload**: `{"path": "<godot.log>", "lines": [...], "returned": N, "instance": "<name>"}` (default 50, max 1000). Reads the file client-side — **no RPC**, so it works post-mortem after the daemon crashed or stopped (the companion to `daemon status`'s `last_log` hint: status tells you where the log is, `logs` hands you the tail directly). No log file yet → `-1006`, exit 2.
 - **`daemon start --time-scale N`**: sets `Engine.time_scale = N` (range `(0, 100]`) from the very first frame of the Godot process. Useful to run an entire test suite at e.g. 5× speed. **Asymmetry**: `run <script>` mode does not support `--time-scale` as a startup flag — inside the script call `bridge.time_scale(5)` on the first line instead; or use `daemon start --time-scale 5` beforehand and connect the script to the already-running daemon.
+
+## Multi-instance (multiple daemons for one project)
+
+You can run more than one Godot instance per project — for example a "server" and a "client" connected to the same game.
+
+**Starting two instances:**
+
+```bash
+godot-cli-control daemon start --name server
+godot-cli-control daemon start --name client1
+```
+
+**Sending RPC to a specific instance** — use the top-level `--instance` flag (or `--name` inside `daemon` subcommands):
+
+```bash
+godot-cli-control --instance server click /root/Game/StartButton
+godot-cli-control --instance client1 get /root/Player position
+godot-cli-control --instance server daemon stop   # or: daemon stop --name server
+```
+
+**Stopping both:**
+
+```bash
+godot-cli-control daemon stop --name server
+godot-cli-control daemon stop --name client1
+# or in one shot:
+godot-cli-control daemon stop --all --project /path/to/project
+```
+
+**Target-selection semantics (same for all subcommands):**
+
+| Running instances | No `--instance` / `--name` | Explicit `--instance nope` |
+|---|---|---|
+| 0 | connects to "default" (legacy fallback) | error -1003, exit 64 |
+| 1 | auto-selects the single instance | error -1003, exit 64 |
+| ≥ 2 | **error -1003, exit 64** — lists names in message | error -1003, exit 64 |
+
+When ≥ 2 instances are running and you omit `--instance`, the error JSON is:
+
+```json
+{"ok": false, "error": {"code": -1003, "message": "multiple instances running: client1, server — pass --instance <name>"}}
+```
+
+— read the `message`, pick a name from the list, and re-run with `--instance <name>`.
+
+`--instance` (top-level) and `--name` (daemon subcommands) are equivalent; passing both with the same value is allowed, different values → -1003 conflict error. `--instance` and `--port` are mutually exclusive (both select which daemon to talk to).
+
+**Upgrade-period note**: if you have a legacy daemon started with an older version of the CLI (its pid/port files sit directly under `.cli_control/` instead of `.cli_control/instances/<name>/`), `daemon ls` may temporarily show two lines for the same project. Stop the legacy daemon and the extra line disappears — no manual file migration needed.
 
 ## JSON envelope examples
 
@@ -356,7 +417,7 @@ Key constraints:
 
 ## Python `GameClient` API
 
-`from godot_cli_control.client import GameClient` — async WebSocket client; use as `async with GameClient() as client:`. **With no `port` argument it auto-discovers from `.cli_control/port`** (the same file the daemon writes and the CLI reads), falling back to `9877` if absent — so a no-arg `GameClient()` connects to a running daemon out of the box. Pass `GameClient(port=N)` only to override. (`GameBridge()` in `run` scripts auto-discovers identically.) **Every method below has a 1-line CLI equivalent above; only reach for Python when you need to keep a client open across many steps without the connection-per-call overhead.**
+`from godot_cli_control.client import GameClient` — async WebSocket client; use as `async with GameClient() as client:`. **With no `port` argument it auto-discovers from `.cli_control/instances/<name>/port`** (the same file the daemon writes and the CLI reads), falling back to `9877` if absent — so a no-arg `GameClient()` connects to a running daemon out of the box. Pass `GameClient(port=N)` to override with an explicit port, or `GameClient(instance="server")` to target a named instance (when `port=None`, `instance` takes effect; explicit `port` wins). (`GameBridge(instance="server")` in `run` scripts works identically.) **Every method below has a 1-line CLI equivalent above; only reach for Python when you need to keep a client open across many steps without the connection-per-call overhead.**
 
 Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserves the server's error code — useful for retrying `1004 "combo in progress"`.
 
@@ -466,6 +527,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ## Common pitfalls
 
+- **Multiple instances running and you forgot `--instance`** — exit 64 / code `-1003`, message lists all running instance names: `"multiple instances running: client1, server — pass --instance <name>"`. Read the message, pick the name you want, and re-run with `godot-cli-control --instance <name> <subcommand>`. The same applies to `daemon` subcommands (use `--name <instance>` instead of `--instance`).
 - **`{"ok": false, "error": {"code": -1001, ...}}` on every RPC** — daemon isn't running. Run `godot-cli-control daemon status` to confirm, then `daemon start`.
 - **Node paths must be absolute** — start with `/root/...`. Relative paths return `node not found`.
 - **`InvalidMessage` / `did not receive a valid HTTP response`** — `all_proxy` / `http_proxy` env var is hijacking localhost. The client sets `proxy=None` to defend, but if you see weird handshake errors, `unset all_proxy` first.
