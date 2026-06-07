@@ -1270,7 +1270,19 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
         return EXIT_USAGE
 
-    daemon = Daemon(Path.cwd())
+    # --name / 顶层 --instance 选靶（通过 _merge_instance_flags 统一收口）
+    merged, conflict = _merge_instance_flags(ns)
+    if conflict:
+        sub = getattr(ns, "name", None)
+        top = getattr(ns, "instance", None)
+        _emit_top_error(
+            ns,
+            code=CLIENT_CODE_USAGE,
+            message=f"--name {sub!r} 与顶层 --instance {top!r} 冲突，二选一",
+        )
+        return EXIT_USAGE
+    inst = merged or "default"
+    daemon = Daemon(Path.cwd(), instance=inst)
     try:
         daemon.start(
             record=ns.record,
@@ -1291,7 +1303,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         # is_running 之间存在亚毫秒级 race；窗口够小可以忽略。
         port = daemon.current_port() or ns.port
         pid = daemon.read_pid() if daemon.is_running() else None
-        result: dict[str, Any] = {"started": True, "port": port}
+        result: dict[str, Any] = {"started": True, "instance": daemon.instance, "port": port}
         if pid is not None:
             result["pid"] = pid
         _emit_success_payload(result)
@@ -1299,12 +1311,71 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
 
 
 def cmd_daemon_stop(ns: argparse.Namespace) -> int:
+    """停止 daemon。
+
+    选靶矩阵：
+    * ``--all``（无 --project）：全局注册表所有实例，以每条记录的 instance 字段构造 Daemon。
+    * ``--all --project <path>``：指定项目下所有活实例（扫 instances/ 目录）。
+    * ``--name <inst>``：cwd 项目（或 --project 指定项目）的指定实例。
+    * 无 --all 无 --name：自动选靶（0 个 → default；1 个 → 它；≥2 → preflight 报错）。
+
+    JSON 模式每条 entry 含 instance 字段；Text 行含 instance 字样。
+    """
     from .daemon import Daemon, DaemonError
     from . import registry
 
     fmt = _output_format(ns)
 
+    # --all 与实例选靶（--name / 顶层 --instance）互斥
+    # 注意：只查 ns.name 不够——顶层 --instance 落在 ns.instance，同样是"选靶"语义
+    inst_flag = getattr(ns, "name", None) or getattr(ns, "instance", None)
+    if getattr(ns, "all", False) and inst_flag:
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE,
+                        message="--all 与实例选靶（--name / 顶层 --instance）互斥")
+        return EXIT_USAGE
+
     if getattr(ns, "all", False):
+        if getattr(ns, "project", None):
+            # --all --project：停指定项目下所有活实例（扫 instances/ 不查注册表）
+            from .daemon import list_live_instances
+            target = ns.project.resolve()
+            # 空列表回退 "default"：legacy daemon（平铺布局在跑）不出现在 instances/ 扫描里，
+            # 但 default 实例的 read_pid 带 legacy fallback，仍能停到它。
+            names = list_live_instances(target) or ["default"]
+            results: list[dict[str, Any]] = []
+            had_failure = False
+            for inst_name in names:
+                entry: dict[str, Any] = {
+                    "project_root": str(target),
+                    "instance": inst_name,
+                }
+                try:
+                    d = Daemon(target, instance=inst_name)
+                    entry["pid"] = d.read_pid()
+                    entry["port"] = d.current_port()
+                    rc = d.stop()
+                    entry["rc"] = rc
+                    if fmt != OUTPUT_JSON:
+                        suffix = f" (rc={rc})" if rc != 0 else ""
+                        print(f"stopped instance={inst_name} {target}{suffix}")
+                except DaemonError as e:
+                    entry["rc"] = EXIT_INFRA_ERROR
+                    entry["error"] = str(e)
+                    had_failure = True
+                    print(f"[{target}:{inst_name}] {e}", file=sys.stderr)
+                results.append(entry)
+            rc_total = EXIT_PARTIAL if had_failure else EXIT_OK
+            if fmt == OUTPUT_JSON:
+                _emit_success_payload({"stopped": results, "rc": rc_total})
+            else:
+                failed = sum(1 for x in results if "error" in x)
+                print(
+                    f"summary: {len(results) - failed}/{len(results)} stopped"
+                    + (f", {failed} failed" if failed else "")
+                )
+            return rc_total
+
+        # --all（无 --project）：全局注册表，以记录的 instance 字段构造 Daemon
         records = registry.list_all()
         if not records:
             if fmt == OUTPUT_JSON:
@@ -1312,43 +1383,48 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
             else:
                 print("(no running daemons)")
             return EXIT_OK
-        results: list[dict[str, Any]] = []
-        had_failure = False
+        all_results: list[dict[str, Any]] = []
+        had_failure_global = False
         for r in records:
-            entry: dict[str, Any] = {
+            r_entry: dict[str, Any] = {
                 "project_root": r.project_root,
+                "instance": r.instance,
                 "pid": r.pid,
                 "port": r.port,
             }
             try:
-                rc = Daemon(Path(r.project_root)).stop()
-                entry["rc"] = rc
+                # 以记录的 instance 构造，防止永远打 "default" 的回归
+                rc = Daemon(Path(r.project_root), instance=r.instance).stop()
+                r_entry["rc"] = rc
                 if fmt != OUTPUT_JSON:
                     suffix = f" (rc={rc})" if rc != 0 else ""
-                    print(f"stopped pid={r.pid} port={r.port} {r.project_root}{suffix}")
+                    print(f"stopped pid={r.pid} port={r.port} instance={r.instance} {r.project_root}{suffix}")
             except DaemonError as e:
-                entry["rc"] = EXIT_INFRA_ERROR
-                entry["error"] = str(e)
-                had_failure = True
-                # 单条失败不能阻止其余 daemon 收尾
-                print(f"[{r.project_root}] {e}", file=sys.stderr)
-            results.append(entry)
-        # rc 含义：0 = 全部成功；EXIT_PARTIAL = 至少一条 DaemonError。注意单条 stop
-        # 返回 2（ffmpeg 转码失败但 daemon 已停）不算"失败"，按成功汇总；调用方
-        # 想要逐条状态请看 JSON 输出 / 文本里的每行 rc=N 标记。
-        rc_total = EXIT_PARTIAL if had_failure else EXIT_OK
+                r_entry["rc"] = EXIT_INFRA_ERROR
+                r_entry["error"] = str(e)
+                had_failure_global = True
+                # 单条失败不阻止其余收尾
+                print(f"[{r.project_root}:{r.instance}] {e}", file=sys.stderr)
+            all_results.append(r_entry)
+        # rc 含义同既有：0=全成功；EXIT_PARTIAL=至少一条 DaemonError
+        rc_total_global = EXIT_PARTIAL if had_failure_global else EXIT_OK
         if fmt == OUTPUT_JSON:
-            _emit_success_payload({"stopped": results, "rc": rc_total})
+            _emit_success_payload({"stopped": all_results, "rc": rc_total_global})
         else:
-            failed = sum(1 for x in results if "error" in x)
+            failed_global = sum(1 for x in all_results if "error" in x)
             print(
-                f"summary: {len(results) - failed}/{len(results)} stopped"
-                + (f", {failed} failed" if failed else "")
+                f"summary: {len(all_results) - failed_global}/{len(all_results)} stopped"
+                + (f", {failed_global} failed" if failed_global else "")
             )
-        return rc_total
+        return rc_total_global
 
+    # 单停
     target = (ns.project.resolve() if getattr(ns, "project", None) else Path.cwd())
-    daemon = Daemon(target)
+    inst = _resolve_daemon_instance(ns, target)
+    if inst is None:
+        # 歧义，_resolve_daemon_instance 已 emit 信封
+        return EXIT_USAGE
+    daemon = Daemon(target, instance=inst)
     try:
         rc = daemon.stop()
     except DaemonError as e:
@@ -1357,7 +1433,7 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
     if fmt == OUTPUT_JSON:
         # rc 0=正常停 / 2=ffmpeg 转码失败但 daemon 已停。两种都算"stopped"，
         # 把 rc 透出让 agent 决定要不要 retry transcode。
-        _emit_success_payload({"stopped": True, "rc": rc, "project_root": str(target)})
+        _emit_success_payload({"stopped": True, "rc": rc, "instance": inst, "project_root": str(target)})
     return rc
 
 
@@ -1365,28 +1441,33 @@ def cmd_daemon_status(ns: argparse.Namespace) -> int:
     """打印 daemon 状态；exit 0=运行中，1=未运行。
 
     JSON 模式（默认）：
-      ``{"ok": true, "result": {"state": "running", "pid": <int>, "port": <int>}}``
+      ``{"ok": true, "result": {"state": "running", "pid": <int>, "port": <int>, "instance": <str>}}``
       / ``{"ok": true, "result": {"state": "stopped"}}``
     Text 模式：
-      ``running pid=<pid> port=<port>`` / ``stopped``
+      ``running pid=<pid> port=<port> instance=<name>`` / ``stopped``
 
+    多实例时用 --name 选靶；若只有一个实例在跑则自动选中。
     退出码语义不变（shell ``if godot-cli-control daemon status; then …`` 仍能用）。
     """
     from .daemon import Daemon
 
     fmt = _output_format(ns)
-    daemon = Daemon(Path.cwd())
+    # 选靶：--name 显式 → 直接用；否则自动选（0→default，1→它，≥2→歧义报错）
+    inst = _resolve_daemon_instance(ns, Path.cwd())
+    if inst is None:
+        return EXIT_USAGE
+    daemon = Daemon(Path.cwd(), instance=inst)
     if daemon.is_running():
         pid = daemon.read_pid()
         port = daemon.current_port()
         if fmt == OUTPUT_JSON:
-            payload: dict[str, Any] = {"state": "running", "pid": pid}
+            payload: dict[str, Any] = {"state": "running", "instance": inst, "pid": pid}
             if port is not None:
                 payload["port"] = port
             _emit_success_payload(payload)
         else:
             print(
-                f"running pid={pid} port={port if port is not None else '?'}"
+                f"running pid={pid} port={port if port is not None else '?'} instance={inst}"
             )
         return EXIT_OK
     # Stopped：若上一轮启动留下了 godot.log / last_exit_code，把诊断信息透出来。
@@ -1414,19 +1495,24 @@ def cmd_daemon_status(ns: argparse.Namespace) -> int:
 
 
 def cmd_daemon_logs(ns: argparse.Namespace) -> int:
-    """输出 .cli_control/godot.log 尾部若干行（issue #103）。
+    """输出 .cli_control/instances/<name>/godot.log 尾部若干行（issue #103）。
 
     纯客户端读文件，不走 RPC —— daemon 已退出也能 post-mortem（与
     ``daemon status`` 透出 last_log 的语义衔接：status 告诉你日志在哪，
     logs 直接把尾部喂给你，免去 agent 再 shell 出去 tail + 找路径）。
 
+    多实例时用 --name 选靶；若只有一个实例在跑则自动选中。
     JSON 模式：``{"ok": true, "result": {"path": ..., "lines": [...],
-    "returned": N}}``；无日志文件 → ``-1006`` infra 前置失败，exit 2。
+    "returned": N, "instance": <str>}}``；无日志文件 → ``-1006`` infra 前置失败，exit 2。
     """
     from .daemon import Daemon
 
     fmt = _output_format(ns)
-    daemon = Daemon(Path.cwd())
+    # 选靶：--name 显式 → 直接用；否则自动选
+    inst = _resolve_daemon_instance(ns, Path.cwd())
+    if inst is None:
+        return EXIT_USAGE
+    daemon = Daemon(Path.cwd(), instance=inst)
     if not daemon.log_file.exists():
         _emit_top_error(
             ns,
@@ -1441,6 +1527,7 @@ def cmd_daemon_logs(ns: argparse.Namespace) -> int:
     text = daemon.log_file.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()[-tail:]
     payload: dict[str, Any] = {
+        "instance": inst,
         "path": str(daemon.log_file),
         "lines": lines,
         "returned": len(lines),
@@ -1460,8 +1547,9 @@ def cmd_daemon_ls(ns: argparse.Namespace) -> int:
     扫全局注册表（POSIX `~/.local/state/godot-cli-control/daemons/`；Windows
     `%LOCALAPPDATA%\\godot-cli-control\\daemons\\`），对每条记录探活。
     死记录会被 list_all 自动清理（连同对应项目的 .cli_control/godot.pid 与 port）。
-    JSON 模式：{"ok": true, "result": {"daemons": [...]}}（信封一致）。
-    Text 模式：每条一行 `<pid>\t<port>\t<project_root>\t<started_at>`；空时 (no running daemons)。
+    JSON 模式：{"ok": true, "result": {"daemons": [{"pid","port","instance","project_root",...}]}}。
+    Text 模式：每条一行 ``<pid>\\t<port>\\t<instance>\\t<project_root>\\t<started_at>``；
+               空时打 (no running daemons)。
     """
     from . import registry
 
@@ -1473,6 +1561,7 @@ def cmd_daemon_ls(ns: argparse.Namespace) -> int:
                 "project_root": r.project_root,
                 "pid": r.pid,
                 "port": r.port,
+                "instance": r.instance,
                 "started_at": r.started_at,
                 "godot_bin": r.godot_bin,
                 "log_path": r.log_path,
@@ -1487,7 +1576,8 @@ def cmd_daemon_ls(ns: argparse.Namespace) -> int:
             print("(no running daemons)")
         else:
             for r in records:
-                print(f"{r.pid}\t{r.port}\t{r.project_root}\t{r.started_at}")
+                # 格式：pid\tport\tinstance\tproject_root\tstarted_at
+                print(f"{r.pid}\t{r.port}\t{r.instance}\t{r.project_root}\t{r.started_at}")
     return EXIT_OK
 
 
@@ -1502,7 +1592,8 @@ def cmd_run(ns: argparse.Namespace) -> int:
       0  脚本成功（且 daemon stop 成功）
       1  脚本运行失败（RPC 错语义；envelope `ok=false` 时也走这里）
       2  基础设施前置失败（daemon 起不来等，code -1006 PRECONDITION）
-      64 用法错（脚本路径不存在、缺 run(bridge)、idle_timeout 解析失败等，code -1003）
+      64 用法错（脚本路径不存在、缺 run(bridge)、idle_timeout 解析失败等，code -1003；
+         多实例并行且未传 --name 也属用法错，同归 64/-1003）
     """
     from .daemon import Daemon, DaemonError
 
@@ -1531,7 +1622,14 @@ def cmd_run(ns: argparse.Namespace) -> int:
                 print(f"错误：{e}", file=sys.stderr)
             return EXIT_USAGE
 
-        daemon = Daemon(Path.cwd())
+        # 多实例选靶：0 个在跑 → "default"（走既有 auto-start 分支）；
+        # 1 个命名实例在跑 → 自动选中（不会再起新实例，auto_started=False 自然成立）；
+        # N≥2 且无 --name → preflight 报歧义（CLAUDE.md 契约 #5）。
+        inst = _resolve_daemon_instance(ns, Path.cwd())
+        if inst is None:
+            # _resolve_daemon_instance 已 emit 信封
+            return EXIT_USAGE
+        daemon = Daemon(Path.cwd(), instance=inst)
         auto_started = False
         if not daemon.is_running():
             # 静态检测脚本含 screenshot 时，非 TTY 默认从 headless 翻转到 GUI
@@ -1925,6 +2023,75 @@ def _time_scale_arg(raw: str) -> float:
     return v
 
 
+def _instance_name_arg(value: str) -> str:
+    """argparse type 校验：非法实例名 → ArgumentTypeError，触发 -1003/64 信封。"""
+    from .daemon import DaemonError, validate_instance_name
+
+    try:
+        return validate_instance_name(value)
+    except DaemonError as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
+def _add_instance_name_flag(p: argparse.ArgumentParser) -> None:
+    """daemon 子命令的实例选择 flag。独立于 _add_daemon_flags：后者全是
+    start 专属 flag（--record/--headless/...），挂到 status/logs/stop 会污染。"""
+    p.add_argument(
+        "--name",
+        type=_instance_name_arg,
+        default=None,
+        help="实例名（默认 default；多实例并行时用于选靶，等价顶层 --instance；两者同时传值须一致）",
+    )
+
+
+def _merge_instance_flags(ns: argparse.Namespace) -> tuple[str | None, bool]:
+    """合并顶层 --instance 与子命令 --name，返回 (合并后的实例名 or None, 是否冲突)。
+
+    两者相同或只传一个 → (值, False)；两者都传且值不同 → (None, True)。
+    冲突时调用方负责 emit -1003 信封并返回 EXIT_USAGE。
+    """
+    sub = getattr(ns, "name", None)       # 子命令 --name（daemon start/stop/status/logs/run）
+    top = getattr(ns, "instance", None)   # 顶层 --instance
+    if sub is not None and top is not None and sub != top:
+        return None, True
+    return sub or top, False
+
+
+def _resolve_daemon_instance(ns: argparse.Namespace, project_root: Path) -> str | None:
+    """返回实例名；歧义时 emit -1003 信封并返回 None（调用方 return EXIT_USAGE）。
+
+    顶层 --instance 与子命令 --name 统一收口（通过 _merge_instance_flags）：
+    两者等价；同时传且值相同合法；值不同报冲突（用法错 -1003）。
+
+    未显式指定时：0 个在跑 → "default"（保 legacy fallback 与 stopped 语义）；
+    1 个 → 它；≥2 → 报错列名（preflight，本地 FS 判定，先于任何网络/进程操作）。
+    """
+    inst, conflict = _merge_instance_flags(ns)
+    if conflict:
+        sub = getattr(ns, "name", None)
+        top = getattr(ns, "instance", None)
+        _emit_top_error(
+            ns,
+            code=CLIENT_CODE_USAGE,
+            message=f"--name {sub!r} 与顶层 --instance {top!r} 冲突，二选一",
+        )
+        return None
+    if inst is not None:
+        return inst
+    from .daemon import list_live_instances
+
+    live = list_live_instances(project_root)
+    if len(live) > 1:
+        _emit_top_error(
+            ns,
+            code=CLIENT_CODE_USAGE,
+            message=f"multiple instances running: {', '.join(live)} — pass --name <instance>",
+        )
+        return None
+    # 0 个在跑 → "default"（legacy fallback 语义）；1 个 → 它
+    return live[0] if live else "default"
+
+
 def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--record",
@@ -1954,7 +2121,7 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
         "--port",
         type=int,
         default=0,
-        help="GameBridge 监听端口（默认 0 = OS 自动分配；写入 .cli_control/port）",
+        help="GameBridge 监听端口（默认 0 = OS 自动分配；写入 .cli_control/instances/<name>/port）",
     )
     p.add_argument(
         "--idle-timeout",
@@ -2074,14 +2241,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"godot-cli-control {getattr(_version, '__version__', 'unknown')}",
     )
-    parser.add_argument(
+    # --port 与 --instance 互斥：agent 要么明确端口、要么指定实例名，不能两者并用。
+    # 两者均未传时，CLI 通过 discover_port() 自动发现（0 实例→default fallback，
+    # 1 实例→自动选中，N≥2→preflight 报歧义）。
+    conn_grp = parser.add_mutually_exclusive_group()
+    conn_grp.add_argument(
         "--port",
         type=int,
         default=None,
         help=(
-            f"RPC 子命令连接的 GameBridge 端口（默认从 .cli_control/port 读取，"
-            f"否则 {DEFAULT_PORT}）。注意：仅作用于 RPC 子命令，daemon "
+            f"RPC 子命令连接的 GameBridge 端口（默认从 .cli_control/instances/<name>/port 读取，"
+            f"legacy .cli_control/port 作为 fallback，否则 {DEFAULT_PORT}）。"
+            "注意：仅作用于 RPC 子命令，daemon "
             "start / run 启动 daemon 时请用其各自的 --port。"
+        ),
+    )
+    conn_grp.add_argument(
+        "--instance",
+        type=_instance_name_arg,
+        default=None,
+        help=(
+            "目标实例名；RPC 与 run/daemon 子命令通用（daemon 子命令的 --name 是等价写法）。"
+            "多实例并行时必传；与 --port 互斥。"
         ),
     )
     _add_output_format_flags(parser)
@@ -2107,6 +2288,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="启动 Godot daemon 并写入 .cli_control/{godot.pid,port}。",
     )
     _add_daemon_flags(start_p)
+    _add_instance_name_flag(start_p)
     start_p.add_argument(
         "--time-scale",
         type=_time_scale_arg,
@@ -2119,19 +2301,22 @@ def build_parser() -> argparse.ArgumentParser:
         "stop",
         help="停止 daemon",
         description=(
-            "停止 daemon。无 flag 时停 cwd 项目；--all 停所有注册的 daemon；"
-            "--project <path> 停指定项目。"
+            "停止 daemon。无 flag 时停 cwd 项目（自动选靶：若 cwd 有多实例须加 --name）；"
+            "--all 停所有注册的 daemon；--project <path> 停指定项目；"
+            "--name <inst> 选靶指定实例（与 --all 互斥）。"
         ),
     )
-    stop_grp = stop_p.add_mutually_exclusive_group()
-    stop_grp.add_argument(
+    # 注意：--all 与 --project 不再互斥（--all --project 允许"全停某项目"），
+    # --all 与 --name 的互斥改为 cmd_daemon_stop 内显式校验（更灵活的错误消息）。
+    stop_p.add_argument(
         "--all", action="store_true",
-        help="停止注册表中所有运行中的 daemon"
+        help="停止注册的所有 daemon（配合 --project 可限定项目）"
     )
-    stop_grp.add_argument(
+    stop_p.add_argument(
         "--project", type=Path, default=None,
         help="停止指定项目根的 daemon（绝对/相对路径均可）"
     )
+    _add_instance_name_flag(stop_p)
     _add_output_format_flags(stop_p)
 
     status_p = daemon_subs.add_parser(
@@ -2139,11 +2324,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="查询 daemon 状态",
         description=(
             "打印 daemon 状态到 stdout 并以 exit code 表示："
-            "0 = 运行中（输出 running pid=<pid> port=<port>），"
+            "0 = 运行中（输出 running pid=<pid> port=<port> instance=<name>），"
             "1 = 未运行（输出 stopped）。"
+            "多实例时用 --name 选靶；若只有一个实例在跑则自动选中。"
             "默认输出 JSON 信封；加 --text 切回旧的字符串格式。"
         ),
     )
+    _add_instance_name_flag(status_p)
     _add_output_format_flags(status_p)
 
     logs_p = daemon_subs.add_parser(
@@ -2153,7 +2340,7 @@ def build_parser() -> argparse.ArgumentParser:
             "直接输出 .cli_control/godot.log 的最后 N 行（JSON 信封包裹），"
             "免去先 daemon status 拿路径再 tail。纯客户端读文件：daemon "
             "已退出时同样可用（post-mortem 排查启动失败/崩溃）。"
-            "无日志文件 → -1006，exit 2。"
+            "多实例时用 --name 选靶。无日志文件 → -1006，exit 2。"
         ),
     )
     logs_p.add_argument(
@@ -2163,6 +2350,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="返回最后 N 行（1..1000，默认 50）",
     )
+    _add_instance_name_flag(logs_p)
     _add_output_format_flags(logs_p)
 
     ls_p = daemon_subs.add_parser(
@@ -2172,6 +2360,8 @@ def build_parser() -> argparse.ArgumentParser:
             "扫描全局注册表（POSIX ~/.local/state/godot-cli-control/daemons/；"
             "Windows %LOCALAPPDATA%\\godot-cli-control\\daemons\\），"
             "列出所有探活通过的 daemon。死记录会被自动清理。"
+            "JSON：{\"daemons\": [{\"pid\", \"port\", \"instance\", \"project_root\", ...}]}；"
+            "Text：每行 pid\\tport\\tinstance\\tproject_root\\tstarted_at。"
         ),
     )
     _add_output_format_flags(ls_p)
@@ -2200,6 +2390,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_p.add_argument("script", help="用户脚本路径，需定义 run(bridge)")
     _add_daemon_flags(run_p)
+    _add_instance_name_flag(run_p)
     run_p.add_argument(
         "--no-gui-auto",
         action="store_true",
@@ -2472,9 +2663,19 @@ def main() -> None:
         port = ns.port
         if port is None:
             # 与 GameClient()/GameBridge() 共用同一发现入口（issue #91）。
-            from .daemon import discover_port
+            # --instance 指定时传入，单实例自动选中，N≥2 且无 --instance 时
+            # 抛 InstanceAmbiguityError → preflight exit 64（CLAUDE.md 契约 #5：
+            # 用法错必须在连 daemon 之前报出，不让 agent 等 30s connection retry）。
+            from .daemon import InstanceAmbiguityError, discover_port
 
-            port = discover_port() or DEFAULT_PORT
+            try:
+                port = discover_port(instance=ns.instance) or DEFAULT_PORT
+            except InstanceAmbiguityError as e:
+                if fmt == OUTPUT_JSON:
+                    _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+                else:
+                    print(f"错误：{e}", file=sys.stderr)
+                sys.exit(EXIT_USAGE)
 
         rc = asyncio.run(_run_rpc(spec, ns, port, fmt))
         sys.exit(rc)

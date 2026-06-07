@@ -931,10 +931,13 @@ def test_daemon_status_json_envelope_running(
     rc = cmd_daemon_status(ns)
     assert rc == 0
     payload = _json.loads(capsys.readouterr().out)
-    assert payload == {
-        "ok": True,
-        "result": {"state": "running", "pid": 4242, "port": 9877},
-    }
+    # Task 5 起 result 含 instance 字段（默认 "default"）
+    assert payload["ok"] is True
+    result = payload["result"]
+    assert result["state"] == "running"
+    assert result["pid"] == 4242
+    assert result["port"] == 9877
+    assert "instance" in result  # 新增字段，默认 "default"
 
 
 def test_daemon_status_json_envelope_stopped(
@@ -971,8 +974,9 @@ def test_daemon_status_stopped_includes_last_log(
     import godot_cli_control.daemon as daemon_mod
 
     monkeypatch.chdir(tmp_path)
-    control_dir = tmp_path / ".cli_control"
-    control_dir.mkdir()
+    # Task 1 后状态文件移入 instances/default/（spec 2026-06-07）
+    control_dir = tmp_path / ".cli_control" / "instances" / "default"
+    control_dir.mkdir(parents=True)
     log = control_dir / "godot.log"
     log.write_text("ERROR: autoload failed\n")
 
@@ -1000,8 +1004,9 @@ def test_daemon_status_stopped_includes_last_exit_code(
     import godot_cli_control.daemon as daemon_mod
 
     monkeypatch.chdir(tmp_path)
-    control_dir = tmp_path / ".cli_control"
-    control_dir.mkdir()
+    # Task 1 后状态文件移入 instances/default/（spec 2026-06-07）
+    control_dir = tmp_path / ".cli_control" / "instances" / "default"
+    control_dir.mkdir(parents=True)
     (control_dir / "godot.log").write_text("FATAL\n")
     (control_dir / "last_exit_code").write_text("137")
 
@@ -1026,8 +1031,9 @@ def test_daemon_status_stopped_text_mode_includes_last_log(
     import godot_cli_control.daemon as daemon_mod
 
     monkeypatch.chdir(tmp_path)
-    control_dir = tmp_path / ".cli_control"
-    control_dir.mkdir()
+    # Task 1 后状态文件移入 instances/default/（spec 2026-06-07）
+    control_dir = tmp_path / ".cli_control" / "instances" / "default"
+    control_dir.mkdir(parents=True)
     (control_dir / "godot.log").write_text("crash\n")
     (control_dir / "last_exit_code").write_text("11")
 
@@ -2143,10 +2149,11 @@ def test_daemon_stop_subcommand_parses_all_and_project() -> None:
     # 所以与 Path("/tmp/x") 比较保证跨平台。
     assert ns.project == Path("/tmp/x")
 
-    # mutually exclusive — argparse should refuse both
-    import pytest as _pt
-    with _pt.raises(SystemExit):
-        build_parser().parse_args(["daemon", "stop", "--all", "--project", "/tmp/x"])
+    # Task 5 起 --all --project 是允许的（"停某项目下所有实例"），
+    # --all 与 --name 的互斥改为 cmd_daemon_stop 内显式校验，argparse 层不拦。
+    ns = build_parser().parse_args(["daemon", "stop", "--all", "--project", "/tmp/x"])
+    assert ns.all is True
+    assert ns.project == Path("/tmp/x")
 
 
 def test_daemon_start_idle_timeout_flag_parses() -> None:
@@ -2893,8 +2900,9 @@ def test_daemon_logs_returns_tail_lines(
 
     from godot_cli_control.cli import EXIT_OK, cmd_daemon_logs
 
-    control = tmp_path / ".cli_control"
-    control.mkdir()
+    # Task 1 后日志文件移入 instances/default/（spec 2026-06-07）
+    control = tmp_path / ".cli_control" / "instances" / "default"
+    control.mkdir(parents=True)
     (control / "godot.log").write_text(
         "\n".join(f"line{i}" for i in range(100)), encoding="utf-8"
     )
@@ -2907,6 +2915,7 @@ def test_daemon_logs_returns_tail_lines(
     assert payload["result"]["lines"] == [f"line{i}" for i in range(90, 100)]
     assert payload["result"]["returned"] == 10
     assert payload["result"]["path"].endswith("godot.log")
+    assert payload["result"]["instance"] == "default"
 
 
 def test_daemon_logs_missing_file_is_infra_error(
@@ -2928,3 +2937,876 @@ def test_daemon_logs_missing_file_is_infra_error(
     payload = _json.loads(capsys.readouterr().out.strip())
     assert payload["ok"] is False
     assert payload["error"]["code"] == CLIENT_CODE_PRECONDITION
+
+
+# ---------------------------------------------------------------------------
+# Task 5: daemon 子命令 --name 选靶 + stop 矩阵 + ls instance 列
+# ---------------------------------------------------------------------------
+
+
+def test_daemon_subcommands_accept_name() -> None:
+    """start/run/status/logs/stop 五个子命令均接受 --name，
+    且 status/logs/stop 不长出 start 专属 flag（如 --record）。"""
+    from godot_cli_control.cli import build_parser
+
+    parser = build_parser()
+    # status / logs / stop 接受 --name
+    for argv in (
+        ["daemon", "status", "--name", "server"],
+        ["daemon", "logs", "--name", "server"],
+        ["daemon", "stop", "--name", "server"],
+    ):
+        ns = parser.parse_args(argv)
+        assert ns.name == "server", f"argv={argv} ns.name 应为 'server'"
+
+    # start 接受 --name
+    ns = parser.parse_args(["daemon", "start", "--name", "server"])
+    assert ns.name == "server"
+
+    # run 接受 --name（Task 6 才真正用它；这里只校验注册）
+    ns = parser.parse_args(["run", "x.py", "--name", "server"])
+    assert ns.name == "server"
+
+    # status 不应有 start 专属 --record
+    with pytest.raises(SystemExit):
+        parser.parse_args(["daemon", "status", "--record"])
+
+
+def test_invalid_instance_name_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """非法实例名（含 /）→ argparse type 校验失败 → exit 64 + -1003 信封。"""
+    import json as _json
+
+    from godot_cli_control.cli import build_parser
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["daemon", "start", "--name", "a/b"])
+    assert exc_info.value.code == 64
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def test_stop_all_with_name_is_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--all --name 组合非法 → exit 64 + -1003 信封。"""
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, cmd_daemon_stop
+
+    ns = __import__("argparse").Namespace(
+        all=True,
+        name="server",
+        project=None,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def test_stop_ambiguous_without_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """cwd 有两个活实例但未传 --name → exit 64 + -1003，message 含两个实例名。"""
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, cmd_daemon_stop
+
+    # 铺两个活实例目录（pid=os.getpid() 确保探活通过）
+    import os
+
+    for name in ("server", "client1"):
+        inst_dir = tmp_path / ".cli_control" / "instances" / name
+        inst_dir.mkdir(parents=True)
+        (inst_dir / "godot.pid").write_text(str(os.getpid()))
+
+    monkeypatch.chdir(tmp_path)
+    ns = __import__("argparse").Namespace(
+        all=False,
+        name=None,
+        project=None,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    # message 应包含两个实例名
+    msg = payload["error"]["message"]
+    assert "server" in msg
+    assert "client1" in msg
+
+
+def test_stop_all_threads_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--all 全局停止时，以每条记录的 instance 字段构造 Daemon（防止永远打 default 回归）。"""
+    import json as _json
+
+    import godot_cli_control.registry as reg_mod
+    from godot_cli_control.cli import EXIT_OK, OUTPUT_JSON, cmd_daemon_stop
+    from godot_cli_control.registry import DaemonRecord
+
+    # 两条不同实例的注册记录
+    records = [
+        DaemonRecord(
+            project_root=str(tmp_path),
+            pid=99991,
+            port=9991,
+            started_at="2026-01-01T00:00:00+00:00",
+            godot_bin="/usr/bin/godot",
+            log_path=str(tmp_path / "a.log"),
+            instance="server",
+        ),
+        DaemonRecord(
+            project_root=str(tmp_path),
+            pid=99992,
+            port=9992,
+            started_at="2026-01-01T00:00:00+00:00",
+            godot_bin="/usr/bin/godot",
+            log_path=str(tmp_path / "b.log"),
+            instance="client1",
+        ),
+    ]
+    monkeypatch.setattr(reg_mod, "list_all", lambda: records)
+
+    # 收集 Daemon.stop() 收到的 (project_root, instance)
+    stop_calls: list[tuple[str, str]] = []
+
+    import godot_cli_control.daemon as daemon_mod
+
+    def _fake_stop(self: Any) -> int:
+        stop_calls.append((str(self.project_root), self.instance))
+        return 0
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _fake_stop)
+
+    ns = __import__("argparse").Namespace(
+        all=True,
+        name=None,
+        project=None,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_OK
+    # 两个实例各自被独立 stop
+    assert sorted(stop_calls) == sorted(
+        [(str(tmp_path), "server"), (str(tmp_path), "client1")]
+    ), f"stop_calls={stop_calls}"
+    # 信封包含 instance 字段
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+    stopped = payload["result"]["stopped"]
+    assert {e["instance"] for e in stopped} == {"server", "client1"}
+
+
+def test_stop_all_project_combination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--all --project <tmp>：tmp 下两个活实例都被 stop。"""
+    import json as _json
+    import os
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_OK, OUTPUT_JSON, cmd_daemon_stop
+
+    # 铺两个活实例目录
+    for name in ("alpha", "beta"):
+        inst_dir = tmp_path / ".cli_control" / "instances" / name
+        inst_dir.mkdir(parents=True)
+        (inst_dir / "godot.pid").write_text(str(os.getpid()))
+
+    stop_calls: list[tuple[str, str]] = []
+
+    def _fake_stop(self: Any) -> int:
+        stop_calls.append((str(self.project_root), self.instance))
+        return 0
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _fake_stop)
+
+    ns = __import__("argparse").Namespace(
+        all=True,
+        name=None,
+        project=tmp_path,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_OK
+    assert sorted(i for _, i in stop_calls) == ["alpha", "beta"]
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+
+
+def test_ls_json_includes_instance(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon ls JSON 模式：每条记录含 instance 字段。"""
+    import json as _json
+
+    import godot_cli_control.registry as reg_mod
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_daemon_ls
+    from godot_cli_control.registry import DaemonRecord
+
+    records = [
+        DaemonRecord(
+            project_root="/tmp/proj",
+            pid=1234,
+            port=9999,
+            started_at="2026-01-01T00:00:00+00:00",
+            godot_bin="/usr/bin/godot",
+            log_path="/tmp/proj/.cli_control/instances/server/godot.log",
+            instance="server",
+        )
+    ]
+    monkeypatch.setattr(reg_mod, "list_all", lambda: records)
+
+    ns = __import__("argparse").Namespace(output_format=OUTPUT_JSON)
+    rc = cmd_daemon_ls(ns)
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+    daemons = payload["result"]["daemons"]
+    assert len(daemons) == 1
+    assert daemons[0]["instance"] == "server"
+
+
+def test_ls_text_has_instance_column(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon ls text 模式：行格式含 instance 列（pid\\tport\\tinstance\\tproject_root\\tstarted_at）。"""
+    import godot_cli_control.registry as reg_mod
+    from godot_cli_control.cli import OUTPUT_TEXT, cmd_daemon_ls
+    from godot_cli_control.registry import DaemonRecord
+
+    records = [
+        DaemonRecord(
+            project_root="/tmp/proj",
+            pid=5678,
+            port=9988,
+            started_at="2026-01-01T00:00:00+00:00",
+            godot_bin="/usr/bin/godot",
+            log_path="/tmp/proj/.cli_control/instances/server/godot.log",
+            instance="server",
+        )
+    ]
+    monkeypatch.setattr(reg_mod, "list_all", lambda: records)
+
+    ns = __import__("argparse").Namespace(output_format=OUTPUT_TEXT)
+    rc = cmd_daemon_ls(ns)
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 行格式：pid\tport\tinstance\tproject_root\tstarted_at
+    assert "server" in out
+    cols = out.strip().split("\t")
+    assert cols[2] == "server", f"第 3 列应为 instance，实际: {cols}"
+
+
+def test_daemon_start_json_includes_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """daemon start 成功时 JSON 信封 result 包含 instance 字段。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_daemon_start
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(daemon_mod.Daemon, "start", lambda self, **kw: None)
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: True)
+    monkeypatch.setattr(daemon_mod.Daemon, "current_port", lambda self: 9876)
+    monkeypatch.setattr(daemon_mod.Daemon, "read_pid", lambda self: 12345)
+
+    ns = __import__("argparse").Namespace(
+        name="server",
+        record=False,
+        movie_path=None,
+        headless=True,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        time_scale=None,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_start(ns)
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+    assert payload["result"]["instance"] == "server"
+    assert payload["result"]["started"] is True
+
+
+def test_status_auto_selects_single_named_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """只有一个命名实例在跑时，daemon status 不传 --name 也能自动选中并正确报 running。"""
+    import json as _json
+    import os
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_daemon_status
+
+    # 铺 instances/server 活实例目录（pid=os.getpid()）
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("9876")
+
+    monkeypatch.chdir(tmp_path)
+    # 不 patch is_running，让真实 list_live_instances 探活（pid=os.getpid() 自身在跑）
+    monkeypatch.setattr(daemon_mod.Daemon, "read_pid", lambda self: os.getpid())
+    monkeypatch.setattr(daemon_mod.Daemon, "current_port", lambda self: 9876)
+
+    ns = __import__("argparse").Namespace(
+        name=None,
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_daemon_status(ns)
+    assert rc == 0
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is True
+    assert payload["result"]["state"] == "running"
+    assert payload["result"].get("instance") == "server"
+
+
+# ── Task 6：顶层 --instance 选靶 + cmd_run 实例解析 ──
+
+
+def test_top_level_instance_and_port_mutually_exclusive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--instance x --port 1 tree`` → SystemExit(64) + -1003 信封。
+
+    argparse mutually_exclusive_group 报错经 _EnvelopeArgumentParser.error()
+    落进 JSON 信封，exit code 64。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, build_parser
+
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["--instance", "x", "--port", "1", "tree"])
+    assert exc.value.code == EXIT_USAGE
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def _make_two_live_instances(tmp_path: Path) -> None:
+    """在 tmp_path 下铺两个活实例 server + client1（pid = os.getpid()）。"""
+    import os
+
+    for name in ("server", "client1"):
+        d = tmp_path / ".cli_control" / "instances" / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "godot.pid").write_text(str(os.getpid()))
+        (d / "port").write_text("7001" if name == "server" else "7002")
+
+
+def test_rpc_ambiguity_is_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两实例活、无 --instance → preflight exit 64/-1003，不发网络连接。
+
+    discover_port 在本地 FS 即可判定歧义（N≥2），CLI 必须在 _run_rpc 之前
+    报错，不让 agent 等 30s connection retry（CLAUDE.md 契约 #5）。
+
+    驱动真实 main()，而非复现其内部逻辑——防止 port-discovery 分支重构后测试失联。
+    """
+    import json as _json
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    _make_two_live_instances(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    # 哨兵：_run_rpc 一旦被调就 fail——preflight 必须在它之前短路
+    async def _sentinel(*_a: Any, **_kw: Any) -> int:
+        pytest.fail("_run_rpc 不应被调用：preflight 应在 InstanceAmbiguityError 时短路")
+        return 0  # 永不到达，满足类型检查
+
+    monkeypatch.setattr(cli_mod, "_run_rpc", _sentinel)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "tree"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_USAGE
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "server" in payload["error"]["message"]
+    assert "client1" in payload["error"]["message"]
+
+
+def test_rpc_explicit_instance_not_running_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """只有 server 活、--instance nope → 64/-1003，message 含运行中实例名。
+
+    驱动真实 main()，而非复现其内部逻辑——防止 port-discovery 分支重构后测试失联。
+    """
+    import json as _json
+    import os
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7042")
+    monkeypatch.chdir(tmp_path)
+
+    # 哨兵：_run_rpc 一旦被调就 fail
+    async def _sentinel(*_a: Any, **_kw: Any) -> int:
+        pytest.fail("_run_rpc 不应被调用：--instance nope 应在连接前报错")
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_run_rpc", _sentinel)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "--instance", "nope", "tree"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_USAGE
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "server" in payload["error"]["message"]
+
+
+def test_rpc_single_instance_auto_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """唯一实例 server（port 7042）→ main() 经 discover_port 把 port=7042 传给 _run_rpc。
+
+    驱动真实 main()，而非复现其内部逻辑——防止 port-discovery 分支重构后测试失联。
+    """
+    import os
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import main
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7042")
+    monkeypatch.chdir(tmp_path)
+
+    captured_port: list[int] = []
+
+    async def _fake_run_rpc(spec: Any, ns: Any, port: int, fmt: str) -> int:
+        captured_port.append(port)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_run_rpc", _fake_run_rpc)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "tree"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    assert captured_port == [7042], f"应选 7042，实际 {captured_port}"
+
+
+def test_rpc_explicit_instance_resolves_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两实例活，--instance client1（port 7002）→ main() 把 port=7002 传给 _run_rpc。
+
+    驱动真实 main()，验证 --instance 选靶经过完整 CLI 路径正确解析到 7002。
+    """
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import main
+
+    _make_two_live_instances(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    captured_port: list[int] = []
+
+    async def _fake_run_rpc(spec: Any, ns: Any, port: int, fmt: str) -> int:
+        captured_port.append(port)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_run_rpc", _fake_run_rpc)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "--instance", "client1", "tree"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    assert captured_port == [7002], f"应选 7002，实际 {captured_port}"
+
+
+def test_run_ambiguous_without_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两实例活，run x.py 无 --name → 64/-1003，不启 daemon。"""
+    import argparse
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, cmd_run
+
+    _make_two_live_instances(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    # daemon start/is_running 不应被调用（断言不会 raise）
+    _daemon_start_called: list[bool] = []
+
+    def _boom_start(self: Any, **__: Any) -> None:
+        _daemon_start_called.append(True)
+        raise AssertionError("不应启动 daemon")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "start", _boom_start)
+
+    script = tmp_path / "x.py"
+    script.write_text("def run(bridge): pass\n", encoding="utf-8")
+
+    ns = argparse.Namespace(
+        script=str(script),
+        name=None,  # 无 --name
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    assert rc == EXIT_USAGE
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert not _daemon_start_called, "不应调用 daemon.start"
+
+
+def test_run_auto_selects_single_named_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """唯一 server 实例活 → cmd_run 用 instance='server'，auto_started=False。"""
+    import argparse
+    import os
+
+    import godot_cli_control.daemon as daemon_mod
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_run
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7042")
+    monkeypatch.chdir(tmp_path)
+
+    # 桩掉 _exec_user_script，捕获收到的 port
+    captured_port: list[int] = []
+
+    def _fake_exec(script_path: Any, port: int, **kw: Any) -> int:
+        captured_port.append(port)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_exec_user_script", _fake_exec)
+
+    # daemon.start 不应被调用（auto_started 应为 False）
+    _start_called: list[bool] = []
+
+    def _boom_start(self: Any, **__: Any) -> None:
+        _start_called.append(True)
+        raise AssertionError("不应启动 daemon（实例已在跑）")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "start", _boom_start)
+
+    script = tmp_path / "x.py"
+    script.write_text("def run(bridge): pass\n", encoding="utf-8")
+
+    ns = argparse.Namespace(
+        script=str(script),
+        name=None,  # 不传 --name，自动选唯一实例
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    assert rc == 0, f"脚本应成功退出，got {rc}"
+    assert captured_port == [7042], f"应连 port 7042，实际 {captured_port}"
+    assert not _start_called, "不应调用 daemon.start（server 实例已在跑）"
+
+
+# ── I1 修复：顶层 --instance 对 run/daemon 子命令生效 ──
+
+
+def test_top_level_instance_works_for_daemon_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两实例活、``--instance server daemon stop``（无 --name）→ 停 server，不报歧义。
+
+    顶层 --instance 是 --name 的等价写法，在 daemon 子命令路径也必须生效。
+    若不生效，_resolve_daemon_instance 会看到 N≥2 且无 --name，报歧义 exit 64。
+    驱动真实 main()，验证完整 CLI 路径不静默吞掉 --instance。
+    """
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_OK, main
+
+    # 铺两个活实例，若 --instance 被吞 _resolve_daemon_instance 会报歧义
+    _make_two_live_instances(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    stopped_instances: list[str] = []
+
+    def _fake_stop(self: Any) -> int:
+        stopped_instances.append(self.instance)
+        return 0  # cmd_daemon_stop 把此返回值作为 exit code
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _fake_stop)
+
+    monkeypatch.setattr(
+        sys, "argv", ["godot-cli-control", "--instance", "server", "daemon", "stop"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_OK, f"期望 exit 0，实际 {exc.value.code}"
+    assert stopped_instances == ["server"], (
+        f"顶层 --instance 应选靶 server，实际 stop 收到 {stopped_instances}"
+    )
+
+
+def test_top_level_instance_works_for_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--instance server run x.py`` → cmd_run 用 Daemon(instance='server')。
+
+    顶层 --instance 在 run 子命令路径（_resolve_daemon_instance）也必须生效。
+    驱动真实 main()，防止重构失联。
+    """
+    import os
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_OK, main
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7001")
+    monkeypatch.chdir(tmp_path)
+
+    script = tmp_path / "x.py"
+    script.write_text("def run(bridge): pass\n", encoding="utf-8")
+
+    captured_exec: list[tuple[Any, int]] = []
+
+    def _fake_exec(script_path: Any, port: int, **kw: Any) -> int:
+        captured_exec.append((script_path, port))
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_exec_user_script", _fake_exec)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["godot-cli-control", "--instance", "server", "run", str(script)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_OK, f"期望 exit 0，实际 {exc.value.code}"
+    assert captured_exec, "cmd_run 应调用 _exec_user_script"
+    assert captured_exec[0][1] == 7001, (
+        f"应连 server 实例的 port 7001，实际 {captured_exec[0][1]}"
+    )
+
+
+def test_name_and_instance_conflict_is_usage_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--instance a daemon stop --name b`` → exit 64/-1003，message 含两名字。
+
+    顶层 --instance 与子命令 --name 同时传且值不同，属于用法错误，
+    必须在连 daemon 之前报错并以 JSON 信封返回。
+    """
+    import json as _json
+    import os
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "a"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7001")
+    monkeypatch.chdir(tmp_path)
+
+    stop_called: list[bool] = []
+
+    def _boom_stop(self: Any) -> None:
+        stop_called.append(True)
+        raise AssertionError("不应调用 stop：冲突应在 preflight 报错")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _boom_stop)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["godot-cli-control", "--instance", "a", "daemon", "stop", "--name", "b"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_USAGE, f"期望 exit 64，实际 {exc.value.code}"
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "a" in payload["error"]["message"], "message 应含 --instance 值 a"
+    assert "b" in payload["error"]["message"], "message 应含 --name 值 b"
+    assert not stop_called, "不应调用 stop"
+
+
+def test_name_and_instance_same_value_ok(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--instance server daemon stop --name server`` → 正常，不报冲突。
+
+    相同值的冗余传参是合法写法（脚本模板可能同时传两个），不应报错。
+    驱动真实 main()。
+    """
+    import os
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_OK, main
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7001")
+    monkeypatch.chdir(tmp_path)
+
+    stopped_instances: list[str] = []
+
+    def _fake_stop(self: Any) -> int:
+        stopped_instances.append(self.instance)
+        return 0  # cmd_daemon_stop 把此返回值作为 exit code
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _fake_stop)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "godot-cli-control",
+            "--instance",
+            "server",
+            "daemon",
+            "stop",
+            "--name",
+            "server",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_OK, f"期望 exit 0，实际 {exc.value.code}"
+    assert stopped_instances == ["server"], (
+        f"相同值时应正常停 server，实际 {stopped_instances}"
+    )
+
+
+# ── I1 回归：stop --all 拦截顶层 --instance ──
+
+
+def test_stop_all_with_top_level_instance_is_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """``--instance server daemon stop --all`` 必须被拦截为用法错误 (exit 64 / -1003)。
+
+    顶层 ``--instance`` 是实例选靶语义，与 ``--all`` 互斥。
+    原先只查 ``ns.name``，导致顶层 ``--instance`` 被静默吞掉——全局停掉所有实例。
+    修复后应立即报错，且 Daemon.stop 和 registry.list_all 均不应被调用。
+    """
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control import registry
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    # 哨兵：任何 stop / list_all 调用都算断言失败
+    def _should_not_stop(self: Any) -> int:
+        raise AssertionError("stop --all 拦截失效：Daemon.stop 不应被调用")
+
+    def _should_not_list_all() -> list:
+        raise AssertionError("stop --all 拦截失效：registry.list_all 不应被调用")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _should_not_stop)
+    monkeypatch.setattr(registry, "list_all", _should_not_list_all)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["godot-cli-control", "--instance", "server", "daemon", "stop", "--all"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_USAGE, f"期望 exit 64，实际 {exc.value.code}"
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    # 消息应提到互斥语义，便于 agent 理解
+    msg = payload["error"]["message"]
+    assert "--all" in msg, f"message 应含 '--all'，实际：{msg!r}"

@@ -122,7 +122,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 
 > **Event pipeline**: `press` / `tap` / `hold` / `combo` inject an `InputEventAction` through the engine's event pipeline — both polling (`is_action_pressed`, `get_vector`) **and** event callbacks (`_input`, `_unhandled_input`) see the input. `InputEventAction` carries no mouse coordinates; position-dependent `_gui_input` widgets need `click` instead.
 
-> **No-arg `GameClient()` / `GameBridge()`**: with no `port` argument they auto-discover the daemon's port from `.cli_control/port` (falling back to `9877`), so a single-connection script connects to a running daemon without hardcoding a port.
+> **No-arg `GameClient()` / `GameBridge()`**: with no `port` argument they auto-discover the daemon's port from `.cli_control/instances/<name>/port` (falling back to `9877`). Pass `instance="server"` to target a named instance when multiple are running (explicit `port` always wins over `instance`). A no-arg call in a single-instance environment still works as before.
 
 ### Variant encoding depth limit
 
@@ -151,7 +151,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold; also out-of-range values like a scene `timeout` outside `(0, 3600]` sent directly via `GameClient`) |
 | `-1001` | client | Connection failure (daemon not running, port wrong, proxy hijacking localhost) |
 | `-1002` | client | Timeout waiting for response |
-| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `scene-change` path not starting with `res://`/`uid://`, a `scene-reload`/`scene-change` `--timeout` outside `(0, 3600]`, a `set`/`call` value that fails JSON parsing, script path not found, or script missing `run(bridge)`). Always exits **64** (#82 / #111). |
+| `-1003` | client | CLI usage error (combo missing steps, malformed `--steps-json`, a non-numeric `tap`/`wait-time` arg, a `scene-change` path not starting with `res://`/`uid://`, a `scene-reload`/`scene-change` `--timeout` outside `(0, 3600]`, a `set`/`call` value that fails JSON parsing, script path not found, script missing `run(bridge)`, **multi-instance ambiguity** (≥2 instances running and no `--instance`/`--name` given), **named instance not running** (explicit `--instance nope` but that instance isn't up), or `--instance` / `--name` conflict). Always exits **64** (#82 / #111). |
 | `-1004` | client | Local file IO error (e.g. screenshot can't write the destination) |
 | `-1005` | client | `run <script>` user script raised an uncaught exception — fix the script |
 | `-1006` | client | Infra pre-condition failure (`daemon start`/`stop`/`run` auto-start failed at OS level — port conflict, Godot binary not found, etc.). Always exits **2** (#92). |
@@ -165,12 +165,14 @@ The daemon is the long-lived Godot process the CLI talks to (one per project roo
 
 | Command | What it does |
 |---|---|
-| `daemon start [--headless\|--gui] [--record] [--time-scale N]` | Launch Godot with the bridge listening. Headless vs GUI is auto-detected from the TTY; `--record` forces GUI (Movie Maker needs a real renderer) and is **rejected with `--headless`** (exit 2). `--time-scale N` sets `Engine.time_scale` from frame 0 (range `(0, 100]`). |
-| `daemon stop` | Stop this project's daemon. Exit 2 if it stopped cleanly but the `.avi`→`.mp4` ffmpeg transcode failed (raw `.avi` kept; see `.cli_control/ffmpeg.log`). |
+| `daemon start [--headless\|--gui] [--record] [--time-scale N] [--name <inst>]` | Launch Godot with the bridge listening. `--name` sets the instance name (default `default`); use different names to run multiple Godot daemons for the same project in parallel. Headless vs GUI is auto-detected from the TTY; `--record` forces GUI (Movie Maker needs a real renderer) and is **rejected with `--headless`** (exit 2). `--time-scale N` sets `Engine.time_scale` from frame 0 (range `(0, 100]`). |
+| `daemon stop [--name <inst>]` | Stop this project's daemon. With `--name`, stop the named instance. Exit 2 if it stopped cleanly but the `.avi`→`.mp4` ffmpeg transcode failed (raw `.avi` kept; see `.cli_control/ffmpeg.log`). |
 | `daemon stop --all` | Stop every registered daemon across all projects. **Exit 3** if at least one failed; per-record `rc` (and an `error` field on failures) is in `result.stopped[]`. |
-| `daemon stop --project <path>` | Stop the daemon for one specific project root. |
-| `daemon status` | Exit 0 = running, 1 = stopped. When stopped, the payload may carry `last_log` / `last_exit_code` to diagnose a crash. |
-| `daemon ls` | List every registered daemon (project root, pid, port). |
+| `daemon stop --all --project <path>` | Stop all instances of one specific project. |
+| `daemon stop --project <path>` | Stop the daemon for one specific project root (single-instance shorthand). |
+| `daemon status [--name <inst>]` | Exit 0 = running, 1 = stopped. Response includes `"instance"` field. When stopped, the payload may carry `last_log` / `last_exit_code` to diagnose a crash. |
+| `daemon ls` | List every registered daemon (project root, pid, port, **instance**). Text columns: `pid\tport\tinstance\tproject_root\tstarted_at`. |
+| `daemon logs [--name <inst>] [--tail N]` | Print last N lines of godot.log for the given instance. |
 
 **Project-level defaults**: drop a `.cli_control/config.json` with `{"idle_timeout": "30m"}` to give `daemon start` / `run` a default idle-timeout without passing `--idle-timeout` each time. It's consulted only when the flag is omitted (default `0`); an explicit `--idle-timeout` always wins. A long-running `wait-time` / `combo` / recording is bounded client-side by a 600s wall-time fail-safe — override it for legitimately long operations with `GODOT_CLI_LONG_OP_TIMEOUT=<seconds>`.
 
