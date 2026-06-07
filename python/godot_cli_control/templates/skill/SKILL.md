@@ -164,6 +164,7 @@ godot-cli-control --instance all get /root/Player position
 - `all` is a **reserved instance name**: `daemon start --name all` is rejected.
 - Broadcast applies to RPC subcommands only: `--instance all` with `run` or `daemon` subcommands → `-1003` / exit 64 (to stop everything use `daemon stop --all`).
 - 0 live instances → `-1006` / exit 2 (legacy flat-layout daemons are not broadcast targets — restart them as named instances).
+- Output size multiplies by instance count — for large-payload commands (`tree`, `children`) prefer per-instance calls with tight `--max-nodes`/depth instead of broadcasting.
 
 **In pytest suites**, don't hand-roll this lifecycle — the `godot_instances` fixture (see the pytest plugin section) starts named instances, hands you connected `GameBridge` objects, and stops everything it started at teardown.
 
