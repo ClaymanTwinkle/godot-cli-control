@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -315,3 +316,63 @@ def test_instance_targeting_no_crosstalk(multi_project: Path) -> None:
     assert not remaining, (
         f"stop 后注册表应清空本项目记录，仍剩 {remaining}"
     )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Test 3：--instance all 广播（#145）——CLI 子进程全链路
+# ────────────────────────────────────────────────────────────────────────────
+
+def _cli(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """以 project 为 cwd 跑 CLI 子进程（广播按 cwd 枚举实例）。"""
+    return subprocess.run(
+        [sys.executable, "-m", "godot_cli_control.cli", *args],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def test_broadcast_exists_and_per_instance_values(multi_project: Path) -> None:
+    """--instance all 全链路：双实例广播 exists rc=0；先各自 set 不同值再广播
+    get，entry 值互不串台——证明 fan-out 真打到两个独立 daemon。"""
+    project = multi_project
+    a = Daemon(project, instance="server")
+    b = Daemon(project, instance="client1")
+    try:
+        a.start(headless=True)
+        b.start(headless=True)
+
+        # 1. 广播 exists：双实例命中，聚合 rc=0、退出码 0，数组按名排序
+        r = _cli(project, "--instance", "all", "exists", "/root/Main")
+        assert r.returncode == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+        payload = json.loads(r.stdout)
+        assert payload["ok"] is True
+        insts = payload["result"]["instances"]
+        assert [e["instance"] for e in insts] == ["client1", "server"]
+        assert all(e["ok"] is True and e["result"] is True for e in insts)
+        assert payload["result"]["rc"] == 0
+
+        # 2. 各自 set 不同值（单靶路径），广播 get 读回互不串台
+        assert _cli(project, "--instance", "server", "set",
+                    "/root/Main", "value", "111").returncode == 0
+        assert _cli(project, "--instance", "client1", "set",
+                    "/root/Main", "value", "222").returncode == 0
+        r = _cli(project, "--instance", "all", "get", "/root/Main", "value")
+        assert r.returncode == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+        by_name = {
+            e["instance"]: e for e in json.loads(r.stdout)["result"]["instances"]
+        }
+        # get 单属性的 result 形状是 {"value": ..., "type"?}（cli.py cmd_get docstring）
+        assert by_name["server"]["result"]["value"] == 111
+        assert by_name["client1"]["result"]["value"] == 222
+
+        # 3. 广播缺失节点：两实例 result=false → 各 entry rc=1，聚合退出码 3
+        r = _cli(project, "--instance", "all", "exists", "/root/Nope")
+        assert r.returncode == 3, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+        payload = json.loads(r.stdout)
+        assert payload["result"]["rc"] == 3
+        assert all(e["rc"] == 1 for e in payload["result"]["instances"])
+    finally:
+        _safe_stop(a, "server")
+        _safe_stop(b, "client1")
