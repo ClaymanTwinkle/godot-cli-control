@@ -208,6 +208,19 @@ def _preflight_combo(ns: argparse.Namespace) -> None:
     ns._combo_steps = _read_combo_steps(ns)
 
 
+def _preflight_screenshot(ns: argparse.Namespace) -> None:
+    """广播（--instance all）下 output_path 必须带 ``{instance}`` 占位符（#145）。
+
+    多实例写同一路径会互相覆盖且不报错——典型静默坑，preflight 拦在连接前
+    （契约 #5）。非广播模式零约束。
+    """
+    if getattr(ns, "instance", None) == "all" and "{instance}" not in ns.output_path:
+        raise ValueError(
+            "broadcast screenshot：output_path 必须包含 {instance} 占位符"
+            "（如 shot-{instance}.png），否则各实例写同一文件互相覆盖"
+        )
+
+
 def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
     """三选一读 combo steps：``--steps-json`` / 位置 ``-`` (stdin) / 文件路径。"""
     steps_json: str | None = getattr(ns, "steps_json", None)
@@ -849,6 +862,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         example="screenshot out.png --node /root/Game/Player/Sprite",
         extra_args=_register_screenshot_args,
         text_formatter=_fmt_screenshot_text,
+        preflight=_preflight_screenshot,
     ),
     RpcSpec(
         name="sprite-info",
@@ -1974,6 +1988,28 @@ def _emit_rpc_result(spec: RpcSpec, fmt: str, result: Any) -> None:
         text = spec.text_formatter(result)
         if text:
             print(text)
+
+
+def _instance_substituted(value: Any, instance: str) -> Any:
+    """递归把字符串里的 ``{instance}`` 换成实例名（str/list/dict；其余原样）。
+
+    通用机制：screenshot 路径、set/call 的 JSON 字面量、combo 缓存 steps 都吃
+    同一规则——agent 只须记一条。无转义口子（YAGNI），SKILL.md pitfall 注明。
+    """
+    if isinstance(value, str):
+        return value.replace("{instance}", instance)
+    if isinstance(value, list):
+        return [_instance_substituted(v, instance) for v in value]
+    if isinstance(value, dict):
+        return {k: _instance_substituted(v, instance) for k, v in value.items()}
+    return value
+
+
+def _namespace_for_instance(ns: argparse.Namespace, instance: str) -> argparse.Namespace:
+    """广播：拷贝 namespace 并做 {instance} 替换，原 ns 不动（#145）。"""
+    return argparse.Namespace(
+        **{k: _instance_substituted(v, instance) for k, v in vars(ns).items()}
+    )
 
 
 # ── argparse 装配 ──

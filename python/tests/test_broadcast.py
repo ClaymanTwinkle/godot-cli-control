@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -162,3 +163,60 @@ def test_rpc_failure_envelope_mapping(
         code, msg, rc = _rpc_failure_envelope(e)
     assert (code, rc) == (want_code, want_rc)
     assert msg  # message 永不为空（str(e) 为空时落 fallback）
+
+
+# ── Task 4: {instance} 占位符 + screenshot preflight ──
+
+
+def test_instance_substituted_recurses() -> None:
+    """str/list/dict 递归替换；非字符串原样返回。"""
+    from godot_cli_control.cli import _instance_substituted
+
+    assert _instance_substituted("shot-{instance}.png", "a") == "shot-a.png"
+    assert _instance_substituted(["{instance}", 7], "a") == ["a", 7]
+    assert _instance_substituted({"k": "x-{instance}"}, "a") == {"k": "x-a"}
+    assert _instance_substituted(3.5, "a") == 3.5
+    assert _instance_substituted(None, "a") is None
+    assert _instance_substituted(True, "a") is True
+
+
+def test_namespace_for_instance_copies_and_substitutes() -> None:
+    """产出新 namespace 且原 ns 不动（广播逐实例各拿一份）。"""
+    from godot_cli_control.cli import _namespace_for_instance
+
+    ns = argparse.Namespace(output_path="s-{instance}.png", port=None, depth=3)
+    out = _namespace_for_instance(ns, "srv")
+    assert out.output_path == "s-srv.png"
+    assert out.depth == 3
+    assert ns.output_path == "s-{instance}.png"  # 原件无副作用
+
+
+def test_screenshot_preflight_guard() -> None:
+    """广播 + 缺 {instance} → ValueError；带占位符 / 非广播 → 放行。"""
+    from godot_cli_control.cli import RPC_BY_NAME
+
+    pf = RPC_BY_NAME["screenshot"].preflight
+    assert pf is not None, "screenshot RpcSpec 必须挂 preflight（#145）"
+    with pytest.raises(ValueError, match=r"\{instance\}"):
+        pf(argparse.Namespace(instance="all", output_path="/tmp/s.png"))
+    pf(argparse.Namespace(instance="all", output_path="/tmp/s-{instance}.png"))
+    pf(argparse.Namespace(instance=None, output_path="/tmp/s.png"))
+    pf(argparse.Namespace(instance="server", output_path="/tmp/s.png"))
+
+
+def test_screenshot_broadcast_preflight_via_main(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """main()：--instance all screenshot 缺 {instance} → 连接前 exit 64 + -1003
+    （preflight 在 daemon 发现/连接之前跑，agent 不用等 30s retry）。"""
+    import godot_cli_control.cli as cli_mod
+
+    monkeypatch.setattr(
+        sys, "argv",
+        ["godot-cli-control", "--instance", "all", "screenshot", "/tmp/s.png"],
+    )
+    with pytest.raises(SystemExit) as ei:
+        cli_mod.main()
+    assert ei.value.code == 64
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["error"]["code"] == -1003
