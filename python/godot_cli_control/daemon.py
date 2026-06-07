@@ -162,6 +162,15 @@ class Daemon:
             )
         if record and not movie_path:
             raise DaemonError("--record requires --movie-path")
+        # 扩展名 belt（CLI 层 argparse type 已先挡，这里护直接 API 调用方）：
+        # Godot Movie Maker 只认 .avi/.png，别的后缀 Godot 打 "Can't find movie
+        # writer" 后继续正常跑——exit 0 但什么都没录（#152 假成功）。
+        # 合法后缀集与 cli._movie_path_arg 对齐，改动需两处同步。
+        if record and Path(movie_path).suffix.lower() not in {".avi", ".png"}:
+            raise DaemonError(
+                f"Godot Movie Maker 只支持 .avi/.png，收到 {movie_path!r}；"
+                "传 .avi 即可，stop 时自动转码出 .mp4"
+            )
         # 录制无法在 headless 下跑：Godot Movie Maker 的 add_frame() 读 viewport
         # texture，headless dummy renderer 拿到 null 直接 SIGSEGV（首帧崩，
         # CultivationWorld #180）。CLI 侧 _resolve_headless 已把「没显式 --headless

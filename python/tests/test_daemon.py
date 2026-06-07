@@ -81,6 +81,38 @@ def test_start_rejects_record_without_movie_path(tmp_path: Path) -> None:
         daemon.start(record=True, movie_path=None)
 
 
+@pytest.mark.parametrize("bad_name", ["demo.mp4", "demo.mov", "demo"])
+def test_start_rejects_record_with_bad_movie_extension(
+    tmp_path: Path, bad_name: str
+) -> None:
+    """--movie-path 后缀非 .avi/.png 必须在 spawn 前拒绝（#152）。
+
+    Godot Movie Maker 只认 .avi/.png，传 .mp4 时 Godot 打 "Can't find movie
+    writer" 后**继续正常跑**——脚本照常执行、断言全过、exit 0，但什么都没录。
+    CLI 层 argparse type 已先挡（-1003/64），这里是直接 API 调用方的 belt。"""
+    _touch_godot_project(tmp_path)
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match=r"\.avi"):
+        daemon.start(record=True, movie_path=str(tmp_path / bad_name))
+
+
+@pytest.mark.parametrize("good_name", ["demo.avi", "DEMO.AVI", "frames.png"])
+def test_start_accepts_avi_png_movie_extension(
+    tmp_path: Path, good_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """.avi/.png（大小写不敏感，Godot 侧 get_extension 同样 lower）放行——
+    校验不应误伤合法路径；用 find_godot_binary=None 让流程停在后面的
+    binary 查找报错，证明扩展名检查已通过。"""
+    _touch_godot_project(tmp_path)
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    monkeypatch.setattr(
+        "godot_cli_control.daemon.find_godot_binary", lambda: None
+    )
+    daemon = Daemon(tmp_path)
+    with pytest.raises(DaemonError, match="not found"):
+        daemon.start(record=True, movie_path=str(tmp_path / good_name))
+
+
 def test_start_rejects_record_with_headless(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

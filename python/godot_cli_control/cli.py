@@ -2074,6 +2074,22 @@ def _time_scale_arg(raw: str) -> float:
     return v
 
 
+def _movie_path_arg(raw: str) -> str:
+    """argparse type：``--movie-path`` 的扩展名校验（错误走 -1003 + 64）。
+
+    Godot Movie Maker 只认 .avi/.png；传 .mp4 时 Godot 打 "Can't find movie
+    writer" 后**继续正常跑**——脚本照常执行、exit 0，但什么都没录（#152 假成功）。
+    「stop 时自动转码出 .mp4」的设计又让人直觉传 .mp4，所以启动前 fail-loud。
+    # 合法后缀集与 daemon.start 的 belt 校验对齐，改动需两处同步
+    """
+    if Path(raw).suffix.lower() not in {".avi", ".png"}:
+        raise argparse.ArgumentTypeError(
+            f"Godot Movie Maker 只支持 .avi/.png，收到 {raw!r}；"
+            "传 .avi 即可，CLI 会在 daemon stop 时自动转码出 .mp4"
+        )
+    return raw
+
+
 def _instance_name_arg(value: str) -> str:
     """argparse type 校验：非法实例名 → ArgumentTypeError，触发 -1003/64 信封。"""
     from .daemon import DaemonError, validate_instance_name
@@ -2172,7 +2188,9 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--movie-path",
         default=None,
-        help="demo 输出路径，默认 .cli_control 下自动命名",
+        type=_movie_path_arg,
+        help="demo 输出路径，只接受 .avi/.png（Godot Movie Maker 所限；"
+        "stop 时自动转码出 .mp4）",
     )
     headless_grp = p.add_mutually_exclusive_group()
     headless_grp.add_argument(
