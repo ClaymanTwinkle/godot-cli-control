@@ -28,10 +28,16 @@ class GameBridge:
         # instance：命名实例名（如 "server"），透传给 GameClient.instance；
         # 显式 port 优先，instance 仅在 port=None 时生效（见 client.py）。
         self._loop = asyncio.new_event_loop()
-        self._client = GameClient(port=port, instance=instance)
-        self._loop.run_until_complete(
-            self._client.connect(retries=15, backoff=1.0, total_timeout=60.0)
-        )
+        # 构造/连接失败时回收 loop —— 多实例歧义（InstanceAmbiguityError）在
+        # __init__ 抛出是预期用法路径，不能让每次报错都泄漏一个 event loop。
+        try:
+            self._client = GameClient(port=port, instance=instance)
+            self._loop.run_until_complete(
+                self._client.connect(retries=15, backoff=1.0, total_timeout=60.0)
+            )
+        except BaseException:
+            self._loop.close()
+            raise
 
     def close(self) -> None:
         self._loop.run_until_complete(self._client.disconnect())

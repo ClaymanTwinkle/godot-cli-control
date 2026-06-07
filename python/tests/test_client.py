@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1049,7 +1050,7 @@ async def test_errors_defaults() -> None:
 # ---- Task 4: instance 参数接入实例解析单入口 ----
 
 
-def test_client_instance_param_resolves_port(tmp_path: "pytest.TempPathFactory", monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_instance_param_resolves_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """GameClient(instance="server") 应通过 discover_port 解析端口（issue #91 多实例扩展）。
 
     验证：当 port=None 且 instance="server" 时，client 从注册表目录读到端口
@@ -1065,7 +1066,7 @@ def test_client_instance_param_resolves_port(tmp_path: "pytest.TempPathFactory",
     assert c._port == 7042
 
 
-def test_client_port_takes_precedence_over_instance(tmp_path: "pytest.TempPathFactory", monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_port_takes_precedence_over_instance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """显式 port 优先，instance 不触发任何发现 IO（即使目录不存在也不报错）。
 
     确保 ``GameClient(port=1234, instance="server")`` 直接用 1234，不碰文件系统。

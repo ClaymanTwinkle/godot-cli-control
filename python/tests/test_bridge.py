@@ -740,3 +740,74 @@ def test_bridge_instance_param_forwarded_to_game_client(stub_client: dict) -> No
     assert received_kwargs.get("instance") == "server", (
         f"GameBridge 应把 instance='server' 透传给 GameClient，实际收到 {received_kwargs}"
     )
+
+
+# ── Task 4: event loop 泄漏防御 ──
+
+
+def test_loop_closed_when_client_constructor_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GameClient 构造抛异常（如 InstanceAmbiguityError）时，
+    已建的 event loop 必须被 close，避免 ResourceWarning 和 fd 累积。
+
+    策略：monkeypatch asyncio.new_event_loop，捕获建立的 loop 对象；
+    再 patch bridge_mod.GameClient 构造直接抛错；
+    最后断言 captured_loop.is_closed()。
+    """
+    import asyncio as _asyncio
+
+    captured: list[_asyncio.AbstractEventLoop] = []
+    real_new_event_loop = _asyncio.new_event_loop
+
+    def _capturing_new_event_loop() -> _asyncio.AbstractEventLoop:
+        loop = real_new_event_loop()
+        captured.append(loop)
+        return loop
+
+    monkeypatch.setattr(_asyncio, "new_event_loop", _capturing_new_event_loop)
+
+    import godot_cli_control.bridge as _bridge_mod
+
+    class _BoomClient:
+        def __init__(self, port: int = DEFAULT_PORT, instance: str | None = None) -> None:
+            raise RuntimeError("构造爆炸（模拟 InstanceAmbiguityError）")
+
+    monkeypatch.setattr(_bridge_mod, "GameClient", _BoomClient)
+
+    with pytest.raises(RuntimeError, match="构造爆炸"):
+        GameBridge()
+
+    assert len(captured) == 1, "应恰好创建了一个 event loop"
+    assert captured[0].is_closed(), "构造失败后 event loop 必须已 close，否则会泄漏"
+
+
+def test_loop_closed_when_connect_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect() 抛异常（ConnectionError 等）时，event loop 同样必须 close。
+
+    此路径在多实例 feature 上线后变为常见路径（daemon 未启动即连接），
+    不能每次都泄漏一个 selector fd。
+    """
+    import asyncio as _asyncio
+
+    captured: list[_asyncio.AbstractEventLoop] = []
+    real_new_event_loop = _asyncio.new_event_loop
+
+    def _capturing_new_event_loop() -> _asyncio.AbstractEventLoop:
+        loop = real_new_event_loop()
+        captured.append(loop)
+        return loop
+
+    monkeypatch.setattr(_asyncio, "new_event_loop", _capturing_new_event_loop)
+
+    import godot_cli_control.bridge as _bridge_mod
+
+    class _ConnectBoomClient(_StubClient):
+        async def connect(self, **kwargs: object) -> None:
+            raise ConnectionError("连接爆炸（模拟 daemon 未启动）")
+
+    monkeypatch.setattr(_bridge_mod, "GameClient", _ConnectBoomClient)
+
+    with pytest.raises(ConnectionError, match="连接爆炸"):
+        GameBridge()
+
+    assert len(captured) == 1, "应恰好创建了一个 event loop"
+    assert captured[0].is_closed(), "connect 失败后 event loop 必须已 close，否则会泄漏"
