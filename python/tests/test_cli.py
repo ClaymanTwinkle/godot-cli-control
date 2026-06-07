@@ -3590,8 +3590,6 @@ def test_top_level_instance_works_for_daemon_stop(
     若不生效，_resolve_daemon_instance 会看到 N≥2 且无 --name，报歧义 exit 64。
     驱动真实 main()，验证完整 CLI 路径不静默吞掉 --instance。
     """
-    import json as _json
-
     import godot_cli_control.daemon as daemon_mod
     from godot_cli_control.cli import EXIT_OK, main
 
@@ -3629,7 +3627,6 @@ def test_top_level_instance_works_for_run(
     顶层 --instance 在 run 子命令路径（_resolve_daemon_instance）也必须生效。
     驱动真实 main()，防止重构失联。
     """
-    import json as _json
     import os
 
     import godot_cli_control.cli as cli_mod
