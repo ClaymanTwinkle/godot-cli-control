@@ -1674,3 +1674,33 @@ class TestInstanceLayout:
         (legacy / "godot.pid").write_text(str(os.getpid()))
         d = daemon_mod.Daemon(tmp_path, instance="server")
         assert d.read_pid() is None             # 命名实例不读 legacy
+
+    def test_cleanup_removes_empty_instance_dir(self, tmp_path: Path) -> None:
+        """_cleanup_state_files 清掉 pid/port 后目录已空 → 连目录一起 rmdir（#144）。"""
+        d = daemon_mod.Daemon(tmp_path, instance="server")
+        d.control_dir.mkdir(parents=True)
+        d.pid_file.write_text("99999")
+        d.port_file.write_text("1")
+        d._cleanup_state_files()
+        assert not d.control_dir.exists()
+        assert not d.control_dir.parent.exists()  # 空 instances/ 父目录一并清
+
+    def test_cleanup_keeps_dir_with_diagnostics(self, tmp_path: Path) -> None:
+        """godot.log 还在（#38 保留语义）→ 目录保留，只清状态文件。"""
+        d = daemon_mod.Daemon(tmp_path, instance="server")
+        d.control_dir.mkdir(parents=True)
+        d.pid_file.write_text("99999")
+        d.log_file.write_text("boom")
+        d._cleanup_state_files()
+        assert not d.pid_file.exists()
+        assert d.log_file.exists()
+        assert d.control_dir.exists()
+
+    def test_cleanup_never_removes_project_control_dir(self, tmp_path: Path) -> None:
+        """default 实例清理后即使 .cli_control/ 项目级目录已空也不动它（config.json 等的家）。"""
+        d = daemon_mod.Daemon(tmp_path)
+        d.control_dir.mkdir(parents=True)
+        d.pid_file.write_text("99999")
+        d._cleanup_state_files()
+        assert not d.control_dir.exists()
+        assert (tmp_path / ".cli_control").exists()

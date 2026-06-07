@@ -184,3 +184,38 @@ def test_prune_dead_new_format_cleans_instance_dir(
     assert registry.list_all() == []
     assert not (inst_dir / "godot.pid").exists()
     assert not (inst_dir / "port").exists()
+
+
+def test_prune_removes_empty_orphan_dirs(
+    reg_dir: Path, tmp_path: Path, dead_pid: int
+) -> None:
+    """prune 清掉 pid/port 后实例目录已空 → 连目录一起 rmdir；空 instances/ 父目录同清（#144）。"""
+    proj = tmp_path / "p1"
+    proj.mkdir()
+    inst_dir = proj / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(dead_pid))
+    (inst_dir / "port").write_text("1")
+    registry.register(proj, pid=dead_pid, port=1, godot_bin="x",
+                      log_path="x", instance="server")
+    assert registry.list_all() == []
+    assert not inst_dir.exists()
+    assert not inst_dir.parent.exists()  # instances/ 也空了 → 一并清
+    assert (proj / ".cli_control").exists()  # 项目级目录永不动
+
+
+def test_prune_keeps_instance_dir_with_diagnostics(
+    reg_dir: Path, tmp_path: Path, dead_pid: int
+) -> None:
+    """目录里还有 godot.log（诊断现场，#38 保留语义）→ 只清状态文件，目录保留。"""
+    proj = tmp_path / "p1"
+    proj.mkdir()
+    inst_dir = proj / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(dead_pid))
+    (inst_dir / "godot.log").write_text("boom")
+    registry.register(proj, pid=dead_pid, port=1, godot_bin="x",
+                      log_path="x", instance="server")
+    assert registry.list_all() == []
+    assert (inst_dir / "godot.log").exists()
+    assert inst_dir.exists()

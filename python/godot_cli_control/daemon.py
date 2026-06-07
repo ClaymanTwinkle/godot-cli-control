@@ -40,6 +40,14 @@ class InstanceAmbiguityError(RuntimeError):
 _INSTANCE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
+def _rmdir_if_empty(path: Path) -> None:
+    """目录已空则删除（实例目录卫生回收，#144）；非空 / 不存在 / IO 错静默保留。"""
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
 def validate_instance_name(name: str) -> str:
     """校验实例名合法性，合法则原样返回，不合法抛 DaemonError（spec 2026-06-07）。"""
     if not _INSTANCE_NAME_RE.fullmatch(name):
@@ -335,6 +343,16 @@ class Daemon:
         # start 失败回滚路径还没 register 时，unregister 是 unlink(missing_ok=True)，
         # 行为一致；保持一处兜底比让所有 caller 记得手动 unregister 更不易遗漏。
         _registry.unregister(self.project_root, instance=self.instance)
+        # 实例目录已空 → 顺手 rmdir（#144）。godot.log / last_exit_code 等诊断文件
+        # 在场时 rmdir 自然失败、目录保留（#38 的回溯语义不受影响）；项目级
+        # .cli_control/（config.json / godot_bin 的家）永远不动。
+        # 仅标准 instances/ 布局才清 —— 显式 override 的 control_dir 归注入方管，
+        # 删它（或它的 parent）越权。
+        if self.control_dir == (
+            self.project_root / ".cli_control" / "instances" / self.instance
+        ):
+            _rmdir_if_empty(self.control_dir)
+            _rmdir_if_empty(self.control_dir.parent)  # 空 instances/ 一并清
 
     def read_godot_bin_pref(self) -> str | None:
         """读取 init 命令写入的 ``.cli_control/godot_bin`` 路径偏好。
