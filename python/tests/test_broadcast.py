@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+from pathlib import Path
 
 import pytest
 
@@ -48,5 +50,75 @@ def test_name_all_rejected_everywhere(
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(argv)
     assert exc_info.value.code == 64
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["error"]["code"] == -1003
+
+
+# ── Task 2: 顶层 --instance all 放行 + daemon/run 路径拒绝 ──
+
+
+def test_top_level_instance_accepts_all() -> None:
+    """顶层 --instance 放行广播哨兵 'all'（RPC 路径的入口）。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["--instance", "all", "exists", "/root/Foo"])
+    assert ns.instance == "all"
+
+
+def test_resolve_daemon_instance_rejects_all(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--instance all 流入 daemon/run 单靶路径 → -1003 信封 + None（调用方 exit 64）。
+    覆盖 daemon stop/status/logs 与 run 四个调用方。"""
+    from godot_cli_control.cli import OUTPUT_JSON, _resolve_daemon_instance
+
+    ns = argparse.Namespace(name=None, instance="all", output_format=OUTPUT_JSON)
+    assert _resolve_daemon_instance(ns, Path.cwd()) is None
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["error"]["code"] == -1003
+    assert "RPC" in payload["error"]["message"]
+
+
+def test_daemon_start_rejects_top_level_instance_all(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--instance all daemon start → exit 64 + -1003（start 不经 _resolve_daemon_instance，
+    需要独立守卫）。"""
+    import godot_cli_control.cli as cli_mod
+
+    ns = cli_mod.build_parser().parse_args(["--instance", "all", "daemon", "start"])
+    rc = cli_mod.cmd_daemon_start(ns)
+    assert rc == cli_mod.EXIT_USAGE
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["error"]["code"] == -1003
+
+
+def test_run_rejects_instance_all(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--instance all run script.py → exit 64 + -1003（run 必须单连接，无广播语义）。"""
+    import godot_cli_control.cli as cli_mod
+
+    script = tmp_path / "s.py"
+    script.write_text("def run(bridge):\n    pass\n", encoding="utf-8")
+    ns = cli_mod.build_parser().parse_args(["--instance", "all", "run", str(script)])
+    rc = cli_mod.cmd_run(ns)
+    assert rc == cli_mod.EXIT_USAGE
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["error"]["code"] == -1003
+
+
+def test_stop_all_with_top_level_instance_all_is_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--instance all daemon stop --all → 既有「--all 与实例选靶互斥」校验拦截。
+    本条当下就应绿（cli.py cmd_daemon_stop 既有逻辑覆盖），作回归钉。"""
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, cmd_daemon_stop
+
+    ns = argparse.Namespace(
+        all=True, name=None, instance="all", project=None, output_format=OUTPUT_JSON
+    )
+    rc = cmd_daemon_stop(ns)
+    assert rc == EXIT_USAGE
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["error"]["code"] == -1003

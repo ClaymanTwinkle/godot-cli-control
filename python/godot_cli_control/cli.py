@@ -1282,6 +1282,10 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         )
         return EXIT_USAGE
     inst = merged or "default"
+    if inst == "all":
+        # #145：start 不经 _resolve_daemon_instance，需独立守卫顶层 --instance all。
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=_BROADCAST_NOT_FOR_DAEMON_MSG)
+        return EXIT_USAGE
     daemon = Daemon(Path.cwd(), instance=inst)
     try:
         daemon.start(
@@ -2044,6 +2048,14 @@ def _instance_name_arg(value: str) -> str:
         raise argparse.ArgumentTypeError(str(e))
 
 
+def _instance_arg_allow_all(value: str) -> str:
+    """顶层 ``--instance`` 的 argparse type：放行广播哨兵 ``all``（#145），
+    其余走常规实例名校验。``--name`` 不放行——'all' 不可用作实例名。"""
+    if value == "all":
+        return value
+    return _instance_name_arg(value)
+
+
 def _add_instance_name_flag(p: argparse.ArgumentParser) -> None:
     """daemon 子命令的实例选择 flag。独立于 _add_daemon_flags：后者全是
     start 专属 flag（--record/--headless/...），挂到 status/logs/stop 会污染。"""
@@ -2053,6 +2065,13 @@ def _add_instance_name_flag(p: argparse.ArgumentParser) -> None:
         default=None,
         help="实例名（默认 default；多实例并行时用于选靶，等价顶层 --instance；两者同时传值须一致）",
     )
+
+
+# #145：--instance all 仅对 RPC 子命令广播；daemon / run 是单靶或已有 --all 语义。
+_BROADCAST_NOT_FOR_DAEMON_MSG = (
+    "--instance all 仅对 RPC 子命令广播；daemon/run 子命令请用 --name <inst> "
+    "指定单实例（停全部实例用 daemon stop --all）"
+)
 
 
 def _merge_instance_flags(ns: argparse.Namespace) -> tuple[str | None, bool]:
@@ -2086,6 +2105,10 @@ def _resolve_daemon_instance(ns: argparse.Namespace, project_root: Path) -> str 
             code=CLIENT_CODE_USAGE,
             message=f"--name {sub!r} 与顶层 --instance {top!r} 冲突，二选一",
         )
+        return None
+    if inst == "all":
+        # #145：广播哨兵只在 RPC 路径有意义；daemon/run 单靶路径明确拒绝并指路。
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=_BROADCAST_NOT_FOR_DAEMON_MSG)
         return None
     if inst is not None:
         return inst
@@ -2269,11 +2292,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     conn_grp.add_argument(
         "--instance",
-        type=_instance_name_arg,
+        type=_instance_arg_allow_all,
         default=None,
         help=(
             "目标实例名；RPC 与 run/daemon 子命令通用（daemon 子命令的 --name 是等价写法）。"
-            "多实例并行时必传；与 --port 互斥。"
+            "多实例并行时必传；与 --port 互斥。传 all 对全部活实例广播（仅 RPC 子命令）。"
         ),
     )
     _add_output_format_flags(parser)
