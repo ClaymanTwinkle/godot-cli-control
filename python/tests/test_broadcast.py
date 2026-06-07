@@ -509,6 +509,30 @@ def test_broadcast_text_mode_prefixes_instance(
     assert "boom" in captured.err
 
 
+def test_broadcast_text_mode_empty_formatter_no_dangling_space(
+    two_instances: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """text 模式：formatter 返回空串（如 pressed 空列表）→ 裸 [name] 行，
+    无尾空格悬空；实例行不缺席（agent 不误判实例丢失）。"""
+    from godot_cli_control.cli import OUTPUT_TEXT, RPC_BY_NAME, _run_rpc_broadcast
+
+    clients = {
+        9001: _mock_client(get_pressed=AsyncMock(return_value=[])),
+        9002: _mock_client(get_pressed=AsyncMock(return_value=[])),
+    }
+    with patch(
+        "godot_cli_control.cli.GameClient", side_effect=lambda port: clients[port]
+    ):
+        rc = asyncio.run(
+            _run_rpc_broadcast(
+                RPC_BY_NAME["pressed"], _broadcast_ns(), OUTPUT_TEXT
+            )
+        )
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == ["[a]", "[b]"]
+
+
 def test_main_dispatches_instance_all_to_broadcast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

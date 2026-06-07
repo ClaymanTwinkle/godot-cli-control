@@ -2747,7 +2747,10 @@ async def _run_rpc_broadcast(
     else:
         for e in entries:
             if e["ok"]:
-                print(f"[{e['instance']}] {spec.text_formatter(e['result'])}")
+                # 空 formatter 输出（如 pressed 空列表）退化为裸 [name] 行，
+                # 不留尾空格——广播下省略整行会让 agent 误以为实例丢了。
+                text = spec.text_formatter(e["result"])
+                print(f"[{e['instance']}] {text}" if text else f"[{e['instance']}]")
             else:
                 print(
                     f"[{e['instance']}] error: [{e['error']['code']}] "
