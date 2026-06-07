@@ -20,8 +20,9 @@ from godot_cli_control.client import DEFAULT_PORT
 class _StubClient:
     """替代 GameClient 的桩。所有 async 方法把调用记录到 ``calls`` 并返回预置值。"""
 
-    def __init__(self, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, port: int = DEFAULT_PORT, instance: str | None = None) -> None:
         self.port = port
+        self.instance = instance
         self.calls: list[tuple[str, tuple, dict]] = []
         # 每个方法的预置返回值；默认 None
         self.returns: dict[str, Any] = {}
@@ -161,8 +162,9 @@ def stub_client(monkeypatch: pytest.MonkeyPatch) -> _StubClient:
     """patch 模块级 GameClient 符号，让 GameBridge() 实例化时拿到桩。"""
     holder: dict[str, _StubClient] = {}
 
-    def _factory(port: int = DEFAULT_PORT) -> _StubClient:
-        c = _StubClient(port=port)
+    def _factory(port: int = DEFAULT_PORT, instance: str | None = None) -> _StubClient:
+        # instance 参数接入后 GameBridge 会透传过来，桩需接收以避免 TypeError
+        c = _StubClient(port=port, instance=instance)
         holder["client"] = c
         return c
 
@@ -703,3 +705,38 @@ def test_errors_passes_cursor(stub_client: dict) -> None:
     assert result["marker"] == 5
     assert c.calls[-1] == ("errors", (), {"since": 3, "limit": 7})
     b.close()
+
+
+# ── Task 4: instance 参数透传 ──
+
+
+def test_bridge_instance_param_forwarded_to_game_client(stub_client: dict) -> None:
+    """GameBridge(instance="server") 必须把 instance 透传给 GameClient。
+
+    stub_client fixture 已 patch 掉 bridge_mod.GameClient → _StubClient。
+    _StubClient.__init__ 只接受 port=，不接受 instance=，
+    所以需要升级 _StubClient 以验证透传行为。
+    本测试另开一条 monkeypatch 路径：记录构造参数。
+    """
+    received_kwargs: dict = {}
+
+    class _CapturingStub(_StubClient):
+        def __init__(self, port: int = DEFAULT_PORT, instance: str | None = None) -> None:
+            super().__init__(port=port)
+            received_kwargs["port"] = port
+            received_kwargs["instance"] = instance
+
+    import godot_cli_control.bridge as _bridge_mod
+
+    # 临时用 _CapturingStub 替换，不影响其他测试
+    original = _bridge_mod.GameClient
+    _bridge_mod.GameClient = _CapturingStub  # type: ignore
+    try:
+        b = GameBridge(instance="server")
+        b.close()
+    finally:
+        _bridge_mod.GameClient = original
+
+    assert received_kwargs.get("instance") == "server", (
+        f"GameBridge 应把 instance='server' 透传给 GameClient，实际收到 {received_kwargs}"
+    )

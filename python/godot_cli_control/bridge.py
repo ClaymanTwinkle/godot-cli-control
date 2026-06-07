@@ -21,12 +21,14 @@ from .client import GameClient
 class GameBridge:
     """同步接口，内部通过事件循环调用异步 GameClient。"""
 
-    def __init__(self, port: int | None = None) -> None:
-        # port=None → GameClient 从 .cli_control/port auto-discover（issue #91）。
+    def __init__(self, port: int | None = None, instance: str | None = None) -> None:
+        # port=None → GameClient 从 .cli_control/ auto-discover（issue #91）。
         # daemon 默认 OS 自动分配端口，所以 ``GameBridge()`` 无参数也能连上正在
         # 跑的 daemon，与 README 的单连接脚本示例一致。
+        # instance：命名实例名（如 "server"），透传给 GameClient.instance；
+        # 显式 port 优先，instance 仅在 port=None 时生效（见 client.py）。
         self._loop = asyncio.new_event_loop()
-        self._client = GameClient(port=port)
+        self._client = GameClient(port=port, instance=instance)
         self._loop.run_until_complete(
             self._client.connect(retries=15, backoff=1.0, total_timeout=60.0)
         )

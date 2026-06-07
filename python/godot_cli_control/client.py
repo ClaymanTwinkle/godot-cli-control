@@ -76,17 +76,22 @@ class RpcError(RuntimeError):
 class GameClient:
     """WebSocket client that connects to Godot's GameBridge service."""
 
-    def __init__(self, port: int | None = None) -> None:
-        # port=None（无显式端口）→ 从 .cli_control/port auto-discover，找不到再回退
+    def __init__(self, port: int | None = None, instance: str | None = None) -> None:
+        # port=None（无显式端口）→ 从 .cli_control/ auto-discover，找不到再回退
         # DEFAULT_PORT。daemon 默认 OS 自动分配端口，所以照 README 写
         # ``GameClient()`` 单连接脚本的用户/agent 必须经由这条发现路径才能连上
         # （issue #91）。发现逻辑收敛在 daemon.discover_port，CLI 走同一入口。
         # 延迟 import 避免 client 在 package import 时拉起 daemon→registry 这条
         # 较重的依赖链。
+        #
+        # instance：命名实例名（如 "server"/"client"）。仅在 port=None 时透传给
+        # discover_port；显式 port 全权优先，instance 不触发任何 IO。
+        # InstanceAmbiguityError 不吞，直接抛给库用户——run 脚本作者需自己决定
+        # 连哪个实例（传 instance= 消歧）。
         if port is None:
             from .daemon import discover_port
 
-            port = discover_port() or DEFAULT_PORT
+            port = discover_port(instance=instance) or DEFAULT_PORT
         self._port = port
         self._ws: ClientConnection | None = None
         self._pending: dict[str, asyncio.Future[dict]] = {}
