@@ -83,6 +83,15 @@ def test_jump(godot_daemon, bridge):
 - `bridge` (function-scoped) gives a fresh `GameBridge`; on teardown it best-effort restores global engine state — `unpause()`, `time_scale` back to its setup-time snapshot, `release_all()` — so a `hold`/`pause`/speed-up left behind by one case can't bleed into the next, then closes the connection.
 - `fresh_scene` (function-scoped, opt-in) calls `scene_reload()` at setup so the case starts on a pristine scene. Node references cached before the reload are invalid afterwards.
 - `no_push_errors` (function-scoped, opt-in) records an `errors` marker at setup and fails the case if any new `push_error` was emitted during it (warnings don't fail). Requires Godot 4.5+ (Logger API) — older engines raise `RpcError` 1012 at setup, loudly.
+- `godot_instances` (scope configurable, default function) is a multi-instance factory for multiplayer e2e — start a named server **and** clients inside one test and get connected `GameBridge` objects back; teardown stops everything the fixture started (and only that):
+
+  ```python
+  def test_join(godot_instances):
+      server = godot_instances.start("server")
+      client = godot_instances.start("client1")
+  ```
+
+  `start(name)` is idempotent get-or-start (`headless`/`time_scale` follow the global options, overridable per call; `port` always defaults to 0 = OS-assigned); `stop(name)` stops one instance mid-test (restartable); `daemon(name)` exposes the underlying `Daemon`. `--godot-cli-instances-scope session` shares one set of instances across the whole suite (faster, no state isolation between tests).
 - On a test failure (non-headless daemon only) a best-effort screenshot is saved to `.cli_control/failures/<nodeid>.png` and the path is attached to the pytest report.
 
 CLI options:
@@ -92,6 +101,7 @@ CLI options:
 --godot-cli-no-headless      # open a real Godot window
 --godot-cli-project-root=DIR # default: pytest rootdir
 --godot-cli-time-scale=X     # Engine.time_scale applied at daemon startup (e.g. 5 to speed up the suite)
+--godot-cli-instances-scope=function|session  # godot_instances fixture scope (default: function)
 ```
 
 ## CLI
