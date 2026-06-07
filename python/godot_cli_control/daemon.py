@@ -25,10 +25,11 @@ class DaemonError(RuntimeError):
 
 
 class InstanceAmbiguityError(RuntimeError):
-    """实例无法唯一确定（≥2 在跑且未显式指定，或显式指定的不在跑）。
+    """实例无法唯一确定或暂不可连（≥2 在跑且未显式指定、显式指定的不在跑、
+    或选中实例 live 但 port 文件尚不可读 —— 启动中 / 刚死的瞬态，#144）。
 
     CLI 把它映射成 -1003 + exit 64 的 preflight 用法错；message 自带在跑
-    实例清单，agent 看单行 JSON 即知下一步传什么（spec 2026-06-07）。
+    实例清单或重试指引，agent 看单行 JSON 即知下一步做什么（spec 2026-06-07）。
     """
 
     def __init__(self, message: str, names: list[str]) -> None:
@@ -519,6 +520,23 @@ def list_live_instances(project_root: Path | None = None) -> list[str]:
     )
 
 
+def _require_port(d: Daemon) -> int:
+    """已确认 live 的实例必须有可读端口，否则抛异常而非静默 None（#144）。
+
+    实例 live 但 port 文件不可读只发生在毫秒级竞态窗口（daemon 刚写 pid 还没写
+    port，或刚死文件被并发清理）。静默返回 None 会让调用方回退 DEFAULT_PORT、
+    连接失败干等 30s retry —— agent 拿不到「正在启动 / 刚死，稍后重试」的信号。
+    """
+    port = d.current_port()
+    if port is None:
+        raise InstanceAmbiguityError(
+            f"instance {d.instance!r} is running but its port file is not"
+            " readable yet — daemon may still be starting; retry in a moment",
+            [d.instance],
+        )
+    return port
+
+
 def discover_port(
     project_root: Path | None = None, instance: str | None = None
 ) -> int | None:
@@ -537,8 +555,11 @@ def discover_port(
       - N = 0 → 走 default 实例的 ``current_port()``，自带 legacy 只读 fallback（Task 1）；
         如此「legacy daemon 在跑 + instances/ 不存在」时仍能返回正确端口。
 
-    ``project_root`` 默认 ``Path.cwd()``（与 CLI 工作目录约定一致）。无 port 文件
-    或解析失败返回 ``None``，由调用方决定回退值。
+    选中的实例（显式 / N=1 自动）live 但 port 文件不可读 → 抛
+    ``InstanceAmbiguityError`` 提示稍后重试（``_require_port``，#144），不再静默
+    ``None``。``None`` 只出现在 N=0 分支（legacy fallback 也无 port 文件），
+    由调用方决定回退值。``project_root`` 默认 ``Path.cwd()``（与 CLI 工作目录
+    约定一致）。
 
     端口文件路径：``.cli_control/instances/<name>/port``（多实例布局）；
     legacy ``.cli_control/port`` 作为 fallback 仍可读取（单实例旧布局兼容）。
@@ -554,7 +575,7 @@ def discover_port(
                 + (f"; running: {', '.join(live)}" if live else "; none running"),
                 live,
             )
-        return d.current_port()
+        return _require_port(d)
 
     live = list_live_instances(root)
     if len(live) > 1:
@@ -563,7 +584,7 @@ def discover_port(
             live,
         )
     if len(live) == 1:
-        return Daemon(root, instance=live[0]).current_port()
+        return _require_port(Daemon(root, instance=live[0]))
     # 0 个在跑：default 实例的 current_port 自带 legacy 只读 fallback（Task 1）
     return Daemon(root).current_port()
 

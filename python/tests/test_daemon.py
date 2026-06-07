@@ -1696,6 +1696,26 @@ class TestInstanceResolution:
         assert daemon_mod.list_live_instances(tmp_path) == []
         assert daemon_mod.discover_port(tmp_path) == 8888
 
+    def test_single_running_port_unreadable_raises(self, tmp_path: Path) -> None:
+        """N=1 实例 live 但 port 文件不可读 → 抛异常而非静默 None（#144）。
+
+        否则调用方回退 DEFAULT_PORT 连接失败干等 30s，agent 拿不到
+        「实例正在启动 / 刚死，稍后重试」的信号。
+        """
+        d = tmp_path / ".cli_control" / "instances" / "server"
+        d.mkdir(parents=True)
+        (d / "godot.pid").write_text(str(os.getpid()))  # live 但没写 port
+        with pytest.raises(daemon_mod.InstanceAmbiguityError, match="server"):
+            daemon_mod.discover_port(tmp_path)
+
+    def test_explicit_instance_port_unreadable_raises(self, tmp_path: Path) -> None:
+        """显式 instance：live 但 port 文件不可读 → 同样抛异常（对称语义，#144）。"""
+        d = tmp_path / ".cli_control" / "instances" / "server"
+        d.mkdir(parents=True)
+        (d / "godot.pid").write_text(str(os.getpid()))
+        with pytest.raises(daemon_mod.InstanceAmbiguityError, match="server"):
+            daemon_mod.discover_port(tmp_path, instance="server")
+
 
 class TestInstanceLayout:
     def test_default_instance_uses_instances_dir(self, tmp_path: Path) -> None:
