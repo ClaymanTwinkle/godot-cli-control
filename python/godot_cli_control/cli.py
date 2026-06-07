@@ -1326,9 +1326,12 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
 
     fmt = _output_format(ns)
 
-    # --all 与 --name 互斥（显式校验，给出比 argparse 互斥组更友好的消息）
-    if getattr(ns, "all", False) and getattr(ns, "name", None):
-        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message="--all 与 --name 互斥")
+    # --all 与实例选靶（--name / 顶层 --instance）互斥
+    # 注意：只查 ns.name 不够——顶层 --instance 落在 ns.instance，同样是"选靶"语义
+    inst_flag = getattr(ns, "name", None) or getattr(ns, "instance", None)
+    if getattr(ns, "all", False) and inst_flag:
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE,
+                        message="--all 与实例选靶（--name / 顶层 --instance）互斥")
         return EXIT_USAGE
 
     if getattr(ns, "all", False):
@@ -2118,7 +2121,7 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
         "--port",
         type=int,
         default=0,
-        help="GameBridge 监听端口（默认 0 = OS 自动分配；写入 .cli_control/port）",
+        help="GameBridge 监听端口（默认 0 = OS 自动分配；写入 .cli_control/instances/<name>/port）",
     )
     p.add_argument(
         "--idle-timeout",
@@ -2247,8 +2250,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            f"RPC 子命令连接的 GameBridge 端口（默认从 .cli_control/port 读取，"
-            f"否则 {DEFAULT_PORT}）。注意：仅作用于 RPC 子命令，daemon "
+            f"RPC 子命令连接的 GameBridge 端口（默认从 .cli_control/instances/<name>/port 读取，"
+            f"legacy .cli_control/port 作为 fallback，否则 {DEFAULT_PORT}）。"
+            "注意：仅作用于 RPC 子命令，daemon "
             "start / run 启动 daemon 时请用其各自的 --port。"
         ),
     )

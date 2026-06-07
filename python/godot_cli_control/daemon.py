@@ -509,6 +509,9 @@ def discover_port(
 
     ``project_root`` 默认 ``Path.cwd()``（与 CLI 工作目录约定一致）。无 port 文件
     或解析失败返回 ``None``，由调用方决定回退值。
+
+    端口文件路径：``.cli_control/instances/<name>/port``（多实例布局）；
+    legacy ``.cli_control/port`` 作为 fallback 仍可读取（单实例旧布局兼容）。
     """
     root = Path(project_root) if project_root is not None else Path.cwd()
     if instance is not None:

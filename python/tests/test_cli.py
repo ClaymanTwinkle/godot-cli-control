@@ -3764,3 +3764,52 @@ def test_name_and_instance_same_value_ok(
     assert stopped_instances == ["server"], (
         f"相同值时应正常停 server，实际 {stopped_instances}"
     )
+
+
+# ── I1 回归：stop --all 拦截顶层 --instance ──
+
+
+def test_stop_all_with_top_level_instance_is_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """``--instance server daemon stop --all`` 必须被拦截为用法错误 (exit 64 / -1003)。
+
+    顶层 ``--instance`` 是实例选靶语义，与 ``--all`` 互斥。
+    原先只查 ``ns.name``，导致顶层 ``--instance`` 被静默吞掉——全局停掉所有实例。
+    修复后应立即报错，且 Daemon.stop 和 registry.list_all 均不应被调用。
+    """
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control import registry
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    # 哨兵：任何 stop / list_all 调用都算断言失败
+    def _should_not_stop(self: Any) -> int:
+        raise AssertionError("stop --all 拦截失效：Daemon.stop 不应被调用")
+
+    def _should_not_list_all() -> list:
+        raise AssertionError("stop --all 拦截失效：registry.list_all 不应被调用")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _should_not_stop)
+    monkeypatch.setattr(registry, "list_all", _should_not_list_all)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["godot-cli-control", "--instance", "server", "daemon", "stop", "--all"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == EXIT_USAGE, f"期望 exit 64，实际 {exc.value.code}"
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    # 消息应提到互斥语义，便于 agent 理解
+    msg = payload["error"]["message"]
+    assert "--all" in msg, f"message 应含 '--all'，实际：{msg!r}"

@@ -257,6 +257,9 @@ def test_instance_targeting_no_crosstalk(multi_project: Path) -> None:
 
     补充 Test 1 的"关闭重开再读"路径，本条在同一组 bridge 对象上连续操作，
     验证相同 bridge 持续连接也不会把 value 写串到另一个实例。
+
+    选靶方式：``GameBridge(port=...)`` 显式端口（从 Daemon.current_port() 读取）。
+    ``GameBridge(instance=...)`` 路径由单测覆盖，不在此重复。
     """
     project = multi_project
 

@@ -509,7 +509,7 @@ Pytest CLI options the plugin adds:
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--godot-cli-port` | `(auto)` | GameBridge port. Default: read from `.cli_control/port` (which the daemon writes when it starts). |
+| `--godot-cli-port` | `(auto)` | GameBridge port. Default: read from `.cli_control/instances/<name>/port` (which the daemon writes when it starts); legacy `.cli_control/port` is read as fallback. |
 | `--godot-cli-no-headless` | off (i.e. headless) | Drop `--headless`, open a real Godot window |
 | `--godot-cli-project-root` | `pytest rootdir` | Override the Godot project root |
 | `--godot-cli-time-scale` | `None` (engine default = 1.0) | Set `Engine.time_scale` at daemon startup (e.g. `5` to run the whole suite at 5× speed). Passed as `--cli-time-scale=N` to Godot; valid range `(0, 100]`. |
@@ -536,7 +536,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Daemon won't start** — check `.cli_control/godot_bin` exists and points at a real Godot 4 binary, or `export GODOT_BIN=/path/to/godot`. See `godot-cli-control init -h` for the full lookup chain.
 - **Output flags work in any position** — `--json` / `--text` / `--no-json` are accepted both before and after subcommands as of this fix.
 - **There are two independent `--port` flags — don't confuse them:**
-  - Top-level `godot-cli-control --port N <subcommand>`: the GameBridge port an RPC subcommand connects to (auto-discovered from `.cli_control/port`; override only when needed). **Must come before the subcommand.**
+  - Top-level `godot-cli-control --port N <subcommand>`: the GameBridge port an RPC subcommand connects to (auto-discovered from `.cli_control/instances/<name>/port`; legacy `.cli_control/port` is read as fallback; override only when needed). **Must come before the subcommand.**
   - `daemon start --port N`: the port the daemon itself listens on. This is a local flag of `start`, so — like any other `daemon` flag — its position doesn't matter.
 - **`combo` rejects everything with `1004`** — a combo is already running. Call `combo-cancel` (or `release-all`) to abort.
 - **`hold` / `press` persist after the command returns** — by design. Each CLI command is its own short-lived connection that closes *cleanly*, and a clean close does **not** release inputs. `hold <action> <dur>` auto-releases after `<dur>` seconds (its timer keeps running in the daemon); a sticky `press <action>` stays held until you call `release <action>` / `release-all` (or the daemon's idle-timeout shuts it down). If a character looks stuck moving, you probably left a `press` dangling — run `release-all`. (An *abnormal* drop — your client crashing or being killed mid-session — does trigger a safety `release-all`, so stuck keys can't outlive a dead client.)
