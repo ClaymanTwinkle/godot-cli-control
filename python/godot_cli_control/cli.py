@@ -221,6 +221,22 @@ def _preflight_screenshot(ns: argparse.Namespace) -> None:
         )
 
 
+def _preflight_find(ns: argparse.Namespace) -> None:
+    """find 的过滤器组合校验（契约 #5：用法错拦在连接前）。
+
+    全空过滤器 = tree 的活（全量遍历），find 必须至少给一个；
+    ``--text``（精确）与 ``--contains``（子串）是同一 text 属性的两档，互斥。
+    服务端有同款守卫（-32602）兜裸 RPC 调用方。
+    """
+    if not (ns.type or ns.exact or ns.contains or ns.name_pattern):
+        raise ValueError(
+            "find: 至少需要一个过滤器（--type / --exact / --contains / --name-pattern）；"
+            "要看全树请用 tree"
+        )
+    if ns.exact and ns.contains:
+        raise ValueError("find: --exact（精确）与 --contains（子串）互斥，二选一")
+
+
 def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
     """三选一读 combo steps：``--steps-json`` / 位置 ``-`` (stdin) / 文件路径。"""
     steps_json: str | None = getattr(ns, "steps_json", None)
@@ -512,6 +528,17 @@ async def cmd_children(
     return await client.get_children(ns.node_path, type_filter=type_filter)
 
 
+async def cmd_find(client: GameClient, ns: argparse.Namespace) -> dict:
+    return await client.find_nodes(
+        node_type=ns.type,
+        text=ns.exact,
+        text_contains=ns.contains,
+        name_pattern=ns.name_pattern,
+        from_path=ns.from_path,
+        limit=ns.limit,
+    )
+
+
 async def cmd_wait_node(
     client: GameClient, ns: argparse.Namespace
 ) -> dict:
@@ -596,6 +623,21 @@ def _fmt_lines(items: list[Any]) -> str:
 
 def _fmt_children_text(items: list[dict]) -> str:
     return "\n".join(str(c.get("name", "")) for c in items)
+
+
+def _fmt_find_text(r: dict) -> str:
+    matches = r.get("matches", [])
+    if not matches:
+        return "no matches"
+    lines = []
+    for m in matches:
+        line = f"{m.get('path')}  [{m.get('type')}]"
+        if "text" in m:
+            line += f"  text={m['text']!r}"
+        lines.append(line)
+    if r.get("truncated"):
+        lines.append("(truncated: more matches exist; raise --limit or narrow filters)")
+    return "\n".join(lines)
 
 
 def _fmt_bool_text(b: Any) -> str:
@@ -699,6 +741,10 @@ def _exit_from_wait_node(r: dict) -> int:
     return EXIT_OK if r.get("found") else EXIT_RPC_ERROR
 
 
+def _exit_from_find(r: dict) -> int:
+    return EXIT_OK if r.get("matches") else EXIT_RPC_ERROR
+
+
 def _fmt_wait_prop_text(r: dict) -> str:
     if r.get("matched"):
         return f"matched (waited {r.get('waited', 0.0):.3f}s)"
@@ -766,6 +812,52 @@ def _register_tree_args(p: argparse.ArgumentParser) -> None:
             "节点数软上限（默认 200）。超出时服务端截断子节点并返回 "
             "{truncated: true, total_nodes: N}，agent 据此决定是否拆分子树。"
         ),
+    )
+
+
+def _register_find_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--from",
+        dest="from_path",  # ``from`` 是 Python 关键字，不能直接做 ns 属性名
+        default=None,
+        metavar="NODE_PATH",
+        help="限定搜索子树的根（默认全树 /root，含 autoload 与弹窗）；节点不存在 → 1001",
+    )
+    p.add_argument(
+        "--type",
+        default=None,
+        metavar="CLASS",
+        help=(
+            "按类型过滤，继承匹配（Button 也命中 CheckBox 等子类），"
+            "class_name 脚本类同样可用"
+        ),
+    )
+    # 注意不能叫 --text：全局输出格式 flag（--json/--text/--no-json）注入每个
+    # 子命令，撞名。--exact / --contains 成对，同指 text 属性的两档匹配。
+    p.add_argument(
+        "--exact",
+        default=None,
+        metavar="TEXT",
+        help="按 text 属性精确匹配（与 --contains 互斥）",
+    )
+    p.add_argument(
+        "--contains",
+        default=None,
+        metavar="SUBSTR",
+        help="按 text 属性子串匹配——UI 文案常带格式化后缀，定位按钮首选这档",
+    )
+    p.add_argument(
+        "--name-pattern",
+        default=None,
+        metavar="GLOB",
+        help="按节点名通配匹配（``*``/``?``，大小写敏感），如 'Inventory*'",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        metavar="N",
+        help="最多返回 N 条（默认 20，服务端上限 500）；还有更多时附 truncated:true",
     )
 
 
@@ -1086,6 +1178,24 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         ),
         example="children /root/Main",
         text_formatter=_fmt_children_text,
+    ),
+    RpcSpec(
+        name="find",
+        handler=cmd_find,
+        description=(
+            "服务端单次遍历按 类型/文本/名字通配 搜索节点（issue #153）——"
+            "程序化匿名 UI（@Button@12 这类不稳定路径）按文本定位的原语，"
+            "替代客户端 children+text 逐层递归（录制模式下每个 RPC 等帧渲染，"
+            "几十次往返折成一次）。过滤器 AND 语义，至少给一个；matches 按 "
+            "BFS 浅层优先。退出码：0=有匹配, 1=零匹配, 2=infra error，"
+            "shell ``if godot-cli-control find --exact OK; then …`` 可用。"
+        ),
+        positionals=(),  # 全部由 extra_args 注册（纯 flag 形式）
+        example="find --type Button --contains 开始",
+        extra_args=_register_find_args,
+        text_formatter=_fmt_find_text,
+        exit_code_from=_exit_from_find,
+        preflight=_preflight_find,
     ),
     RpcSpec(
         name="wait-node",

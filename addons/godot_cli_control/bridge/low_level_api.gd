@@ -13,6 +13,10 @@ const _BUILD_TREE_DEFAULT_MAX_DEPTH: int = 50
 # 超 outbound buffer（默认 10 MB）后客户端拿到截断包 → STATE_CLOSED 断连。
 # 5000 节点对应 ~500 KB JSON，留足余量。
 const _BUILD_TREE_MAX_NODES: int = 5000
+# find_nodes 单次最多返回的匹配数（issue #153）：entry 很小（~100B），
+# 500 条 ~50KB，远在 outbound buffer 之下；再多就是过滤器写得太宽，
+# 让 truncated 信号引导 agent 收窄而不是灌大响应。
+const _FIND_MAX_MATCHES: int = 500
 # take_screenshot_async 循环上限：常态下 GameBridge 启动 gate 已保证 viewport
 # ready（issue #61 H 部分），这个循环只兜动态 transient（scene transition、
 # 窗口 resize 一瞬）。30 帧 ~500ms @ 60fps，超时报 1006 给 client 兜底。
@@ -448,6 +452,103 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	return response
 
 
+func handle_find_nodes(params: Dictionary) -> Dictionary:
+	# 服务端节点搜索（issue #153）：程序化匿名 UI（@Button@12，编号跨运行不稳定）
+	# 只能按文本/类型定位，客户端 children+get_text 逐层 BFS 在录制模式下
+	# 每个 RPC 等帧渲染（50-150ms/次），一次全树遍历曾拖出 57s 死时间——
+	# 这里把几十次往返折成一次。不用 Node.find_children：它先建全量匹配数组
+	# 没法 limit 短路，且手写 BFS 才有「浅层优先」的稳定排序（UI 搜索友好）。
+	# 空字符串 = 过滤器未启用（与 get_children 的 type_filter 约定一致）。
+	var type_filter: String = params.get("type", "") as String
+	var name_pattern: String = params.get("name_pattern", "") as String
+	var text_exact: String = params.get("text", "") as String
+	var text_contains: String = params.get("text_contains", "") as String
+	if (
+		type_filter.is_empty() and name_pattern.is_empty()
+		and text_exact.is_empty() and text_contains.is_empty()
+	):
+		return _err(
+			CliControlErrorCodes.INVALID_PARAMS,
+			"find_nodes: need at least one filter (type / name_pattern / text / text_contains); use get_scene_tree for a full dump",
+		)
+	if not text_exact.is_empty() and not text_contains.is_empty():
+		return _err(
+			CliControlErrorCodes.INVALID_PARAMS,
+			"find_nodes: 'text' (exact) and 'text_contains' (substring) are mutually exclusive",
+		)
+	var limit: int = params.get("limit", 20) as int
+	if limit <= 0:
+		limit = 20
+	limit = mini(limit, _FIND_MAX_MATCHES)
+	# 默认搜全树（root 而非 current_scene）：弹窗 / autoload 常直接挂 root，
+	# 「按文本找按钮」必须能命中它们。
+	var start: Node = get_tree().root
+	var from_path: String = params.get("from", "") as String
+	if not from_path.is_empty():
+		start = get_tree().root.get_node_or_null(from_path)
+		if start == null:
+			return _node_not_found(from_path)
+	# 迭代 BFS（数组 + 头指针）：浅层匹配排前；不递归 → 深树不爆栈；
+	# 与 find_children(owned=true) 不同，代码创建的无 owner 节点照常命中。
+	var matches: Array[Dictionary] = []
+	var truncated: bool = false
+	var queue: Array[Node] = []
+	for child: Node in start.get_children():
+		queue.append(child)
+	var head: int = 0
+	while head < queue.size():
+		var node: Node = queue[head]
+		head += 1
+		if _find_filter_matches(node, type_filter, name_pattern, text_exact, text_contains):
+			if matches.size() >= limit:
+				# 第 limit+1 个匹配：只立 truncated 信号，不再继续扫
+				truncated = true
+				break
+			matches.append(_node_entry(node))
+		for child: Node in node.get_children():
+			queue.append(child)
+	var response: Dictionary = {"matches": matches}
+	if truncated:
+		response["truncated"] = true
+	return response
+
+
+## find_nodes 的过滤判定（AND 语义）。text 两档共享前置：节点必须有 text 属性。
+func _find_filter_matches(
+	node: Node,
+	type_filter: String,
+	name_pattern: String,
+	text_exact: String,
+	text_contains: String,
+) -> bool:
+	if not type_filter.is_empty() and not _matches_type(node, type_filter):
+		return false
+	if not name_pattern.is_empty() and not String(node.name).match(name_pattern):
+		return false
+	if not text_exact.is_empty() or not text_contains.is_empty():
+		if not "text" in node:
+			return false
+		var node_text: String = str(node.get("text"))
+		if not text_exact.is_empty() and node_text != text_exact:
+			return false
+		if not text_contains.is_empty() and not node_text.contains(text_contains):
+			return false
+	return true
+
+
+## 类型匹配 = 引擎类继承（is_class）∪ class_name 脚本类链。
+## Script.get_global_name() 是 4.3+ API，老引擎降级为只认引擎类（不报错）。
+func _matches_type(node: Node, type_filter: String) -> bool:
+	if node.is_class(type_filter):
+		return true
+	var scr: Script = node.get_script() as Script
+	while scr != null:
+		if scr.has_method("get_global_name") and String(scr.get_global_name()) == type_filter:
+			return true
+		scr = scr.get_base_script()
+	return false
+
+
 func take_screenshot_async(params: Dictionary = {}) -> Dictionary:
 	# 可选 node 裁剪（issue #101）：node 解析 / 边界计算放在取图 *之前*，
 	# schema 错（1001/1010）不必白等帧循环；交集判定（1011）只能在拿到
@@ -569,12 +670,9 @@ func _has_property(node: Node, property: String) -> bool:
 	return false
 
 
-## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_DEFAULT_MAX_DEPTH (50) 防止无限递归。
-## counter 是 by-ref 计数器：超过 max_nodes 时短路（不再递归子节点），
-## 调用方读 counter[0] > max_nodes 决定是否附加 truncated 信号，
-## 读 counter[0] > _BUILD_TREE_MAX_NODES 决定是否走 1005 (SCENE_TREE_TOO_LARGE) 错误路径。
-func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[int], max_nodes: int) -> Dictionary:
-	counter[0] += 1
+## tree / find_nodes 共用的节点摘要 entry：name/type/path + visible（CanvasItem）
+## + text（有 text 属性时）。两边形状必须一致——agent 学一种 schema 走天下。
+func _node_entry(node: Node) -> Dictionary:
 	var entry: Dictionary = {
 		"name": node.name,
 		"type": node.get_class(),
@@ -584,6 +682,16 @@ func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[
 		entry["visible"] = (node as CanvasItem).visible
 	if "text" in node:
 		entry["text"] = str(node.get("text"))
+	return entry
+
+
+## depth=0 表示"无限深度"，使用硬限制 _BUILD_TREE_DEFAULT_MAX_DEPTH (50) 防止无限递归。
+## counter 是 by-ref 计数器：超过 max_nodes 时短路（不再递归子节点），
+## 调用方读 counter[0] > max_nodes 决定是否附加 truncated 信号，
+## 读 counter[0] > _BUILD_TREE_MAX_NODES 决定是否走 1005 (SCENE_TREE_TOO_LARGE) 错误路径。
+func _build_tree(node: Node, max_depth: int, current_depth: int, counter: Array[int], max_nodes: int) -> Dictionary:
+	counter[0] += 1
+	var entry: Dictionary = _node_entry(node)
 	if counter[0] > max_nodes:
 		# 超软上限：不再下递归，但当前 entry 已计入；调用方附加 truncated 信号
 		return entry

@@ -126,6 +126,28 @@ class _StubClient:
     async def get_children(self, path: str, type_filter: str = "") -> list[dict]:
         return self._record("get_children", (path,), {"type_filter": type_filter})
 
+    async def find_nodes(
+        self,
+        node_type: str | None = None,
+        text: str | None = None,
+        text_contains: str | None = None,
+        name_pattern: str | None = None,
+        from_path: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        return self._record(
+            "find_nodes",
+            (),
+            {
+                "node_type": node_type,
+                "text": text,
+                "text_contains": text_contains,
+                "name_pattern": name_pattern,
+                "from_path": from_path,
+                "limit": limit,
+            },
+        )
+
     async def wait_property(
         self,
         path: str,
@@ -257,6 +279,32 @@ def test_tree_forwards_max_nodes_to_client(stub_client: dict) -> None:
     c.returns["get_scene_tree"] = {}
     b.tree(max_nodes=50)
     assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "max_nodes": 50})
+    b.close()
+
+
+def test_find_nodes_passthrough(stub_client: dict) -> None:
+    """bridge.find_nodes 与 client 同名同参透传（issue #153），响应原样返回
+    （含 truncated 信号，脚本侧自己决定要不要缩小范围）。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["find_nodes"] = {
+        "matches": [{"path": "/root/UI/@Button@3", "type": "Button", "text": "开始"}],
+        "truncated": True,
+    }
+    result = b.find_nodes(node_type="Button", text_contains="开始", limit=5)
+    assert c.calls[-1] == (
+        "find_nodes",
+        (),
+        {
+            "node_type": "Button",
+            "text": None,
+            "text_contains": "开始",
+            "name_pattern": None,
+            "from_path": None,
+            "limit": 5,
+        },
+    )
+    assert result["truncated"] is True
+    assert result["matches"][0]["path"] == "/root/UI/@Button@3"
     b.close()
 
 

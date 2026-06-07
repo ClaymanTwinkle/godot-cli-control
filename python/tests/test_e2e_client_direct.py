@@ -157,6 +157,57 @@ async def test_client_read_methods(daemon_port: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_find_nodes(daemon_port: Any) -> None:
+    """issue #153：find_nodes 服务端单次遍历搜索——按 text 精确、按 type 继承
+    匹配、from 子树作用域、零匹配，直连真实 daemon。"""
+    _, port = daemon_port
+    async with GameClient(port=port) as client:
+        # text 精确：唯一 Label "Hello"
+        result = await client.find_nodes(text="Hello")
+        paths = [m["path"] for m in result["matches"]]
+        assert paths == ["/root/Main/Title"], result
+        assert result["matches"][0]["type"] == "Label"
+        assert result["matches"][0]["text"] == "Hello"
+
+        # type 继承匹配：Label 与 Panel 的 Control 都命中 Control 过滤
+        result = await client.find_nodes(node_type="Control", from_path="/root/Main")
+        names = {m["name"] for m in result["matches"]}
+        assert {"Title", "Panel"} <= names, result
+
+        # from 子树作用域：Player 子树下没有 Control
+        result = await client.find_nodes(
+            node_type="Control", from_path="/root/Main/Player"
+        )
+        assert result["matches"] == []
+
+        # 零匹配不报错，matches 为空列表
+        result = await client.find_nodes(text="__no_such_text__")
+        assert result["matches"] == []
+
+
+def test_cli_find_exit_codes(daemon_port: Any) -> None:
+    """CLI find 退出码语义（对齐 exists）：0=有匹配, 1=零匹配——shell if 可用。"""
+    project, _ = daemon_port
+    hit = subprocess.run(
+        _CLI + ["find", "--exact", "Hello"],
+        cwd=project, capture_output=True, text=True, timeout=60,
+    )
+    assert hit.returncode == 0, hit.stdout + hit.stderr
+    payload = json.loads(hit.stdout.strip().splitlines()[-1])
+    assert payload["ok"] is True
+    assert payload["result"]["matches"][0]["path"] == "/root/Main/Title"
+
+    miss = subprocess.run(
+        _CLI + ["find", "--exact", "__nope__"],
+        cwd=project, capture_output=True, text=True, timeout=60,
+    )
+    assert miss.returncode == 1, miss.stdout + miss.stderr
+    payload = json.loads(miss.stdout.strip().splitlines()[-1])
+    assert payload["ok"] is True
+    assert payload["result"]["matches"] == []
+
+
+@pytest.mark.asyncio
 async def test_client_write_and_call_methods(daemon_port: Any) -> None:
     """写路径：set_property 落值可被 get_property 读回；call_method 调用户方法拿返回值。"""
     _, port = daemon_port
