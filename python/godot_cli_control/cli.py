@@ -2597,6 +2597,37 @@ def _emit_envelope_error(fmt: str, code: int, message: str) -> None:
         print(f"错误：[{code}] {message}", file=sys.stderr)
 
 
+def _rpc_failure_envelope(e: Exception) -> tuple[int, str, int]:
+    """异常 → ``(client code, message, exit code)``，_run_rpc 与广播路径共用。
+
+    isinstance 判定顺序必须与原 except 链一致：ConnectionError 与（3.11+ 的）
+    TimeoutError 都是 OSError 子类，先窄后宽，否则错码漂移。
+
+    各分支语义（原样搬运自 _run_rpc，历史注释见 git blame）：
+    * RpcError → 服务端业务/协议错，exit 1。
+    * ConnectionError → -1001，exit 2。
+    * asyncio.TimeoutError → -1002，exit 2。
+    * OSError → socket 类算 connection（-1001）；文件 IO 类（screenshot 写盘
+      失败常见）走 -1004，不让 agent 误以为 daemon 挂了。exit 2。
+    * ValueError / JSONDecodeError → 用法错 -1003，恒 exit 64（#82）。
+    * 其余 Exception → 客户端内部 bug：traceback 留给 stderr 帮人 debug，
+      stdout 信封只带异常类名（-1099），exit 2。
+    """
+    if isinstance(e, RpcError):
+        return e.code, e.message, EXIT_RPC_ERROR
+    if isinstance(e, ConnectionError):
+        return CLIENT_CODE_CONNECTION, str(e) or e.__class__.__name__, EXIT_INFRA_ERROR
+    if isinstance(e, asyncio.TimeoutError):
+        return CLIENT_CODE_TIMEOUT, str(e) or "timed out", EXIT_INFRA_ERROR
+    if isinstance(e, OSError):
+        code = CLIENT_CODE_CONNECTION if _is_network_oserror(e) else CLIENT_CODE_IO
+        return code, str(e) or e.__class__.__name__, EXIT_INFRA_ERROR
+    if isinstance(e, (ValueError, json.JSONDecodeError)):
+        return CLIENT_CODE_USAGE, str(e), EXIT_USAGE
+    traceback.print_exc(file=sys.stderr)
+    return CLIENT_CODE_INTERNAL, f"{type(e).__name__}: {e}", EXIT_INFRA_ERROR
+
+
 async def _run_rpc(
     spec: RpcSpec, ns: argparse.Namespace, port: int, fmt: str
 ) -> int:
@@ -2610,45 +2641,10 @@ async def _run_rpc(
     try:
         async with GameClient(port=port) as client:
             result = await spec.handler(client, ns)
-    except RpcError as e:
-        _emit_envelope_error(fmt, e.code, e.message)
-        return EXIT_RPC_ERROR
-    except ConnectionError as e:
-        msg = str(e) or e.__class__.__name__
-        _emit_envelope_error(fmt, CLIENT_CODE_CONNECTION, msg)
-        return EXIT_INFRA_ERROR
-    except asyncio.TimeoutError as e:
-        msg = str(e) or "timed out"
-        _emit_envelope_error(fmt, CLIENT_CODE_TIMEOUT, msg)
-        return EXIT_INFRA_ERROR
-    except OSError as e:
-        # 拆开：socket 层 OSError 还算 connection；文件 IO 类（PermissionError /
-        # FileNotFoundError，screenshot 写盘失败时常见）走独立的 IO 码，
-        # 不让 agent 误以为 daemon 挂了。
-        code = (
-            CLIENT_CODE_CONNECTION
-            if _is_network_oserror(e)
-            else CLIENT_CODE_IO
-        )
-        msg = str(e) or e.__class__.__name__
+    except Exception as e:  # noqa: BLE001 — 全部收口成信封（契约 1）；KeyboardInterrupt/SystemExit 照常传播
+        code, msg, rc = _rpc_failure_envelope(e)
         _emit_envelope_error(fmt, code, msg)
-        return EXIT_INFRA_ERROR
-    except (ValueError, json.JSONDecodeError) as e:
-        # 用法错误：set/call 的 value JSON 解析失败等（这些命令无 preflight）。
-        # 统一退 EXIT_USAGE(64)，与 preflight 路径（combo/hold）一致 —— 同一客户端
-        # 码 -1003 必须恒等于 exit 64，否则 agent 拿到 -1003 无法据此推断退出码
-        # （issue #82，破坏「单 code 字段无歧义」契约）。
-        _emit_envelope_error(fmt, CLIENT_CODE_USAGE, str(e))
-        return EXIT_USAGE
-    except Exception as e:  # noqa: BLE001
-        # 兜底：客户端内部 bug（AttributeError、KeyError、协议解析意外等）
-        # 也要落进信封，否则 ``--json`` 契约对 AI agent 不再可信。把异常类
-        # 名带上方便 issue 复现，但不把 traceback 塞进 message —— stdout JSON
-        # 不是吐 traceback 的地方。完整 traceback 仍留给 stderr 帮人 debug。
-        traceback.print_exc(file=sys.stderr)
-        msg = f"{type(e).__name__}: {e}"
-        _emit_envelope_error(fmt, CLIENT_CODE_INTERNAL, msg)
-        return EXIT_INFRA_ERROR
+        return rc
 
     _emit_rpc_result(spec, fmt, result)
     if spec.exit_code_from is not None:

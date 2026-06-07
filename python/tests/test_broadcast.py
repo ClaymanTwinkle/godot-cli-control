@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 
@@ -122,3 +123,42 @@ def test_stop_all_with_top_level_instance_all_is_usage_error(
     assert rc == EXIT_USAGE
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["error"]["code"] == -1003
+
+
+# ── Task 3: 异常→信封映射提取（_run_rpc 与广播共用） ──
+
+
+@pytest.mark.parametrize(
+    ("raise_exc", "want_code", "want_rc"),
+    [
+        ("rpc", 1002, 1),
+        ("conn", -1001, 2),
+        ("timeout", -1002, 2),
+        ("io", -1004, 2),
+        ("value", -1003, 64),
+        ("internal", -1099, 2),
+    ],
+)
+def test_rpc_failure_envelope_mapping(
+    raise_exc: str, want_code: int, want_rc: int,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """_rpc_failure_envelope 的 (code, rc) 映射必须与 _run_rpc 原 except 链一致：
+    顺序敏感（ConnectionError/TimeoutError 都是 OSError 子类，先窄后宽）。"""
+    from godot_cli_control.cli import _rpc_failure_envelope
+    from godot_cli_control.client import RpcError
+
+    excs: dict[str, Exception] = {
+        "rpc": RpcError(1002, "node not found"),
+        "conn": ConnectionError("refused"),
+        "timeout": asyncio.TimeoutError(),
+        "io": PermissionError(13, "denied"),
+        "value": ValueError("bad json"),
+        "internal": KeyError("boom"),
+    }
+    try:
+        raise excs[raise_exc]
+    except Exception as e:  # noqa: BLE001
+        code, msg, rc = _rpc_failure_envelope(e)
+    assert (code, rc) == (want_code, want_rc)
+    assert msg  # message 永不为空（str(e) 为空时落 fallback）
