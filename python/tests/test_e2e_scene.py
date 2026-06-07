@@ -138,9 +138,13 @@ def test_scene_change_missing_scene_returns_1008(daemon: Any) -> None:
 def test_bridge_scene_reload_roundtrip(daemon: Any) -> None:
     """fresh_scene fixture 的核心调用（bridge.scene_reload）真链路验证。"""
     from godot_cli_control.bridge import GameBridge
+    from godot_cli_control.daemon import discover_port
 
     project = daemon
-    port = int((project / ".cli_control" / "port").read_text().strip())
+    # 端口用 discover_port 统一入口读取：多实例迁移后端口文件在
+    # instances/default/port，旧路径 .cli_control/port 已不存在（#multi-instance）。
+    port = discover_port(project)
+    assert port is not None, "daemon 已起但 discover_port 返回 None"
     b = GameBridge(port=port)
     try:
         result = b.scene_reload()
