@@ -543,8 +543,9 @@ options:
 
 $ godot-cli-control daemon start --help
 usage: godot-cli-control daemon start [-h] [--record]
-                                      [--movie-path MOVIE_PATH] [--headless |
-                                      --gui] [--fps FPS] [--port PORT]
+                                      [--movie-path MOVIE_PATH]
+                                      [--headless | --gui] [--fps FPS]
+                                      [--port PORT]
                                       [--idle-timeout IDLE_TIMEOUT]
                                       [--name NAME] [--time-scale TIME_SCALE]
                                       [--json] [--text] [--no-json]
@@ -1473,4 +1474,4 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ---
 
-Generated from godot-cli-control v0.2.19.dev15+gf9998d303. Re-run `godot-cli-control init --skills-only` to refresh.
+Generated from godot-cli-control v0.2.19.dev19+g7b3d89e6a. Re-run `godot-cli-control init --skills-only` to refresh.
