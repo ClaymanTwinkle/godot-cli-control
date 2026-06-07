@@ -24,6 +24,18 @@ class DaemonError(RuntimeError):
     """Daemon 启停过程中可恢复的错误（用户应看到 message，不必看 traceback）。"""
 
 
+class InstanceAmbiguityError(RuntimeError):
+    """实例无法唯一确定（≥2 在跑且未显式指定，或显式指定的不在跑）。
+
+    CLI 把它映射成 -1003 + exit 64 的 preflight 用法错；message 自带在跑
+    实例清单，agent 看单行 JSON 即知下一步传什么（spec 2026-06-07）。
+    """
+
+    def __init__(self, message: str, names: list[str]) -> None:
+        super().__init__(message)
+        self.names = names
+
+
 # 实例名校验正则：要落进文件路径与注册表文件名，必须文件系统安全（spec 2026-06-07）。
 _INSTANCE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
@@ -448,19 +460,78 @@ def read_project_config(project_root: Path | None = None) -> dict:
 # ── 端口发现 ──
 
 
-def discover_port(project_root: Path | None = None) -> int | None:
-    """从 ``<project_root>/.cli_control/port`` 读取 daemon 当前监听端口。
+def list_live_instances(project_root: Path | None = None) -> list[str]:
+    """扫 ``<project_root>/.cli_control/instances/*/``，按 pid 探活返回在跑实例名（有序）。
 
-    daemon 默认以 OS 自动分配端口启动（写入 ``.cli_control/port``），所以"无显式
-    端口"的连接方都得先来这里发现实际端口，再回退 ``DEFAULT_PORT``。这是 CLI RPC
-    子命令、``GameClient()`` 与 ``GameBridge()`` 三处无显式 port 时的**唯一共用**
-    发现入口（issue #91）——与 README 承诺的 "auto-discover from ``.cli_control/port``"
-    对齐。
+    注意两个微妙点：
 
-    ``project_root`` 默认 ``Path.cwd()``（与 CLI 的工作目录约定一致）。无 port 文件
-    或解析失败时返回 ``None``，由调用方决定回退值。
+    1. **default 实例的 is_running() 带 legacy fallback**（Task 1）：若
+       ``instances/default/`` 目录存在但空，且 legacy 平铺路径有存活的 PID 文件，
+       default 会被算成 live ——这**符合预期**（legacy daemon 应算 default 在跑）。
+       而 ``instances/`` 目录整个不存在时，本函数返回 []，由 ``discover_port`` 的
+       0-命中分支通过 ``Daemon(root).current_port()`` 兜住 legacy fallback。
+
+    2. **非法目录名跳过而非抛异常**：用户手建怪目录（如含斜杠、空格、Unicode）时，
+       ``Daemon(root, instance=p.name)`` 会抛 DaemonError（validate_instance_name
+       校验）。这里用 ``_INSTANCE_NAME_RE.fullmatch`` 前置过滤：显式、无异常流，
+       无效目录名静默跳过，不污染在跑实例列表。
     """
     root = Path(project_root) if project_root is not None else Path.cwd()
+    base = root / ".cli_control" / "instances"
+    if not base.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in base.iterdir()
+        if p.is_dir()
+        and _INSTANCE_NAME_RE.fullmatch(p.name)  # 过滤非法目录名，避免 DaemonError 污染
+        and Daemon(root, instance=p.name).is_running()
+    )
+
+
+def discover_port(
+    project_root: Path | None = None, instance: str | None = None
+) -> int | None:
+    """发现 daemon 当前监听端口 —— CLI RPC、GameClient、GameBridge 三方唯一共用入口（issue #91）。
+
+    daemon 默认以 OS 自动分配端口启动，所以"无显式端口"的连接方都得先来这里发现
+    实际端口。与 README 承诺的 "auto-discover from ``.cli_control/port``" 对齐。
+
+    **多实例语义（0 / 1 / N，spec 2026-06-07）：**
+
+    - ``instance`` 显式指定：只读那一个实例的 port 文件；未在跑则抛 ``InstanceAmbiguityError``
+      并在 message 中列出当前在跑的实例名供 agent 参考。
+    - ``instance=None``（默认）：
+      - N ≥ 2 个实例在跑 → 抛 ``InstanceAmbiguityError``，message 列全部名字。
+      - N = 1 → 自动选中，返回其端口。
+      - N = 0 → 走 default 实例的 ``current_port()``，自带 legacy 只读 fallback（Task 1）；
+        如此「legacy daemon 在跑 + instances/ 不存在」时仍能返回正确端口。
+
+    ``project_root`` 默认 ``Path.cwd()``（与 CLI 工作目录约定一致）。无 port 文件
+    或解析失败返回 ``None``，由调用方决定回退值。
+    """
+    root = Path(project_root) if project_root is not None else Path.cwd()
+    if instance is not None:
+        # 显式指定：只读那一个实例
+        d = Daemon(root, instance=instance)
+        if not d.is_running():
+            live = list_live_instances(root)
+            raise InstanceAmbiguityError(
+                f"instance {instance!r} not running"
+                + (f"; running: {', '.join(live)}" if live else "; none running"),
+                live,
+            )
+        return d.current_port()
+
+    live = list_live_instances(root)
+    if len(live) > 1:
+        raise InstanceAmbiguityError(
+            f"multiple instances running: {', '.join(live)} — pass --instance <name>",
+            live,
+        )
+    if len(live) == 1:
+        return Daemon(root, instance=live[0]).current_port()
+    # 0 个在跑：default 实例的 current_port 自带 legacy 只读 fallback（Task 1）
     return Daemon(root).current_port()
 
 

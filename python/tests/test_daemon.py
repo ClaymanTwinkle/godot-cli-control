@@ -1557,7 +1557,74 @@ def test_start_rejects_time_scale_above_max(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-import godot_cli_control.daemon as daemon_mod  # noqa: E402  模块级引用，方便 monkeypatch
+import godot_cli_control.daemon as daemon_mod  # noqa: E402  模块级引用，方便 monkeypatch 与直接引用新 API
+
+
+# ---------------------------------------------------------------------------
+# Task 3：实例解析单入口 discover_port / list_live_instances（spec 2026-06-07）
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceResolution:
+    def _mk_live(self, proj: Path, name: str, port: int) -> None:
+        """在 proj/.cli_control/instances/<name>/ 写本进程 PID + port，模拟在跑的实例。"""
+        d = proj / ".cli_control" / "instances" / name
+        d.mkdir(parents=True)
+        (d / "godot.pid").write_text(str(os.getpid()))  # 本进程 = 必活
+        (d / "port").write_text(str(port))
+
+    def test_zero_running_falls_back_legacy_then_none(self, tmp_path: Path) -> None:
+        """无任何实例在跑时：无 legacy 返回 None；有 legacy port 文件则 fallback 返回它。"""
+        assert daemon_mod.discover_port(tmp_path) is None
+        legacy = tmp_path / ".cli_control"
+        legacy.mkdir()
+        (legacy / "port").write_text("9999")
+        assert daemon_mod.discover_port(tmp_path) == 9999  # legacy 只读 fallback
+
+    def test_single_running_auto_selected(self, tmp_path: Path) -> None:
+        """只有 1 个实例在跑时，不管名字，自动选中返回其端口。"""
+        self._mk_live(tmp_path, "server", 7001)
+        assert daemon_mod.discover_port(tmp_path) == 7001
+
+    def test_multiple_running_raises_ambiguity(self, tmp_path: Path) -> None:
+        """≥2 个实例在跑且未显式指定 → 抛 InstanceAmbiguityError，message 列出所有名字。"""
+        self._mk_live(tmp_path, "server", 7001)
+        self._mk_live(tmp_path, "client1", 7002)
+        with pytest.raises(daemon_mod.InstanceAmbiguityError) as ei:
+            daemon_mod.discover_port(tmp_path)
+        # message 必须列出全部实例名，agent 靠它知道下一步传什么
+        assert "client1" in str(ei.value) and "server" in str(ei.value)
+
+    def test_explicit_instance_reads_only_that_dir(self, tmp_path: Path) -> None:
+        """显式 instance 时只读那一个目录，无论同时有多少别的实例。"""
+        self._mk_live(tmp_path, "server", 7001)
+        self._mk_live(tmp_path, "client1", 7002)
+        assert daemon_mod.discover_port(tmp_path, instance="client1") == 7002
+
+    def test_explicit_instance_not_running_raises(self, tmp_path: Path) -> None:
+        """显式指定的实例未在跑 → 抛 InstanceAmbiguityError，message 含在跑实例名。"""
+        self._mk_live(tmp_path, "server", 7001)
+        with pytest.raises(daemon_mod.InstanceAmbiguityError, match="server"):
+            daemon_mod.discover_port(tmp_path, instance="nope")
+
+    def test_dead_pid_instance_ignored(self, tmp_path: Path, dead_pid: int) -> None:
+        """PID 已死的实例不算「在跑」，不影响唯一活实例的自动选中。"""
+        self._mk_live(tmp_path, "server", 7001)
+        d = tmp_path / ".cli_control" / "instances" / "ghost"
+        d.mkdir(parents=True)
+        (d / "godot.pid").write_text(str(dead_pid))
+        (d / "port").write_text("7099")
+        assert daemon_mod.discover_port(tmp_path) == 7001  # 死实例不算「在跑」
+
+    def test_legacy_daemon_running_without_instances_dir(self, tmp_path: Path) -> None:
+        """legacy daemon 在跑 + instances/ 目录不存在：list_live_instances 返回 []，
+        但 discover_port 经 0-命中分支拿到 legacy port（default 实例 fallback）。"""
+        legacy = tmp_path / ".cli_control"
+        legacy.mkdir()
+        (legacy / "godot.pid").write_text(str(os.getpid()))
+        (legacy / "port").write_text("8888")
+        assert daemon_mod.list_live_instances(tmp_path) == []
+        assert daemon_mod.discover_port(tmp_path) == 8888
 
 
 class TestInstanceLayout:
