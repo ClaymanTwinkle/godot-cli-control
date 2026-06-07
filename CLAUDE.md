@@ -28,7 +28,7 @@
    - 1 = RPC 错（含 `exists`/`visible`=false、`wait-node` timeout、`daemon status` stopped）
    - 2 = 连接 / IO 错，或 infra 前置失败（daemon 起不来、daemon stop 系统错误；这些带 `-1006`）；`daemon stop` ffmpeg 转码失败也是 2
    - 64 = 用法错：argparse + RPC 子命令的 preflight / 运行期参数解析失败，以及 `run <script>` 脚本路径不存在或缺 `run(bridge)`；统一携带 `-1003`（#82 / #111：`-1003` 恒等于 64）
-   - 3 = `daemon stop --all` 部分失败（专用，避免与 2 撞）
+   - 3 = 聚合操作部分/全部失败：`daemon stop --all` 至少一个目标失败，或 `--instance all` 广播至少一个实例 rc≠0（专用，避免与 2 撞）
    - shell `if godot-cli-control exists /root/Foo; then …` 必须能用。
 
 4. **shell 是 canonical surface**

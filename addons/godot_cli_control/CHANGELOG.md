@@ -14,6 +14,7 @@
 - **daemon 各子命令的 JSON envelope result 带 `"instance"` 字段**：`start` / `stop` / `status` / `logs` 均在 result 中增加 `"instance"` 键，便于 agent 确认操作目标。
 - **`GameBridge(instance=...)` / `GameClient(instance=...)`**：`port=None` 时 `instance` 参数生效，自动查找对应命名实例的端口；显式 `port` 优先（向后兼容）。
 - **pytest 多实例工厂 fixture `godot_instances`**（#143）：联机 e2e 在单测里同时拿 server / client bridge——`godot_instances.start("server")` 幂等启动命名实例并返回已连接 `GameBridge`，teardown 自动停掉本 fixture 起的全部实例（已在跑的只连不杀）；`stop(name)` 支持中途显式停（掉线场景）后重启，`daemon(name)` 暴露底层 `Daemon`。新增 pytest 选项 `--godot-cli-instances-scope=function|session`（默认 function 每用例隔离；session 整套共享省启动时间）。
+- **`--instance all` 一条命令广播全部活实例**（#145）：任一 RPC 子命令对 cwd 项目全部活实例并发执行，聚合信封 `{"instances":[{instance, ok, result|error, rc}...], "rc": 0|3}`（entry 复刻单命令信封）；退出码全 0→0、任一非 0→3（沿 `daemon stop --all` 先例）。字符串参数中的 `{instance}` 逐实例替换；广播 `screenshot` 的路径缺 `{instance}` 时 preflight 报 -1003/64。`all` 成为保留实例名（`daemon start --name all` 拒绝）；`run`/`daemon` 子命令不支持广播。
 
 ### Changed
 - **多实例选靶语义（处处一致）**：0 个在跑 → 选 default（legacy fallback）；1 个在跑 → 自动选中；≥2 个在跑且未指定 `--instance` / `--name` → `-1003` / exit 64，message 列出在跑实例名（`"multiple instances running: ... — pass --instance <name>"`）。显式 `--instance nope` 但该实例未在跑 → `-1003` / exit 64，message 附当前在跑实例列表。`--instance` 与 `--port` 互斥。

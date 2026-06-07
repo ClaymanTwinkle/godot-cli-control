@@ -52,7 +52,7 @@ godot-cli-control daemon stop --all --project .
 | 0 | Success (or, for `exists` / `visible` / `wait-node` / `wait-prop` / `wait-signal`, the boolean was true / found / matched / emitted) |
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`/`wait-prop`/`wait-signal`=timeout, `daemon status`=stopped |
 | 2 | Connection / IO error (daemon not running) or infra pre-condition failure (daemon failed to start, `daemon stop` encountered a system error — these carry client code `-1006`). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
-| 3 | `daemon stop --all` partial failure: at least one daemon in the registry failed to stop. Per-record `rc` is in the JSON `result.stopped[]`. |
+| 3 | Aggregate partial/total failure: `daemon stop --all` (at least one daemon failed to stop) or an `--instance all` broadcast where at least one instance's per-instance `rc` was non-zero (RPC error, connection error, or a semantic false like `exists`). Per-target `rc` is in the JSON `result.stopped[]` / `result.instances[]`. |
 | 64 | Usage error — argparse parse failure (missing / invalid args, unknown subcommand), a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing), **or** `run <script>` given a non-existent path / a script with no `run(bridge)` function, **or** a multi-instance targeting error (≥ 2 instances running without `--instance` / `--name`, an explicitly named instance that is not running, `--instance` and `--name` given conflicting values, or a selected instance whose port file is not readable yet — daemon still starting, retry in a moment). All carry client code `-1003` and consistently exit 64 (#82 / #111). |
 
 Shell-`if` works:
@@ -140,6 +140,30 @@ When ≥ 2 instances are running and you omit `--instance`, the error JSON is:
 `--instance` (top-level) and `--name` (daemon subcommands) are equivalent; passing both with the same value is allowed, different values → -1003 conflict error. `--instance` and `--port` are mutually exclusive (both select which daemon to talk to).
 
 **Upgrade-period note**: if you have a legacy daemon started with an older version of the CLI (its pid/port files sit directly under `.cli_control/` instead of `.cli_control/instances/<name>/`), `daemon ls` may temporarily show two lines for the same project. Stop the legacy daemon and the extra line disappears — no manual file migration needed.
+
+**Broadcasting one command to all instances (`--instance all`):**
+
+```bash
+godot-cli-control --instance all exists /root/Main          # assert on every instance
+godot-cli-control --instance all screenshot /tmp/shot-{instance}.png
+godot-cli-control --instance all get /root/Player position
+```
+
+- Targets every live instance of the cwd project, **concurrently** (asyncio); the result array is sorted by instance name.
+- Envelope shape (top-level `ok` stays `true` — per-instance failures live in the entries, mirroring `daemon stop --all`):
+
+```json
+{"ok": true, "result": {"instances": [
+  {"instance": "client1", "ok": true, "result": true, "rc": 0},
+  {"instance": "server", "ok": false, "error": {"code": 1002, "message": "..."}, "rc": 1}
+], "rc": 3}}
+```
+
+- Exit code: **0** if every instance's `rc` is 0, else **3**. So `if godot-cli-control --instance all exists /root/Foo; then …` means "exists on *all* instances".
+- Every string argument has `{instance}` replaced with the instance name per target — required for `screenshot` (a path without `{instance}` is rejected pre-flight with `-1003` / exit 64, because all instances would overwrite the same file). The substitution applies to *all* string args (including `set`/`call` JSON values), with no escape hatch.
+- `all` is a **reserved instance name**: `daemon start --name all` is rejected.
+- Broadcast applies to RPC subcommands only: `--instance all` with `run` or `daemon` subcommands → `-1003` / exit 64 (to stop everything use `daemon stop --all`).
+- 0 live instances → `-1006` / exit 2 (legacy flat-layout daemons are not broadcast targets — restart them as named instances).
 
 **In pytest suites**, don't hand-roll this lifecycle — the `godot_instances` fixture (see the pytest plugin section) starts named instances, hands you connected `GameBridge` objects, and stops everything it started at teardown.
 
@@ -493,7 +517,7 @@ options:
                        .cli_control/port 作为 fallback，否则 9877）。注意：仅作用于 RPC
                        子命令，daemon start / run 启动 daemon 时请用其各自的 --port。
   --instance INSTANCE  目标实例名；RPC 与 run/daemon 子命令通用（daemon 子命令的 --name
-                       是等价写法）。多实例并行时必传；与 --port 互斥。
+                       是等价写法）。多实例并行时必传；与 --port 互斥。传 all 对全部活实例广播（仅 RPC 子命令）。
   --json               输出 JSON 信封（默认）
   --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json            --text 别名
@@ -1491,4 +1515,4 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ---
 
-Generated from godot-cli-control v0.2.19.dev19+g7b3d89e6a. Re-run `godot-cli-control init --skills-only` to refresh.
+Generated from godot-cli-control v0.2.19.dev15+g28972ca1d.d20260607. Re-run `godot-cli-control init --skills-only` to refresh.
