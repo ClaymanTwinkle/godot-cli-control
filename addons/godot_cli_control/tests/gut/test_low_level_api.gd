@@ -909,3 +909,194 @@ func test_get_properties_duplicate_property_deduped_by_dict() -> void:
 	var values: Dictionary = result["values"]
 	# Dictionary 赋值重复 key 只保留最后一次，故 values 恰好有 1 个 key
 	assert_eq(values.size(), 1, "重复 key 在 Dictionary 语义下去重为 1 条（有意行为）")
+
+
+# ── handle_find_nodes（issue #153：服务端节点搜索）──────────────────
+# 测试统一加 "from": _target 子树作用域 —— GUT runner 自带 GUI（按钮/标签一堆），
+# 不 scope 的话 type/text 过滤会撞 runner 自己的控件，断言不可确定。
+
+## 程序化 UI fixture：匿名节点（add_child 自动起 @Button@N 名）+ 无 owner
+## （代码创建的节点 owner == null，正是 issue #153 的核心场景——
+## Node.find_children(owned=true) 找不到它们）。
+func _build_find_fixture() -> void:
+	var panel: Control = Control.new()
+	panel.name = "Panel"
+	_target.add_child(panel)
+	var start_btn: Button = Button.new()  # 匿名：进树后名字形如 @Button@N
+	start_btn.text = "开始游戏"
+	panel.add_child(start_btn, false)
+	var quit_btn: Button = Button.new()
+	quit_btn.text = "退出"
+	panel.add_child(quit_btn, false)
+	var title: Label = Label.new()
+	title.name = "Title"
+	title.text = "开始"
+	_target.add_child(title)
+	var inventory: Control = Control.new()
+	inventory.name = "InventoryPanel"
+	_target.add_child(inventory)
+
+
+func test_find_nodes_by_type_matches_subclasses() -> void:
+	_build_find_fixture()
+	# BaseButton 是 Button 的父类：type 过滤必须按继承匹配（is_class 语义），
+	# 否则 agent 得逐个猜具体子类。
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "type": "BaseButton",
+	})
+	assert_does_not_have(result, "error")
+	var matches: Array = result.get("matches", [])
+	assert_eq(matches.size(), 2, "两个 Button 都应命中 BaseButton 过滤")
+	for m: Dictionary in matches:
+		assert_eq(str(m.get("type")), "Button")
+
+
+func test_find_nodes_text_exact_vs_contains() -> void:
+	_build_find_fixture()
+	# 精确档：text == "开始" 只命中 Title（"开始游戏" 不算）
+	var exact: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "text": "开始",
+	})
+	assert_does_not_have(exact, "error")
+	var exact_matches: Array = exact.get("matches", [])
+	assert_eq(exact_matches.size(), 1)
+	assert_eq(str((exact_matches[0] as Dictionary).get("name")), "Title")
+	# 子串档：text_contains "开始" 命中 Title + 开始游戏按钮
+	var sub: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "text_contains": "开始",
+	})
+	assert_does_not_have(sub, "error")
+	assert_eq((sub.get("matches", []) as Array).size(), 2)
+
+
+func test_find_nodes_finds_anonymous_unowned_nodes() -> void:
+	# issue #153 核心场景：代码创建的匿名节点（@Button@N、owner==null）
+	# 必须能按 text 定位到，且 path 可直接用于后续 click。
+	_build_find_fixture()
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "text": "开始游戏",
+	})
+	assert_does_not_have(result, "error")
+	var matches: Array = result.get("matches", [])
+	assert_eq(matches.size(), 1)
+	var entry: Dictionary = matches[0] as Dictionary
+	# 匿名自动名形如 @Button@N
+	assert_string_contains(str(entry.get("name")), "@Button@")
+	# 返回的 path 必须真实可解析（agent 拿去 click）
+	var found: Node = get_tree().root.get_node_or_null(str(entry.get("path")))
+	assert_not_null(found)
+	assert_eq(str(found.get("text")), "开始游戏")
+
+
+func test_find_nodes_name_pattern_wildcard() -> void:
+	_build_find_fixture()
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "name_pattern": "Inventory*",
+	})
+	assert_does_not_have(result, "error")
+	var matches: Array = result.get("matches", [])
+	assert_eq(matches.size(), 1)
+	assert_eq(str((matches[0] as Dictionary).get("name")), "InventoryPanel")
+
+
+func test_find_nodes_combined_filters_are_and_semantics() -> void:
+	_build_find_fixture()
+	# type=Label + text_contains=开始 → 只有 Title（开始游戏按钮被 type 滤掉）
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()),
+		"type": "Label", "text_contains": "开始",
+	})
+	var matches: Array = result.get("matches", [])
+	assert_eq(matches.size(), 1)
+	assert_eq(str((matches[0] as Dictionary).get("name")), "Title")
+
+
+func test_find_nodes_limit_attaches_truncated_signal() -> void:
+	_build_find_fixture()
+	# 4 个 Control 系节点（Panel/2×Button/InventoryPanel… Button 也是 Control），
+	# limit=2 → 恰好 2 条 matches + truncated:true（复用 tree 截断风格）
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "type": "Control", "limit": 2,
+	})
+	assert_does_not_have(result, "error")
+	assert_eq((result.get("matches", []) as Array).size(), 2)
+	assert_true(result.get("truncated", false) == true, "超 limit 必须附 truncated 信号")
+	# 控制组：limit 足够时无 truncated 字段
+	var all_result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "type": "Control", "limit": 100,
+	})
+	assert_does_not_have(all_result, "truncated")
+
+
+func test_find_nodes_bfs_returns_shallow_matches_first() -> void:
+	_build_find_fixture()
+	# BFS 浅层优先：_target 直下的 Label(Title) 应排在 Panel 下两个 Button 之前
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "type": "Control",
+	})
+	var matches: Array = result.get("matches", [])
+	assert_gt(matches.size(), 2)
+	var first_paths: Array[String] = []
+	for m: Dictionary in matches:
+		first_paths.append(str(m.get("path")))
+	# 深层节点（Panel/@Button@N）不得出现在浅层（_target 直下）之前
+	var panel_child_idx: int = -1
+	var direct_child_idx: int = -1
+	for i in range(first_paths.size()):
+		if "@Button@" in first_paths[i] and panel_child_idx == -1:
+			panel_child_idx = i
+		if first_paths[i].ends_with("/InventoryPanel"):
+			direct_child_idx = i
+	assert_true(direct_child_idx != -1 and panel_child_idx != -1)
+	assert_lt(direct_child_idx, panel_child_idx, "浅层匹配必须排在深层之前（BFS 序）")
+
+
+func test_find_nodes_entry_carries_text_and_visible() -> void:
+	_build_find_fixture()
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()), "text": "开始",
+	})
+	var entry: Dictionary = (result.get("matches", []) as Array)[0] as Dictionary
+	# entry 字段形状与 tree 的 _build_tree 对齐：name/type/path + text + visible
+	assert_eq(str(entry.get("text")), "开始")
+	assert_has(entry, "visible")
+	assert_has(entry, "path")
+	assert_has(entry, "type")
+
+
+func test_find_nodes_no_filter_is_invalid_params() -> void:
+	# 全空过滤器 = tree 的活，find 必须拒绝（-32602），与 CLI preflight 对齐
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()),
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+
+
+func test_find_nodes_text_modes_mutually_exclusive() -> void:
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": str(_target.get_path()),
+		"text": "a", "text_contains": "b",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+
+
+func test_find_nodes_missing_from_reports_1001() -> void:
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": "/root/__no_such_node__", "type": "Button",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1001)
+
+
+func test_find_nodes_from_scopes_search_to_subtree() -> void:
+	_build_find_fixture()
+	# from=Panel 时只搜 Panel 子树：Title（_target 直下）不应出现
+	var panel_path: String = str(_target.get_path()) + "/Panel"
+	var result: Dictionary = _api.handle_find_nodes({
+		"from": panel_path, "text_contains": "开始",
+	})
+	var matches: Array = result.get("matches", [])
+	assert_eq(matches.size(), 1, "Panel 子树内只有 开始游戏 按钮含 开始")
+	assert_string_contains(str((matches[0] as Dictionary).get("name")), "@Button@")

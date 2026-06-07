@@ -6,6 +6,9 @@
 
 ## [Unreleased]
 
+### Added
+- **`find` 服务端节点搜索**（#153）：`godot-cli-control find [--from <path>] [--type <Class>] [--exact <text>|--contains <substr>] [--name-pattern <glob>] [--limit N]`——单次 RPC 服务端遍历替代客户端 `children`+`text` 逐层递归（程序化匿名 UI `@Button@12` 按文本定位的原语；录制模式下每个 RPC 等帧渲染 50-150ms，一次全树遍历曾拖出 57s 死时间，现折成一次往返）。过滤器 AND 语义至少给一个（连接前 preflight，-1003/64）；`--type` 按继承匹配且认 `class_name` 脚本类；`--exact`/`--contains` 是 `text` 属性的精确/子串两档（互斥；精确档不叫 `--text` 因与全局输出 flag 撞名）；matches 按 BFS 浅层优先，超 `--limit`（默认 20，服务端上限 500）附 `truncated: true`（tree 同款信号）。退出码 0=有匹配、1=零匹配（shell `if` 可用）。配套 `GameClient.find_nodes()` / `GameBridge.find_nodes()`；entry 形状与 `tree` 对齐（`{name,type,path,text?,visible?}`）。需要新 RPC `find_nodes`——老 addon 项目跑一次 `init` 同步（未同步时报 `-32601`）。
+
 ### Fixed
 - **#149 大图 screenshot 不再误报 `-1001` 连接错误**：hiDPI / 4K 全屏截图的 base64 曾超出 WebSocket 客户端默认 1MB 消息上限，连接被 close 1009 关闭、却呈现为「随机连接失败」（暗色简单画面能过、复杂画面必挂）。三层修复：① 根治——`screenshot` 的 PNG 改由 **daemon 进程直接落盘**（CLI 把路径 resolve 成绝对路径并先建好父目录），图像字节不再过 WS，任意尺寸可截，顺带消灭 base64 编解码开销；旧 addon 不认新参数时自动回退本地写盘（跑一次 `init` 即同步）。② client 放开 `max_size` 上限（兜旧 addon 回退与 `bridge.screenshot()` bytes API）。③ 连接被关时错误信息带上 close code/reason，根因不再被笼统的 "Connection closed by server" 吞掉。新增服务端错误码 `1013 WRITE_FAILED`（daemon 写不进目标路径，区别于客户端 `-1004`）。`GameClient.screenshot_raw()` / `GameBridge.screenshot()` 新增 `path` 直写支持。截图前手动缩窗口的 workaround 可以删了。
 - **#152 `--movie-path` 非 .avi/.png 时启动前拒绝（-1003 / exit 64）**：此前传 `.mp4` 等后缀 Godot 打 "Can't find movie writer" 后继续正常跑——脚本照常执行、exit 0，但什么都没录（假成功）。现 `daemon start` / `run` 的 `--record` 在 argparse 层校验扩展名（大小写不敏感），错误信息指路「传 .avi，stop 时自动转码出 .mp4」；直接调 `Daemon.start()` 的 API 路径同样拒绝（DaemonError）。
