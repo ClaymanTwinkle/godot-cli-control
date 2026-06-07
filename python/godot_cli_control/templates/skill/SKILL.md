@@ -1,6 +1,6 @@
 ---
 name: godot-cli-control
-description: Use when driving a Godot 4 game from a script or terminal — clicking buttons, simulating input actions, taking screenshots, dumping the scene tree, reading or writing node properties, calling node methods, listing InputMap actions, writing pytest end-to-end tests against a live Godot scene (via the bundled pytest plugin / `godot_daemon` + `bridge` fixtures), or recording video / screen capture / demo replays (Godot Movie Maker, `--write-movie`, auto-transcoded to mp4 via ffmpeg). Trigger when the user mentions godot-cli-control, the godot-cli-control CLI/daemon, the `bridge` / `godot_daemon` pytest fixtures, or asks to automate / scrape / black-box-test / record / capture / film / e2e-test a Godot scene.
+description: Use when driving a Godot 4 game from a script or terminal — clicking buttons, simulating input actions, taking screenshots, dumping the scene tree, reading or writing node properties, calling node methods, listing InputMap actions, writing pytest end-to-end tests against a live Godot scene (via the bundled pytest plugin / `godot_daemon` + `bridge` fixtures, or the `godot_instances` multi-instance factory for server + client multiplayer e2e), or recording video / screen capture / demo replays (Godot Movie Maker, `--write-movie`, auto-transcoded to mp4 via ffmpeg). Trigger when the user mentions godot-cli-control, the godot-cli-control CLI/daemon, the `bridge` / `godot_daemon` / `godot_instances` pytest fixtures, or asks to automate / scrape / black-box-test / record / capture / film / e2e-test a Godot scene.
 ---
 
 # godot-cli-control
@@ -140,6 +140,8 @@ When ≥ 2 instances are running and you omit `--instance`, the error JSON is:
 `--instance` (top-level) and `--name` (daemon subcommands) are equivalent; passing both with the same value is allowed, different values → -1003 conflict error. `--instance` and `--port` are mutually exclusive (both select which daemon to talk to).
 
 **Upgrade-period note**: if you have a legacy daemon started with an older version of the CLI (its pid/port files sit directly under `.cli_control/` instead of `.cli_control/instances/<name>/`), `daemon ls` may temporarily show two lines for the same project. Stop the legacy daemon and the extra line disappears — no manual file migration needed.
+
+**In pytest suites**, don't hand-roll this lifecycle — the `godot_instances` fixture (see the pytest plugin section) starts named instances, hands you connected `GameBridge` objects, and stops everything it started at teardown.
 
 ## JSON envelope examples
 
@@ -482,7 +484,7 @@ def run(bridge):
 
 ## pytest plugin (preferred for end-to-end test suites)
 
-`pip install godot-cli-control[pytest]` registers a `pytest11` entry-point that exposes four fixtures, so a Godot e2e test is a one-liner:
+`pip install godot-cli-control[pytest]` registers a `pytest11` entry-point that exposes five fixtures, so a Godot e2e test is a one-liner:
 
 ```python
 def test_jump(godot_daemon, bridge):
@@ -495,6 +497,17 @@ def test_jump(godot_daemon, bridge):
 - **`bridge`** *(function-scoped)*: a fresh `GameBridge` per test; on teardown it calls `release_all()` and closes the socket so a `hold`/`press` left dangling by one test can't bleed into the next. It also restores engine-global time state: best-effort `unpause` + reset `Engine.time_scale` to the value snapshotted at test setup (so `--godot-cli-time-scale 5` suite-wide acceleration survives), preventing a test that crashed after `pause` or `time-scale` from freezing / fast-forwarding every later test.
 - **`fresh_scene`** *(function-scoped)*: reloads the current scene before the test so it starts from a clean state; yields the same `bridge` object. Use this as a lightweight per-test isolation primitive whenever leftover scene state between tests would cause flakiness — it's cheaper than restarting the daemon. Requires the project to actually *have* a current scene: in autoload-only / no-main-scene startup states (`get_tree().current_scene == null`) the setup's `scene_reload` fails loudly with error `1008` before the test body runs — drive the project into a scene first (e.g. `scene-change res://...`), or don't use this fixture for those cases.
 - **`no_push_errors`** *(function-scoped, opt-in)*: the test fails if the game emitted any new `push_error` during it — the e2e defense against silently-swallowed failures (business assertions green, but the game logged an error). Snapshots the `errors` marker at setup, queries the increment at teardown; yields the same `bridge` object. Warnings don't fail it (query `bridge.errors()` yourself for stricter policies). Two caveats: the failure surfaces as a pytest **ERROR** (teardown-phase) rather than FAIL — same red, different label; and it needs Godot 4.5+ (`Logger` API) — on older engines setup raises `RpcError 1012` (fail-loud beats fake-green).
+- **`godot_instances`** *(scope configurable, default function)*: multi-instance factory for multiplayer e2e — get a server bridge **and** client bridges inside one test, with zero manual daemon lifecycle code:
+
+  ```python
+  def test_join(godot_instances):
+      server = godot_instances.start("server")
+      client = godot_instances.start("client1")
+      # both are connected GameBridge objects; teardown stops every
+      # instance this fixture started (and only those)
+  ```
+
+  `start(name)` is idempotent get-or-start; `headless` / `time_scale` default to the global CLI options and can be overridden per call (e.g. `start("server", headless=False)` to watch just the server); `port` always defaults to 0 (OS-assigned — multiple instances cannot share one fixed port). An instance already running before the test is connected to but **not** restarted or stopped at teardown (same dev/CI handover semantics as `godot_daemon`). `stop(name)` stops one instance mid-test (disconnect-scenario testing; the name can be `start`ed again afterwards), `daemon(name)` exposes the underlying `Daemon` (`current_port()` etc.); both raise `KeyError` for names never started. With `--godot-cli-instances-scope session` one shared set of instances serves the whole suite — saves per-test startup seconds, but game state carries over between tests.
 
 On a test failure (call phase, test used `bridge`, daemon **not** headless), the plugin also saves a screenshot to `<project_root>/.cli_control/failures/<nodeid>.png` automatically and notes the path in the report sections — CI debugging goes from "re-run with extra logging" to "look at the picture". Headless runs skip this (dummy renderer can't screenshot); screenshot failures never mask the original test failure.
 
@@ -515,6 +528,7 @@ Pytest CLI options the plugin adds:
 | `--godot-cli-no-headless` | off (i.e. headless) | Drop `--headless`, open a real Godot window |
 | `--godot-cli-project-root` | `pytest rootdir` | Override the Godot project root |
 | `--godot-cli-time-scale` | `None` (engine default = 1.0) | Set `Engine.time_scale` at daemon startup (e.g. `5` to run the whole suite at 5× speed). Passed as `--cli-time-scale=N` to Godot; valid range `(0, 100]`. |
+| `--godot-cli-instances-scope` | `function` | Scope of the `godot_instances` fixture: `function` (each test starts/stops its own instances — best isolation) or `session` (one shared set for the whole suite — faster, game state not isolated between tests). |
 
 If the entry-point isn't picking up automatically (rare — usually means an editable install glitch), fall back to listing it in `conftest.py`:
 
