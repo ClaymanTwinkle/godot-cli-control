@@ -1270,8 +1270,18 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
         return EXIT_USAGE
 
-    # --name 选靶：未传则默认 "default"
-    inst = (getattr(ns, "name", None) or "default")
+    # --name / 顶层 --instance 选靶（通过 _merge_instance_flags 统一收口）
+    merged, conflict = _merge_instance_flags(ns)
+    if conflict:
+        sub = getattr(ns, "name", None)
+        top = getattr(ns, "instance", None)
+        _emit_top_error(
+            ns,
+            code=CLIENT_CODE_USAGE,
+            message=f"--name {sub!r} 与顶层 --instance {top!r} 冲突，二选一",
+        )
+        return EXIT_USAGE
+    inst = merged or "default"
     daemon = Daemon(Path.cwd(), instance=inst)
     try:
         daemon.start(
@@ -2027,17 +2037,42 @@ def _add_instance_name_flag(p: argparse.ArgumentParser) -> None:
         "--name",
         type=_instance_name_arg,
         default=None,
-        help="实例名（默认 default；多实例并行时用于选靶，等价顶层 --instance）",
+        help="实例名（默认 default；多实例并行时用于选靶，等价顶层 --instance；两者同时传值须一致）",
     )
+
+
+def _merge_instance_flags(ns: argparse.Namespace) -> tuple[str | None, bool]:
+    """合并顶层 --instance 与子命令 --name，返回 (合并后的实例名 or None, 是否冲突)。
+
+    两者相同或只传一个 → (值, False)；两者都传且值不同 → (None, True)。
+    冲突时调用方负责 emit -1003 信封并返回 EXIT_USAGE。
+    """
+    sub = getattr(ns, "name", None)       # 子命令 --name（daemon start/stop/status/logs/run）
+    top = getattr(ns, "instance", None)   # 顶层 --instance
+    if sub is not None and top is not None and sub != top:
+        return None, True
+    return sub or top, False
 
 
 def _resolve_daemon_instance(ns: argparse.Namespace, project_root: Path) -> str | None:
     """返回实例名；歧义时 emit -1003 信封并返回 None（调用方 return EXIT_USAGE）。
 
-    0 个在跑 → "default"（保 legacy fallback 与 stopped 语义）；1 个 → 它；
-    ≥2 → 报错列名（preflight，本地 FS 判定，先于任何网络/进程操作）。
+    顶层 --instance 与子命令 --name 统一收口（通过 _merge_instance_flags）：
+    两者等价；同时传且值相同合法；值不同报冲突（用法错 -1003）。
+
+    未显式指定时：0 个在跑 → "default"（保 legacy fallback 与 stopped 语义）；
+    1 个 → 它；≥2 → 报错列名（preflight，本地 FS 判定，先于任何网络/进程操作）。
     """
-    inst = getattr(ns, "name", None)
+    inst, conflict = _merge_instance_flags(ns)
+    if conflict:
+        sub = getattr(ns, "name", None)
+        top = getattr(ns, "instance", None)
+        _emit_top_error(
+            ns,
+            code=CLIENT_CODE_USAGE,
+            message=f"--name {sub!r} 与顶层 --instance {top!r} 冲突，二选一",
+        )
+        return None
     if inst is not None:
         return inst
     from .daemon import list_live_instances
@@ -2222,8 +2257,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=_instance_name_arg,
         default=None,
         help=(
-            "RPC 连接的目标实例名（多实例并行时必传；与 --port 互斥）。"
-            "daemon 子命令请用各自的 --name。"
+            "目标实例名；RPC 与 run/daemon 子命令通用（daemon 子命令的 --name 是等价写法）。"
+            "多实例并行时必传；与 --port 互斥。"
         ),
     )
     _add_output_format_flags(parser)
@@ -2630,7 +2665,7 @@ def main() -> None:
             from .daemon import InstanceAmbiguityError, discover_port
 
             try:
-                port = discover_port(instance=getattr(ns, "instance", None)) or DEFAULT_PORT
+                port = discover_port(instance=ns.instance) or DEFAULT_PORT
             except InstanceAmbiguityError as e:
                 if fmt == OUTPUT_JSON:
                     _emit_error_payload(CLIENT_CODE_USAGE, str(e))
