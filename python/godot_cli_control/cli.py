@@ -1579,7 +1579,8 @@ def cmd_run(ns: argparse.Namespace) -> int:
       0  脚本成功（且 daemon stop 成功）
       1  脚本运行失败（RPC 错语义；envelope `ok=false` 时也走这里）
       2  基础设施前置失败（daemon 起不来等，code -1006 PRECONDITION）
-      64 用法错（脚本路径不存在、缺 run(bridge)、idle_timeout 解析失败等，code -1003）
+      64 用法错（脚本路径不存在、缺 run(bridge)、idle_timeout 解析失败等，code -1003；
+         多实例并行且未传 --name 也属用法错，同归 64/-1003）
     """
     from .daemon import Daemon, DaemonError
 
@@ -1608,7 +1609,14 @@ def cmd_run(ns: argparse.Namespace) -> int:
                 print(f"错误：{e}", file=sys.stderr)
             return EXIT_USAGE
 
-        daemon = Daemon(Path.cwd())
+        # 多实例选靶：0 个在跑 → "default"（走既有 auto-start 分支）；
+        # 1 个命名实例在跑 → 自动选中（不会再起新实例，auto_started=False 自然成立）；
+        # N≥2 且无 --name → preflight 报歧义（CLAUDE.md 契约 #5）。
+        inst = _resolve_daemon_instance(ns, Path.cwd())
+        if inst is None:
+            # _resolve_daemon_instance 已 emit 信封
+            return EXIT_USAGE
+        daemon = Daemon(Path.cwd(), instance=inst)
         auto_started = False
         if not daemon.is_running():
             # 静态检测脚本含 screenshot 时，非 TTY 默认从 headless 翻转到 GUI
@@ -2195,7 +2203,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"godot-cli-control {getattr(_version, '__version__', 'unknown')}",
     )
-    parser.add_argument(
+    # --port 与 --instance 互斥：agent 要么明确端口、要么指定实例名，不能两者并用。
+    # 两者均未传时，CLI 通过 discover_port() 自动发现（0 实例→default fallback，
+    # 1 实例→自动选中，N≥2→preflight 报歧义）。
+    conn_grp = parser.add_mutually_exclusive_group()
+    conn_grp.add_argument(
         "--port",
         type=int,
         default=None,
@@ -2203,6 +2215,15 @@ def build_parser() -> argparse.ArgumentParser:
             f"RPC 子命令连接的 GameBridge 端口（默认从 .cli_control/port 读取，"
             f"否则 {DEFAULT_PORT}）。注意：仅作用于 RPC 子命令，daemon "
             "start / run 启动 daemon 时请用其各自的 --port。"
+        ),
+    )
+    conn_grp.add_argument(
+        "--instance",
+        type=_instance_name_arg,
+        default=None,
+        help=(
+            "RPC 连接的目标实例名（多实例并行时必传；与 --port 互斥）。"
+            "daemon 子命令请用各自的 --name。"
         ),
     )
     _add_output_format_flags(parser)
@@ -2603,9 +2624,19 @@ def main() -> None:
         port = ns.port
         if port is None:
             # 与 GameClient()/GameBridge() 共用同一发现入口（issue #91）。
-            from .daemon import discover_port
+            # --instance 指定时传入，单实例自动选中，N≥2 且无 --instance 时
+            # 抛 InstanceAmbiguityError → preflight exit 64（CLAUDE.md 契约 #5：
+            # 用法错必须在连 daemon 之前报出，不让 agent 等 30s connection retry）。
+            from .daemon import InstanceAmbiguityError, discover_port
 
-            port = discover_port() or DEFAULT_PORT
+            try:
+                port = discover_port(instance=getattr(ns, "instance", None)) or DEFAULT_PORT
+            except InstanceAmbiguityError as e:
+                if fmt == OUTPUT_JSON:
+                    _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+                else:
+                    print(f"错误：{e}", file=sys.stderr)
+                sys.exit(EXIT_USAGE)
 
         rc = asyncio.run(_run_rpc(spec, ns, port, fmt))
         sys.exit(rc)

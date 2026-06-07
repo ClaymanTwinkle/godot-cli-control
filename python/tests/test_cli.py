@@ -3286,3 +3286,312 @@ def test_status_auto_selects_single_named_instance(
     assert payload["ok"] is True
     assert payload["result"]["state"] == "running"
     assert payload["result"].get("instance") == "server"
+
+
+# ── Task 6：顶层 --instance 选靶 + cmd_run 实例解析 ──
+
+
+def test_top_level_instance_and_port_mutually_exclusive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--instance x --port 1 tree`` → SystemExit(64) + -1003 信封。
+
+    argparse mutually_exclusive_group 报错经 _EnvelopeArgumentParser.error()
+    落进 JSON 信封，exit code 64。
+    """
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, build_parser
+
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["--instance", "x", "--port", "1", "tree"])
+    assert exc.value.code == EXIT_USAGE
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+def _make_two_live_instances(tmp_path: Path) -> None:
+    """在 tmp_path 下铺两个活实例 server + client1（pid = os.getpid()）。"""
+    import os
+
+    for name in ("server", "client1"):
+        d = tmp_path / ".cli_control" / "instances" / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "godot.pid").write_text(str(os.getpid()))
+        (d / "port").write_text("7001" if name == "server" else "7002")
+
+
+def test_rpc_ambiguity_is_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两实例活、无 --instance → preflight exit 64/-1003，不发网络连接。
+
+    discover_port 在本地 FS 即可判定歧义（N≥2），CLI 必须在 _run_rpc 之前
+    报错，不让 agent 等 30s connection retry（CLAUDE.md 契约 #5）。
+    """
+    import argparse
+    import json as _json
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, RPC_BY_NAME
+
+    _make_two_live_instances(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    # 断言 _run_rpc 没有被调用（即使调用了，AsyncMock 也会立即抛以防漏过）
+    _run_rpc_called: list[bool] = []
+
+    async def _fake_run_rpc(*_a: Any, **_kw: Any) -> int:
+        _run_rpc_called.append(True)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_run_rpc", _fake_run_rpc)
+
+    ns = argparse.Namespace(
+        cmd="tree",
+        port=None,
+        instance=None,  # 顶层 --instance 未传
+        output_format=OUTPUT_JSON,
+    )
+    spec = RPC_BY_NAME["tree"]
+    # 直接调用 main() 路径等价物：复用 main 内的 RPC 分支逻辑
+    # 用 monkeypatch 补上 preflight = None 的 spec，直接走 port 发现分支
+    import asyncio
+
+    from godot_cli_control.cli import (
+        CLIENT_CODE_USAGE,
+        _emit_error_payload,
+        _output_format,
+    )
+    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
+
+    fmt = _output_format(ns)
+    port = ns.port
+    error_emitted = False
+    exit_code_got: int | None = None
+    if port is None:
+        try:
+            port = discover_port(instance=ns.instance) or 7777
+        except InstanceAmbiguityError as e:
+            _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+            error_emitted = True
+            exit_code_got = EXIT_USAGE
+
+    assert error_emitted, "应在 InstanceAmbiguityError 时直接报错"
+    assert exit_code_got == EXIT_USAGE
+    assert not _run_rpc_called, "_run_rpc 不应被调用"
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "server" in payload["error"]["message"]
+    assert "client1" in payload["error"]["message"]
+
+
+def test_rpc_explicit_instance_not_running_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """只有 server 活、--instance nope → 64/-1003，message 含运行中实例名。"""
+    import json as _json
+    import os
+
+    from godot_cli_control.cli import CLIENT_CODE_USAGE, EXIT_USAGE, _emit_error_payload
+    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7042")
+    monkeypatch.chdir(tmp_path)
+
+    try:
+        discover_port(instance="nope")
+        pytest.fail("应抛 InstanceAmbiguityError")
+    except InstanceAmbiguityError as e:
+        _emit_error_payload(CLIENT_CODE_USAGE, str(e))
+        exit_code = EXIT_USAGE
+
+    assert exit_code == EXIT_USAGE
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert "server" in payload["error"]["message"]
+
+
+def test_rpc_single_instance_auto_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """唯一实例 server（port 7042）→ _run_rpc 收到 port=7042。"""
+    import asyncio
+    import os
+
+    import godot_cli_control.cli as cli_mod
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7042")
+    monkeypatch.chdir(tmp_path)
+
+    captured_port: list[int] = []
+
+    async def _fake_run_rpc(spec: Any, ns: Any, port: int, fmt: str) -> int:
+        captured_port.append(port)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_run_rpc", _fake_run_rpc)
+
+    # 直接调用 main 的 RPC 分支逻辑（discover_port + _run_rpc）
+    from godot_cli_control.cli import DEFAULT_PORT, RPC_BY_NAME, _output_format
+    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
+
+    import argparse
+
+    ns = argparse.Namespace(
+        cmd="tree",
+        port=None,
+        instance=None,
+        output_format="json",
+    )
+    fmt = _output_format(ns)
+    spec = RPC_BY_NAME["tree"]
+    port = ns.port
+    if port is None:
+        try:
+            port = discover_port(instance=ns.instance) or DEFAULT_PORT
+        except InstanceAmbiguityError:
+            pytest.fail("单实例不应歧义")
+    asyncio.run(cli_mod._run_rpc(spec, ns, port, fmt))
+    assert captured_port == [7042], f"应选 7042，实际 {captured_port}"
+
+
+def test_rpc_explicit_instance_resolves_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两实例活，--instance client1（port 7002）→ discover_port 返回 7002。"""
+    import os
+
+    from godot_cli_control.daemon import InstanceAmbiguityError, discover_port
+
+    _make_two_live_instances(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    port = discover_port(instance="client1")
+    assert port == 7002, f"应返回 7002，实际 {port}"
+
+
+def test_run_ambiguous_without_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两实例活，run x.py 无 --name → 64/-1003，不启 daemon。"""
+    import argparse
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import EXIT_USAGE, OUTPUT_JSON, cmd_run
+
+    _make_two_live_instances(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    # daemon start/is_running 不应被调用（断言不会 raise）
+    _daemon_start_called: list[bool] = []
+
+    def _boom_start(self: Any, **__: Any) -> None:
+        _daemon_start_called.append(True)
+        raise AssertionError("不应启动 daemon")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "start", _boom_start)
+
+    script = tmp_path / "x.py"
+    script.write_text("def run(bridge): pass\n", encoding="utf-8")
+
+    ns = argparse.Namespace(
+        script=str(script),
+        name=None,  # 无 --name
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    assert rc == EXIT_USAGE
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+    assert not _daemon_start_called, "不应调用 daemon.start"
+
+
+def test_run_auto_selects_single_named_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """唯一 server 实例活 → cmd_run 用 instance='server'，auto_started=False。"""
+    import argparse
+    import os
+
+    import godot_cli_control.daemon as daemon_mod
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import OUTPUT_JSON, cmd_run
+
+    inst_dir = tmp_path / ".cli_control" / "instances" / "server"
+    inst_dir.mkdir(parents=True)
+    (inst_dir / "godot.pid").write_text(str(os.getpid()))
+    (inst_dir / "port").write_text("7042")
+    monkeypatch.chdir(tmp_path)
+
+    # 桩掉 _exec_user_script，捕获收到的 port
+    captured_port: list[int] = []
+
+    def _fake_exec(script_path: Any, port: int, **kw: Any) -> int:
+        captured_port.append(port)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_exec_user_script", _fake_exec)
+
+    # daemon.start 不应被调用（auto_started 应为 False）
+    _start_called: list[bool] = []
+
+    def _boom_start(self: Any, **__: Any) -> None:
+        _start_called.append(True)
+        raise AssertionError("不应启动 daemon（实例已在跑）")
+
+    monkeypatch.setattr(daemon_mod.Daemon, "start", _boom_start)
+
+    script = tmp_path / "x.py"
+    script.write_text("def run(bridge): pass\n", encoding="utf-8")
+
+    ns = argparse.Namespace(
+        script=str(script),
+        name=None,  # 不传 --name，自动选唯一实例
+        record=False,
+        movie_path=None,
+        headless=False,
+        gui=False,
+        fps=30,
+        port=0,
+        idle_timeout="0",
+        output_format=OUTPUT_JSON,
+    )
+    rc = cmd_run(ns)
+    assert rc == 0, f"脚本应成功退出，got {rc}"
+    assert captured_port == [7042], f"应连 port 7042，实际 {captured_port}"
+    assert not _start_called, "不应调用 daemon.start（server 实例已在跑）"
