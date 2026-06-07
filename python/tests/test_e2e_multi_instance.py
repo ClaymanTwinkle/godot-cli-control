@@ -284,15 +284,12 @@ def test_instance_targeting_no_crosstalk(multi_project: Path) -> None:
         bridge_a.set_property("/root/Main", "value", 100)
         bridge_b.set_property("/root/Main", "value", 200)
 
-        # 各自读回，不应互混
+        # 各自读回自己写的值，互不污染
+        # bridge_a 连 server 实例，应读到 100；bridge_b 连 client1 实例，应读到 200
         v_a = bridge_a.get_property("/root/Main", "value")
         v_b = bridge_b.get_property("/root/Main", "value")
         assert v_a == 100, f"server value 应为 100，实际 {v_a!r}（串台了？）"
         assert v_b == 200, f"client1 value 应为 200，实际 {v_b!r}（串台了？）"
-
-        # 交叉读：通过对方的 bridge 读自己写的值，应不同
-        # bridge_b 连 client1 实例，读出来应是 200（非 server 的 100）
-        assert v_b != v_a, "两实例 value 不同，说明 RPC 打到了正确的独立实例"
 
     finally:
         if bridge_a is not None:
@@ -307,3 +304,12 @@ def test_instance_targeting_no_crosstalk(multi_project: Path) -> None:
                 pass
         _safe_stop(a, "server")
         _safe_stop(b, "client1")
+
+    # 7. stop 后注册表中本项目记录应清空（在 finally 外断言，确保 stop 已完成）
+    remaining = [
+        r for r in registry.list_all()
+        if Path(r.project_root) == project.resolve()
+    ]
+    assert not remaining, (
+        f"stop 后注册表应清空本项目记录，仍剩 {remaining}"
+    )
