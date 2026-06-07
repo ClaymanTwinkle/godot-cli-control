@@ -2915,6 +2915,7 @@ def test_daemon_logs_returns_tail_lines(
     assert payload["result"]["lines"] == [f"line{i}" for i in range(90, 100)]
     assert payload["result"]["returned"] == 10
     assert payload["result"]["path"].endswith("godot.log")
+    assert payload["result"]["instance"] == "default"
 
 
 def test_daemon_logs_missing_file_is_infra_error(

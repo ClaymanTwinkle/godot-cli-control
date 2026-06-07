@@ -1326,6 +1326,8 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
             # --all --project：停指定项目下所有活实例（扫 instances/ 不查注册表）
             from .daemon import list_live_instances
             target = ns.project.resolve()
+            # 空列表回退 "default"：legacy daemon（平铺布局在跑）不出现在 instances/ 扫描里，
+            # 但 default 实例的 read_pid 带 legacy fallback，仍能停到它。
             names = list_live_instances(target) or ["default"]
             results: list[dict[str, Any]] = []
             had_failure = False
@@ -1512,6 +1514,7 @@ def cmd_daemon_logs(ns: argparse.Namespace) -> int:
     text = daemon.log_file.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()[-tail:]
     payload: dict[str, Any] = {
+        "instance": inst,
         "path": str(daemon.log_file),
         "lines": lines,
         "returned": len(lines),
