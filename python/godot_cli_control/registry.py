@@ -45,13 +45,13 @@ class DaemonRecord:
     log_path: str
     instance: str = "default"   # 旧记录无此字段 → default（spec 2026-06-07）
 
-    @property
-    def record_file(self) -> Path:
-        return _REGISTRY_DIR / f"{project_hash(Path(self.project_root))}-{self.instance}.json"
-
-
 def project_hash(project_root: Path) -> str:
     return hashlib.sha1(str(Path(project_root).resolve()).encode()).hexdigest()[:12]
+
+
+def _record_path(project_root: Path, instance: str) -> Path:
+    """注册表记录文件的单一来源：``<hash>-<instance>.json``。"""
+    return _REGISTRY_DIR / f"{project_hash(project_root)}-{instance}.json"
 
 
 def register(
@@ -76,7 +76,7 @@ def register(
     # 原子写：先写 .tmp 再 os.replace，避免被 SIGKILL / OOM 打断后留下 0 字节
     # 文件让 list_all 误删尚未完成的注册。docstring 的"幂等"才真正成立。
     # 文件名含实例名，同项目多实例各自独立记录（spec 2026-06-07）。
-    target = _REGISTRY_DIR / f"{project_hash(project_root)}-{instance}.json"
+    target = _record_path(project_root, instance)
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
     os.replace(tmp, target)
@@ -84,7 +84,7 @@ def register(
 
 def unregister(project_root: Path, instance: str = "default") -> None:
     # 删除新格式文件名（<hash>-<instance>.json）。
-    target = _REGISTRY_DIR / f"{project_hash(project_root)}-{instance}.json"
+    target = _record_path(project_root, instance)
     target.unlink(missing_ok=True)
     # default 实例额外清理旧格式文件名（<hash>.json），防止 legacy daemon 停掉后
     # 残留旧记录让 list_all 误以为还有进程在跑（spec 2026-06-07）。
