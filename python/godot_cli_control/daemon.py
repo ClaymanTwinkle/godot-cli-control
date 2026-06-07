@@ -51,6 +51,13 @@ def _rmdir_if_empty(path: Path) -> None:
 
 def validate_instance_name(name: str) -> str:
     """校验实例名合法性，合法则原样返回，不合法抛 DaemonError（spec 2026-06-07）。"""
+    if name == "all":
+        # #145：'all' 是广播保留名——顶层 `--instance all` 对全部活实例广播 RPC。
+        # 在创建链路的咽喉（Daemon 构造也走这里）拒绝，CLI 与 pytest 工厂同享约束。
+        raise DaemonError(
+            "'all' 是广播保留名（顶层 --instance all 对全部活实例广播 RPC；"
+            "停全部实例用 daemon stop --all），不能用作实例名"
+        )
     if not _INSTANCE_NAME_RE.fullmatch(name):
         raise DaemonError(
             f"非法 instance 名 {name!r}：只允许 [A-Za-z0-9_-]，长度 1-32"
@@ -515,6 +522,7 @@ def list_live_instances(project_root: Path | None = None) -> list[str]:
         p.name
         for p in base.iterdir()
         if p.is_dir()
+        and p.name != "all"  # #145 广播保留名：存量 all 目录静默跳过，防 Daemon() 构造抛错
         and _INSTANCE_NAME_RE.fullmatch(p.name)  # 过滤非法目录名，避免 DaemonError 污染
         and Daemon(root, instance=p.name).is_running()
     )

@@ -1794,3 +1794,25 @@ class TestInstanceLayout:
         d._cleanup_state_files()
         assert not d.control_dir.exists()
         assert (tmp_path / ".cli_control").exists()
+
+
+# ── #145 广播保留名 all ──
+
+
+def test_validate_instance_name_rejects_reserved_all() -> None:
+    """'all' 是广播保留名（#145）：validate_instance_name 必须拒绝并解释原因。"""
+    from godot_cli_control.daemon import DaemonError, validate_instance_name
+
+    with pytest.raises(DaemonError, match="广播保留名"):
+        validate_instance_name("all")
+
+
+def test_list_live_instances_skips_stale_all_dir(tmp_path: Path) -> None:
+    """存量 instances/all/ 目录（老版本可能创建）必须静默跳过，
+    不能让 Daemon() 构造时的保留名校验抛 DaemonError 炸掉枚举。"""
+    from godot_cli_control.daemon import list_live_instances
+
+    base = tmp_path / ".cli_control" / "instances"
+    (base / "all").mkdir(parents=True)
+    (base / "all" / "godot.pid").write_text("999999999", encoding="utf-8")
+    assert list_live_instances(tmp_path) == []
