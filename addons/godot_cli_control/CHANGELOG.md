@@ -7,8 +7,8 @@
 ## [Unreleased]
 
 ### Added
-- **同项目多实例（命名实例）**：`daemon start --name <inst>`（默认 `default`）可在同一项目下并行启动多个 Godot daemon；顶层 `--instance <name>` 对所有 RPC / run / daemon 子命令通用，daemon 子命令的 `--name` 是等价写法（#多实例）。
-- **状态布局迁移 `.cli_control/instances/<name>/`**：daemon 的 pid / port / log 文件从项目根平铺改为按实例子目录存放。legacy 平铺路径（旧格式 `<hash>.json` 注册记录 + `.cli_control/port` 等）仅作只读 fallback 兼容，升级期间无需手工迁移；停掉旧 daemon 后文件自动收敛。
+- **同项目多实例（命名实例）**：`daemon start --name <inst>`（默认 `default`）可在同一项目下并行启动多个 Godot daemon；顶层 `--instance <name>` 对所有 RPC / run / daemon 子命令通用，daemon 子命令的 `--name` 是等价写法。
+- **状态布局迁移 `.cli_control/instances/<name>/`**：daemon 的 pid / port / log 文件从项目根平铺改为按实例子目录存放。legacy 平铺路径（旧格式 `<hash>.json` 注册记录 + `.cli_control/port` 等）仅作只读 fallback 兼容，升级期间无需手工迁移；停掉旧 daemon 后文件自动收敛。硬编码读 `.cli_control/port` 的脚本应改读 `.cli_control/instances/default/port`，或改用 `GameClient()`/`GameBridge()` 自动发现（支持 `instance=` 参数）以免再次硬编码。
 - **`daemon ls` 新增 instance 列**：JSON 每条 `result.daemons[]` 含 `"instance"` 字段；text 输出格式改为 `pid\tport\tinstance\tproject_root\tstarted_at`。
 - **`daemon stop --all --project <path>`**：限定停某个项目下的全部实例（原 `--all` 不带 `--project` 仍停全局所有项目的所有实例）。
 - **daemon 各子命令的 JSON envelope result 带 `"instance"` 字段**：`start` / `stop` / `status` / `logs` 均在 result 中增加 `"instance"` 键，便于 agent 确认操作目标。

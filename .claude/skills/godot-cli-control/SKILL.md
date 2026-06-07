@@ -53,7 +53,7 @@ godot-cli-control daemon stop --all --project .
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`/`wait-prop`/`wait-signal`=timeout, `daemon status`=stopped |
 | 2 | Connection / IO error (daemon not running) or infra pre-condition failure (daemon failed to start, `daemon stop` encountered a system error — these carry client code `-1006`). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
 | 3 | `daemon stop --all` partial failure: at least one daemon in the registry failed to stop. Per-record `rc` is in the JSON `result.stopped[]`. |
-| 64 | Usage error — argparse parse failure (missing / invalid args, unknown subcommand), a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing), **or** `run <script>` given a non-existent path / a script with no `run(bridge)` function. All carry client code `-1003` and consistently exit 64 (#82 / #111). |
+| 64 | Usage error — argparse parse failure (missing / invalid args, unknown subcommand), a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing), **or** `run <script>` given a non-existent path / a script with no `run(bridge)` function, **or** a multi-instance targeting error (≥ 2 instances running without `--instance` / `--name`, an explicitly named instance that is not running, or `--instance` and `--name` given conflicting values). All carry client code `-1003` and consistently exit 64 (#82 / #111). |
 
 Shell-`if` works:
 
@@ -114,7 +114,7 @@ godot-cli-control --instance server daemon stop   # or: daemon stop --name serve
 godot-cli-control daemon stop --name server
 godot-cli-control daemon stop --name client1
 # or in one shot:
-godot-cli-control daemon stop --all --project /path/to/project
+godot-cli-control daemon stop --all --project .
 ```
 
 **Target-selection semantics (same for all subcommands):**
@@ -124,6 +124,8 @@ godot-cli-control daemon stop --all --project /path/to/project
 | 0 | connects to "default" (legacy fallback) | error -1003, exit 64 |
 | 1 | auto-selects the single instance | error -1003, exit 64 |
 | ≥ 2 | **error -1003, exit 64** — lists names in message | error -1003, exit 64 |
+
+> **Note**: "forgot `--instance`" (≥ 2 running, none selected) and "named instance not running" are two distinct error cases with different messages. When an explicit `--instance <name>` refers to an instance that is not running, the error message includes the list of currently-running instance names so you can pick a valid target without a separate `daemon ls` call.
 
 When ≥ 2 instances are running and you omit `--instance`, the error JSON is:
 
@@ -1469,4 +1471,4 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ---
 
-Generated from godot-cli-control v0.2.17. Re-run `godot-cli-control init --skills-only` to refresh.
+Generated from godot-cli-control v0.2.19.dev15+gf9998d303. Re-run `godot-cli-control init --skills-only` to refresh.
