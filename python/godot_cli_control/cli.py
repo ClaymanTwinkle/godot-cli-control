@@ -363,7 +363,8 @@ def _preflight_tree(ns: argparse.Namespace) -> None:
         except (TypeError, ValueError):
             raise ValueError(
                 f"tree: depth 必须是整数，收到 {depth_token!r}"
-                f"（要查子树请用绝对路径，如 tree /root/GameUI）"
+                f"（第二个位置参数只接受深度整数，如 tree /root/GameUI 2；"
+                f"漏写斜杠的路径如 tree GameUI 也会落到这里——节点路径须以 / 开头）"
             )
         if depth < 0:
             raise ValueError(f"tree: depth 必须 >= 0，收到 {depth}")

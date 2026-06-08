@@ -2375,6 +2375,7 @@ def test_tree_accepts_max_nodes_flag() -> None:
     _preflight_tree(ns)
     assert ns._tree_depth == 3
     assert ns.max_nodes == 50
+    assert ns._tree_path is None
 
 
 def test_tree_max_nodes_default_is_200() -> None:

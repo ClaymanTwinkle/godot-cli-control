@@ -283,6 +283,8 @@ def test_get_scene_tree_is_alias_for_tree(stub_client: dict) -> None:
     assert result == {"name": "root"}
     b.get_scene_tree(depth=7, max_nodes=99)
     assert c.calls[-1] == ("get_scene_tree", (), {"depth": 7, "max_nodes": 99})
+    b.get_scene_tree(path="/root/HUD")
+    assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "path": "/root/HUD"})
     b.close()
 
 
