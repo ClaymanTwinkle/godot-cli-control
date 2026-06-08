@@ -806,7 +806,7 @@ def _register_tree_args(p: argparse.ArgumentParser) -> None:
         nargs="?",
         default=None,
         metavar="depth",
-        help="可选：遍历深度（仅当第一个参数是路径时有意义，默认 3）",
+        help="可选：遍历深度，默认 3。此槽位仅在第一个参数是路径时填深度（tree /root/X 2）；不带路径直接 tree <depth>。",
     )
     p.add_argument(
         "--max-nodes",

@@ -4071,6 +4071,7 @@ def test_stop_all_with_top_level_instance_is_usage_error(
     "argv,expect_path,expect_depth",
     [
         (["tree"], None, 3),
+        (["tree", "0"], None, 0),
         (["tree", "2"], None, 2),
         (["tree", "/root/GameUI"], "/root/GameUI", 3),
         (["tree", "/root/GameUI", "2"], "/root/GameUI", 2),
