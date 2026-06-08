@@ -371,17 +371,23 @@ class GameClient:
         return await self.request("errors", {"since": since, "limit": limit})
 
     async def get_scene_tree(
-        self, depth: int = 5, max_nodes: int | None = None
+        self, depth: int = 5, max_nodes: int | None = None, path: str | None = None
     ) -> dict:
-        """读取场景树（可选软上限）。
+        """读取场景树（可选软上限、可选子树根）。
 
         ``max_nodes``：``None`` 走服务端默认（硬墙 5000，无 ``truncated`` 字段）；
         传正整数 N 时，节点数超 N 时响应附加 ``{"truncated": true, "total_nodes": M}``。
         服务端会把传入值 clamp 到 5000 上限，超过仍走 1005 错误。
+
+        ``path``（issue #150）：``None`` 时根为当前场景（``current_scene``）；
+        传绝对节点路径（如 ``/root/GameUI``）则以该节点为子树根，从 ``/root``
+        解析（与 ``get_children`` 同世界观）；路径不存在时服务端返回 1001。
         """
         params: dict = {"depth": depth}
         if max_nodes is not None:
             params["max_nodes"] = max_nodes
+        if path is not None:
+            params["path"] = path
         return await self.request("get_scene_tree", params)
 
     async def wait_for_node(self, path: str, timeout: float = 5.0) -> bool:
