@@ -219,7 +219,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `1002` | Property not found on the node, or shape mismatch (e.g. `text` on a node that doesn't have it). Don't retry; inspect with `tree`. |
 | `1003` | Method not found on the node, **or** unknown InputMap action passed to `press`/`release`/`tap`/`hold`/`combo` (`"Unknown action: <name>"`). Schema error — don't retry. For node methods inspect with `tree`; for missing actions run `actions` (or `actions --all`). |
 | `1004` | Combo already in progress. Call `combo-cancel` (or `release-all`) and re-issue. Safe to retry after that. |
-| `1005` | Scene tree too large to serialize (default safety limit). Pass `--max-nodes` or query a subtree with `children` / `tree <subpath>`. Don't retry as-is. |
+| `1005` | Scene tree too large to serialize (default safety limit). Pass `--max-nodes` or query a subtree with `tree <path>` / `children <path>`. Don't retry as-is. |
 | `1006` | Resource transiently unavailable (e.g. screenshot during scene transition / window resize). Rare under normal use: GameBridge waits for viewport first-frame before accepting connections, and `screenshot` retries internally up to ~30 frames (~500ms at 60 fps, ~1s at 30 fps, longer when `--write-movie` lowers the fixed fps). If you still see this, retry after `wait-time 0.05` or similar. |
 | `1007` | Signal not found on the node (`wait-signal` schema error — signal name typo or the node doesn't define it). Permanent — don't retry; inspect with `tree` to list available signals. |
 | `1008` | Scene unavailable (`scene-reload` / `scene-change`): no current scene, scene file missing / failed to load, or timed out waiting for the new scene to become ready. Missing file is permanent — fix the path; timeout usually means the scene itself fails to load — inspect the daemon log. |
@@ -259,7 +259,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 - `exists <path>` — boolean existence check (exit-code-as-result)
 - `visible <path>` — boolean visibility check (exit-code-as-result)
 - `children <path> [type-filter]` — direct children
-- `tree [depth] [--max-nodes N]` — full scene tree (default `--max-nodes 200`; on overflow, response includes `truncated: true` and `total_nodes: N`)
+- `tree [path] [depth] [--max-nodes N]` — scene tree as JSON. Omit `path` → current scene root; pass an absolute node path (starts with `/`, e.g. `tree /root` or `tree /root/GameUI 2`) to dump that subtree — this is how you reach autoload singletons mounted under `/root` (siblings of the current scene). First arg starting with `/` is the path, otherwise it's the depth (so `tree 2` still means depth 2). Default `--max-nodes 200`; on overflow, response includes `truncated: true` and `total_nodes: N`.
 - `pressed` — currently held simulated input actions
 - `actions [--all]` — InputMap actions (default filters `ui_*` builtins)
 
@@ -392,6 +392,7 @@ Use this when generating commands from a template — it removes the three-quote
 Responses are subject to a hard ceiling of 5000 nodes — beyond that you get `1005 "scene tree too large"` and must `--max-nodes` down or query a subtree:
 
 - `tree --max-nodes 50` — quick overview
+- `tree /root/Game/Spawner` — dump just that subtree
 - `children /root/Game/Spawner` — drill into one branch
 - `tree 1` — depth-1 only
 
@@ -467,7 +468,7 @@ positional arguments:
                        {errors, marker, dropped, truncated}；--since 传上次 marker
                        只看新增（「本用例期间应零 push_error」断言的原语），--limit 0 纯拿基线。需 Godot
                        4.5+（Logger API），老引擎报 1012。
-    tree               dump 当前场景树为 JSON。
+    tree               dump 场景树为 JSON（省略 path 取当前场景，传 /root 起的路径取子树）。
     press              按下输入动作（持续按住，需配 release 释放）。
     release            释放之前 press 按下的输入动作。
     tap                短按动作（press → 等待 → release）。默认异步立即返回；加 --wait 阻塞到时长结束。
@@ -825,12 +826,15 @@ options:
 $ godot-cli-control tree --help
 usage: godot-cli-control tree [-h] [--max-nodes MAX_NODES] [--json] [--text]
                               [--no-json]
-                              [depth]
+                              [path-or-depth] [depth]
 
-dump 当前场景树为 JSON。
+dump 场景树为 JSON（省略 path 取当前场景，传 /root 起的路径取子树）。
 
 positional arguments:
-  depth                 遍历深度，默认 3
+  path-or-depth         可选：节点绝对路径（以 / 开头，如 /root/GameUI）查该子树根；或遍历深度（整数，默认
+                        3）。省略则 dump 当前场景。
+  depth                 可选：遍历深度，默认 3。此槽位仅在第一个参数是路径时填深度（tree /root/X 2）；不带路径直接
+                        tree <depth>。
 
 options:
   -h, --help            show this help message and exit
@@ -842,7 +846,7 @@ options:
   --no-json             --text 别名
 
 示例:
-  godot-cli-control tree 3
+  godot-cli-control tree /root/GameUI 2
 
 $ godot-cli-control press --help
 usage: godot-cli-control press [-h] [--json] [--text] [--no-json] action
@@ -1379,7 +1383,7 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | `await client.screenshot_raw(node=None, path=None)` | raw response incl. `region` (the actual crop rect the CLI envelope shows); pass an **absolute** `path` to have the daemon write the PNG to disk itself (response is `{path, bytes}` metadata only — parent dir must already exist, `1013` if not writable) |
 | `await client.sprite_info(path)` | `sprite-info <node-path>` |
 | `await client.errors(since=0, limit=100)` | `errors [--since MARKER] [--limit N]` — `limit=0` is a marker-only baseline query |
-| `await client.get_scene_tree(depth, max_nodes=None)` | `tree [depth] [--max-nodes N]` |
+| `await client.get_scene_tree(depth, max_nodes=None, path=None)` | `tree [path] [depth] [--max-nodes N]` |
 | `await client.wait_for_node(path, timeout)` | `wait-node <path> [timeout]` |
 | `await client.wait_game_time(seconds)` | `wait-time <seconds>` |
 | `await client.wait_property(path, prop, value, op, timeout, tolerance)` | `wait-prop <path> <prop> <json-value> [--op ...] [--timeout N] [--tolerance N]` |
@@ -1495,7 +1499,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **`combo` rejects everything with `1004`** — a combo is already running. Call `combo-cancel` (or `release-all`) to abort.
 - **`hold` / `press` persist after the command returns** — by design. Each CLI command is its own short-lived connection that closes *cleanly*, and a clean close does **not** release inputs. `hold <action> <dur>` auto-releases after `<dur>` seconds (its timer keeps running in the daemon); a sticky `press <action>` stays held until you call `release <action>` / `release-all` (or the daemon's idle-timeout shuts it down). If a character looks stuck moving, you probably left a `press` dangling — run `release-all`. (An *abnormal* drop — your client crashing or being killed mid-session — does trigger a safety `release-all`, so stuck keys can't outlive a dead client.)
 - **`hold` / `tap` / `combo` return *before* the motion finishes — use `--wait` (or `wait-time`) before reading state.** These input commands are asynchronous: `hold move_right 1.0` returns in ~0.4s (it just arms a release-timer in the daemon), but the character keeps moving for the full `1.0` in-game second. If you `get position` immediately you read a *mid-motion* value (e.g. `x=415` instead of the settled `x=540`). Two fixes: ① pass **`--wait`** (`hold move_right 1.0 --wait` blocks until the duration elapses, then `get … position` reads the settled value) — one command, one connection; ② or do it explicitly: `hold move_right 1.0` → `wait-time 1.0` → `get … position`. `--wait` works on `tap` (default `0.1`s) and `combo` (waits the summed step durations) too. Either way, also account for any physics/animation that plays out over extra frames after the input lands.
-- **`tree` returns `1005 "scene tree too large"`** — your scene has more than 5000 visible nodes (a Grid / spawned-bullets situation). Pass `--max-nodes 200` to cap, or `children <path>` for one specific subtree.
+- **`tree` returns `1005 "scene tree too large"`** — your scene has more than 5000 visible nodes (a Grid / spawned-bullets situation). Pass `--max-nodes 200` to cap, or `tree <path>` / `children <path>` for one specific subtree.
 - **`set` with a string that *looks* like JSON** — value parser parses JSON first. To force a literal `"42"` string, pass `'"42"'`; to set a literal hash sign or array text, JSON-encode it.
 - **`daemon start` opens a window when I expected headless** — your stdout is a TTY (interactive terminal). Pass `--headless` explicitly, or shell out from a context where stdout is piped.
 - **`run <script>` opens a window even though stdout is piped** — by design. `run` grep's the script for `screenshot` and force-flips to GUI when found, so `bridge.screenshot(...)` doesn't 1006-fail under the dummy renderer. Pass `--no-gui-auto` to disable detection; explicit `--headless` always wins. See issue #65.

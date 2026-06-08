@@ -91,7 +91,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `node_exists(path)` | `await client.node_exists("/root/MyScene/Button")` |
 | `is_visible(path)` | `await client.is_visible("/root/UI/Panel")` |
 | `get_children(path, type_filter?)` | `await client.get_children("/root/Map", "Node2D")` |
-| `get_scene_tree(depth)` | `await client.get_scene_tree(depth=3)` |
+| `get_scene_tree(depth, path=None)` | `await client.get_scene_tree(depth=3, path="/root/GameUI")` — omit `path` → current scene; CLI: `tree [path] [depth]` |
 | `screenshot(node=None)` | `png_bytes = await client.screenshot()`; pass `node="/root/Game/Sprite"` to crop to that node's screen-space AABB; CLI: `screenshot <path> [--node <node-path>]` (errors: `1010` bounds undeterminable, `1011` off-screen, `1013` daemon can't write the path). `screenshot_raw(node=None, path=None)`: pass an **absolute** `path` to have the daemon write the PNG to disk itself — response is `{path, bytes}` metadata only, no base64 crosses the socket (#149); parent dir must already exist |
 | `sprite_info(path)` | `await client.sprite_info("/root/Game/Sprite")` — aggregate render-state query for `Sprite2D` / `AnimatedSprite2D` / `TextureRect` (texture, `effective_region`, `frame_texture`, flips, frame, modulate); headless-safe; CLI: `sprite-info <node-path>`; error `1010` for other node types |
 | `errors(since=0, limit=100)` | `await client.errors(since=marker)` — structured `push_error`/`push_warning` capture (ring of last 1000, cursor pagination via `marker`); needs Godot 4.5+ `Logger` (else `1012`); CLI: `errors [--since MARKER] [--limit N]` |
