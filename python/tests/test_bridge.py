@@ -47,10 +47,14 @@ class _StubClient:
     async def wait_game_time(self, seconds: float) -> dict:
         return self._record("wait_game_time", (seconds,), {})
 
-    async def get_scene_tree(self, depth: int = 5, max_nodes: int | None = None) -> dict:
+    async def get_scene_tree(
+        self, depth: int = 5, max_nodes: int | None = None, path: str | None = None
+    ) -> dict:
         kwargs: dict = {"depth": depth}
         if max_nodes is not None:
             kwargs["max_nodes"] = max_nodes
+        if path is not None:
+            kwargs["path"] = path
         return self._record("get_scene_tree", (), kwargs)
 
     async def node_exists(self, path: str) -> bool:
@@ -257,6 +261,15 @@ def test_tree_forwards_max_nodes_to_client(stub_client: dict) -> None:
     c.returns["get_scene_tree"] = {}
     b.tree(max_nodes=50)
     assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "max_nodes": 50})
+    b.close()
+
+
+def test_tree_forwards_path_to_client(stub_client: dict) -> None:
+    """issue #150：bridge.tree(path=...) 必须把 path 透传到 GameClient。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["get_scene_tree"] = {}
+    b.tree(path="/root/GameUI")
+    assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "path": "/root/GameUI"})
     b.close()
 
 
