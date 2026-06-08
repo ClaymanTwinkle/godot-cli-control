@@ -424,9 +424,18 @@ func handle_get_scene_tree(params: Dictionary) -> Dictionary:
 	var max_nodes: int = params.get("max_nodes", _BUILD_TREE_MAX_NODES) as int
 	if max_nodes <= 0 or max_nodes > _BUILD_TREE_MAX_NODES:
 		max_nodes = _BUILD_TREE_MAX_NODES
-	var root: Node = get_tree().current_scene
-	if root == null:
-		root = get_tree().root
+	# issue #150：传 path 时以该节点为子树根（从 /root 解析，与 children/_get_node_or_error
+	# 同世界观）；不传 path 时维持 current_scene 默认根（fallback /root），行为不变。
+	var path: String = params.get("path", "") as String
+	var root: Node
+	if not path.is_empty():
+		root = get_tree().root.get_node_or_null(path)
+		if root == null:
+			return _node_not_found(path)
+	else:
+		root = get_tree().current_scene
+		if root == null:
+			root = get_tree().root
 	# counter 用 Array[int] 当 by-ref 计数器：GDScript 没指针/inout，
 	# Array 是引用类型，递归子调用对 counter[0] 的写入对调用方可见。
 	var counter: Array[int] = [0]
