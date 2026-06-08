@@ -6,6 +6,9 @@
 
 ## [Unreleased]
 
+### Added
+- `tree` 新增可选 path 位置参数：`tree /root/GameUI [depth]` dump 任意子树，含 autoload 挂 `/root` 的兄弟（此前只能看 current_scene）；第一个参数以 `/` 开头当路径否则当 depth，`tree <depth>` 旧用法不变；路径不存在报 1001、用法错报 64（#150）。
+
 ### Fixed
 - **#149 大图 screenshot 不再误报 `-1001` 连接错误**：hiDPI / 4K 全屏截图的 base64 曾超出 WebSocket 客户端默认 1MB 消息上限，连接被 close 1009 关闭、却呈现为「随机连接失败」（暗色简单画面能过、复杂画面必挂）。三层修复：① 根治——`screenshot` 的 PNG 改由 **daemon 进程直接落盘**（CLI 把路径 resolve 成绝对路径并先建好父目录），图像字节不再过 WS，任意尺寸可截，顺带消灭 base64 编解码开销；旧 addon 不认新参数时自动回退本地写盘（跑一次 `init` 即同步）。② client 放开 `max_size` 上限（兜旧 addon 回退与 `bridge.screenshot()` bytes API）。③ 连接被关时错误信息带上 close code/reason，根因不再被笼统的 "Connection closed by server" 吞掉。新增服务端错误码 `1013 WRITE_FAILED`（daemon 写不进目标路径，区别于客户端 `-1004`）。`GameClient.screenshot_raw()` / `GameBridge.screenshot()` 新增 `path` 直写支持。截图前手动缩窗口的 workaround 可以删了。
 - **#152 `--movie-path` 非 .avi/.png 时启动前拒绝（-1003 / exit 64）**：此前传 `.mp4` 等后缀 Godot 打 "Can't find movie writer" 后继续正常跑——脚本照常执行、exit 0，但什么都没录（假成功）。现 `daemon start` / `run` 的 `--record` 在 argparse 层校验扩展名（大小写不敏感），错误信息指路「传 .avi，stop 时自动转码出 .mp4」；直接调 `Daemon.start()` 的 API 路径同样拒绝（DaemonError）。
