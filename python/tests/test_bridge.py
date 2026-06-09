@@ -47,10 +47,14 @@ class _StubClient:
     async def wait_game_time(self, seconds: float) -> dict:
         return self._record("wait_game_time", (seconds,), {})
 
-    async def get_scene_tree(self, depth: int = 5, max_nodes: int | None = None) -> dict:
+    async def get_scene_tree(
+        self, depth: int = 5, max_nodes: int | None = None, path: str | None = None
+    ) -> dict:
         kwargs: dict = {"depth": depth}
         if max_nodes is not None:
             kwargs["max_nodes"] = max_nodes
+        if path is not None:
+            kwargs["path"] = path
         return self._record("get_scene_tree", (), kwargs)
 
     async def node_exists(self, path: str) -> bool:
@@ -282,6 +286,15 @@ def test_tree_forwards_max_nodes_to_client(stub_client: dict) -> None:
     b.close()
 
 
+def test_tree_forwards_path_to_client(stub_client: dict) -> None:
+    """issue #150：bridge.tree(path=...) 必须把 path 透传到 GameClient。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["get_scene_tree"] = {}
+    b.tree(path="/root/GameUI")
+    assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "path": "/root/GameUI"})
+    b.close()
+
+
 def test_find_nodes_passthrough(stub_client: dict) -> None:
     """bridge.find_nodes 与 client 同名同参透传（issue #153），响应原样返回
     （含 truncated 信号，脚本侧自己决定要不要缩小范围）。"""
@@ -318,6 +331,8 @@ def test_get_scene_tree_is_alias_for_tree(stub_client: dict) -> None:
     assert result == {"name": "root"}
     b.get_scene_tree(depth=7, max_nodes=99)
     assert c.calls[-1] == ("get_scene_tree", (), {"depth": 7, "max_nodes": 99})
+    b.get_scene_tree(path="/root/HUD")
+    assert c.calls[-1] == ("get_scene_tree", (), {"depth": 3, "path": "/root/HUD"})
     b.close()
 
 

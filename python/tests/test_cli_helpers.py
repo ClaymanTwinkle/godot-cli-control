@@ -42,18 +42,20 @@ def test_cmd_click_passes_path() -> None:
 
 
 def test_cmd_tree_default_depth_is_3_not_5() -> None:
-    """合同：CLI 默认 depth=3（比 client 默认 5 浅，避免大场景树阻塞 stdout）。"""
+    """合同：CLI 默认 depth=3（比 client 默认 5 浅，避免大场景树阻塞 stdout）。
+    _preflight_tree 在连 daemon 前将解析结果 stash 到 ns._tree_depth / ns._tree_path。
+    """
     client = AsyncMock()
     client.get_scene_tree = AsyncMock(return_value={"name": "root"})
-    _run(cli.cmd_tree(client, _ns(depth=None)))
-    client.get_scene_tree.assert_awaited_once_with(depth=3, max_nodes=200)
+    _run(cli.cmd_tree(client, _ns(_tree_depth=3, _tree_path=None)))
+    client.get_scene_tree.assert_awaited_once_with(depth=3, max_nodes=200, path=None)
 
 
 def test_cmd_tree_explicit_depth_passed() -> None:
     client = AsyncMock()
     client.get_scene_tree = AsyncMock(return_value={})
-    _run(cli.cmd_tree(client, _ns(depth=10)))
-    client.get_scene_tree.assert_awaited_once_with(depth=10, max_nodes=200)
+    _run(cli.cmd_tree(client, _ns(_tree_depth=10, _tree_path=None)))
+    client.get_scene_tree.assert_awaited_once_with(depth=10, max_nodes=200, path=None)
 
 
 def test_cmd_press_release() -> None:

@@ -2368,12 +2368,14 @@ def test_daemon_start_movie_path_accepts_avi_png(good_path: str) -> None:
 
 
 def test_tree_accepts_max_nodes_flag() -> None:
-    from godot_cli_control.cli import build_parser
+    from godot_cli_control.cli import _preflight_tree, build_parser
 
     parser = build_parser()
     ns = parser.parse_args(["tree", "3", "--max-nodes", "50"])
-    assert ns.depth == "3"
+    _preflight_tree(ns)
+    assert ns._tree_depth == 3
     assert ns.max_nodes == 50
+    assert ns._tree_path is None
 
 
 def test_tree_max_nodes_default_is_200() -> None:
@@ -2884,7 +2886,11 @@ def test_run_rpc_tree_truncated_envelope(
     )
 
     spec = RPC_BY_NAME["tree"]
-    ns = __import__("argparse").Namespace(depth="3", max_nodes=200)
+    # issue #150: _tree_depth/_tree_path 由 _preflight_tree 填入；直接构造时手动设置
+    ns = __import__("argparse").Namespace(
+        tree_arg1="3", tree_arg2=None, max_nodes=200,
+        _tree_depth=3, _tree_path=None,
+    )
 
     truncated_payload = {
         "tree": {"name": "root", "type": "Node", "path": "/root"},
@@ -2907,8 +2913,8 @@ def test_run_rpc_tree_truncated_envelope(
     assert envelope["result"]["truncated"] is True
     assert envelope["result"]["total_nodes"] == 6000
     assert envelope["result"]["tree"]["name"] == "root"
-    # cmd_tree 应当把 ns.max_nodes 透传给 client.get_scene_tree
-    mock_client.get_scene_tree.assert_awaited_once_with(depth=3, max_nodes=200)
+    # cmd_tree 应当把 ns._tree_depth / ns.max_nodes / ns._tree_path 透传给 client
+    mock_client.get_scene_tree.assert_awaited_once_with(depth=3, max_nodes=200, path=None)
 
 
 # ── Task A1: argparse 层用法错统一 -1003 + exit 64 ──────────────────────────
@@ -4203,3 +4209,82 @@ def test_stop_all_with_top_level_instance_is_usage_error(
     # 消息应提到互斥语义，便于 agent 理解
     msg = payload["error"]["message"]
     assert "--all" in msg, f"message 应含 '--all'，实际：{msg!r}"
+
+
+# ── issue #150: tree [path] [depth] 启发式位置参数 + preflight 消歧 ──────────
+
+
+@pytest.mark.parametrize(
+    "argv,expect_path,expect_depth",
+    [
+        (["tree"], None, 3),
+        (["tree", "0"], None, 0),
+        (["tree", "2"], None, 2),
+        (["tree", "/root/GameUI"], "/root/GameUI", 3),
+        (["tree", "/root/GameUI", "2"], "/root/GameUI", 2),
+    ],
+)
+def test_tree_preflight_disambiguates(
+    argv: list[str], expect_path: str | None, expect_depth: int
+) -> None:
+    """issue #150：/ 前缀当 path，否则当 depth；结果 stash 到 ns。"""
+    from godot_cli_control.cli import _preflight_tree, build_parser
+
+    ns = build_parser().parse_args(argv)
+    _preflight_tree(ns)
+    assert ns._tree_path == expect_path
+    assert ns._tree_depth == expect_depth
+
+
+@pytest.mark.parametrize(
+    "bad_argv",
+    [
+        ["tree", "GameUI"],   # 漏斜杠 → 当 depth → int 失败（fail-loud）
+        ["tree", "2", "3"],   # depth-only 形式带多余尾随 token
+        ["tree", "abc"],      # 非法 depth
+    ],
+)
+def test_tree_preflight_rejects_usage_errors(
+    bad_argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """issue #150：tree 用法错必须在连 daemon 之前报 EXIT_USAGE（-1003）。"""
+    import json as _json
+
+    import godot_cli_control.cli as cli_mod
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：tree 用法错时不应连 daemon")
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", *bad_argv])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1003
+
+
+@pytest.mark.asyncio
+async def test_cmd_tree_forwards_path_and_depth() -> None:
+    """issue #150：cmd_tree 把 preflight 解析出的 path/depth 透传给 client。"""
+    from godot_cli_control.cli import _preflight_tree, build_parser, cmd_tree
+
+    captured: dict = {}
+
+    class _FakeClient:
+        async def get_scene_tree(
+            self, depth: int, max_nodes: int | None = None, path: str | None = None
+        ) -> dict:
+            captured.update(depth=depth, max_nodes=max_nodes, path=path)
+            return {"tree": {}}
+
+    ns = build_parser().parse_args(["tree", "/root/GameUI", "2"])
+    _preflight_tree(ns)
+    await cmd_tree(_FakeClient(), ns)
+    assert captured == {"depth": 2, "max_nodes": 200, "path": "/root/GameUI"}

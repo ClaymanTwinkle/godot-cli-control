@@ -715,6 +715,35 @@ func test_handle_get_scene_tree_negative_max_nodes_falls_back_to_limit() -> void
 	assert_has(result, "tree")
 
 
+func test_handle_get_scene_tree_with_path_returns_subtree() -> void:
+	# issue #150：传 path 时以该节点为子树根（从 /root 解析，与 children 同世界观）。
+	# _target 是 before_each 挂在测试树下的节点，其 get_path() 是 /root 起的绝对路径，
+	# 不在 current_scene 之下——正好验证 autoload-on-/root 那类兄弟子树也能取到。
+	var result: Dictionary = _api.handle_get_scene_tree({
+		"path": str(_target.get_path()),
+		"depth": 3,
+	})
+	assert_does_not_have(result, "error")
+	assert_has(result, "tree")
+	assert_eq(str(result.tree.name), "GutTestTarget")
+
+
+func test_handle_get_scene_tree_bad_path_returns_node_not_found() -> void:
+	# issue #150：path 不存在 → 复用 1001 NODE_NOT_FOUND，与 children 一致，不新增码。
+	var result: Dictionary = _api.handle_get_scene_tree({
+		"path": "/root/DefinitelyDoesNotExist_150",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1001)  # CliControlErrorCodes.NODE_NOT_FOUND
+
+
+func test_handle_get_scene_tree_without_path_keeps_current_scene_root() -> void:
+	# issue #150 回归：不传 path 时默认根维持 current_scene（fallback root），行为不变。
+	var result: Dictionary = _api.handle_get_scene_tree({"depth": 2})
+	assert_does_not_have(result, "error")
+	assert_has(result, "tree")
+
+
 # ── handle_node_exists / handle_get_children ──────────────────────
 
 func test_node_exists_true_for_real_path() -> void:

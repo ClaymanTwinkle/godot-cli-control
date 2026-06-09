@@ -352,6 +352,42 @@ def _preflight_step_frames(ns: argparse.Namespace) -> None:
     _require_frames(ns.frames, "step-frames")
 
 
+def _preflight_tree(ns: argparse.Namespace) -> None:
+    """tree 位置参数消歧 + depth 校验，结果 stash 到 ns（连 daemon 前跑，issue #150）。
+
+    第一个位置参数以 / 开头 → 当 node path（子树根，从 /root 解析）；否则当 depth。
+    depth-only 形式不接受第二个位置参数；漏斜杠的路径（如 ``tree GameUI``）会被当
+    depth 解析失败而 fail-loud，不静默吞掉。
+    """
+    arg1 = ns.tree_arg1
+    arg2 = ns.tree_arg2
+    if arg1 is not None and arg1.startswith("/"):
+        path: str | None = arg1
+        depth_token = arg2
+    else:
+        path = None
+        depth_token = arg1
+        if arg2 is not None:
+            raise ValueError(
+                f"tree: 多余的参数 {arg2!r}；节点路径须以 / 开头"
+                f"（如 tree /root/GameUI 2），否则只接受单个 depth"
+            )
+    depth = 3
+    if depth_token is not None:
+        try:
+            depth = int(depth_token)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"tree: depth 必须是整数，收到 {depth_token!r}"
+                f"（第二个位置参数只接受深度整数，如 tree /root/GameUI 2；"
+                f"漏写斜杠的路径如 tree GameUI 也会落到这里——节点路径须以 / 开头）"
+            )
+        if depth < 0:
+            raise ValueError(f"tree: depth 必须 >= 0，收到 {depth}")
+    ns._tree_path = path
+    ns._tree_depth = depth
+
+
 def _combo_total_duration(steps: list[dict]) -> float:
     """combo 全部 step 的累计 game-time（给 ``--wait`` 算阻塞时长，issue #90）。
 
@@ -435,8 +471,10 @@ async def cmd_errors(client: GameClient, ns: argparse.Namespace) -> dict:
 
 
 async def cmd_tree(client: GameClient, ns: argparse.Namespace) -> dict:
-    depth = int(ns.depth) if ns.depth else 3
-    return await client.get_scene_tree(depth=depth, max_nodes=ns.max_nodes)
+    # ns._tree_path / ns._tree_depth 由 _preflight_tree 解析填入（连 daemon 前）。
+    return await client.get_scene_tree(
+        depth=ns._tree_depth, max_nodes=ns.max_nodes, path=ns._tree_path
+    )
 
 
 async def cmd_press(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -798,11 +836,24 @@ def _register_combo_args(p: argparse.ArgumentParser) -> None:
 
 
 def _register_tree_args(p: argparse.ArgumentParser) -> None:
+    # issue #150：第一个位置参数以 / 开头当 node path（子树根），否则当 depth。
+    # 消歧 + 校验在 _preflight_tree 里做（argparse 无法靠内容区分两个可选位置参数）。
     p.add_argument(
-        "depth",
+        "tree_arg1",
         nargs="?",
         default=None,
-        help="遍历深度，默认 3",
+        metavar="path-or-depth",
+        help=(
+            "可选：节点绝对路径（以 / 开头，如 /root/GameUI）查该子树根；"
+            "或遍历深度（整数，默认 3）。省略则 dump 当前场景。"
+        ),
+    )
+    p.add_argument(
+        "tree_arg2",
+        nargs="?",
+        default=None,
+        metavar="depth",
+        help="可选：遍历深度，默认 3。此槽位仅在第一个参数是路径时填深度（tree /root/X 2）；不带路径直接 tree <depth>。",
     )
     p.add_argument(
         "--max-nodes",
@@ -1001,10 +1052,11 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
         name="tree",
         handler=cmd_tree,
-        description="dump 当前场景树为 JSON。",
-        positionals=(),  # 由 extra_args 注册（depth + --max-nodes）
-        example="tree 3",
+        description="dump 场景树为 JSON（省略 path 取当前场景，传 /root 起的路径取子树）。",
+        positionals=(),  # 由 extra_args 注册（path-or-depth + depth + --max-nodes）
+        example="tree /root/GameUI 2",
         extra_args=_register_tree_args,
+        preflight=_preflight_tree,
         text_formatter=_fmt_tree_text,
     ),
     RpcSpec(

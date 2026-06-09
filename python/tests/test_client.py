@@ -528,6 +528,48 @@ async def test_get_scene_tree_omits_max_nodes_when_none() -> None:
     assert "max_nodes" not in captured["params"]
 
 
+@pytest.mark.asyncio
+async def test_get_scene_tree_includes_path_when_set() -> None:
+    """issue #150：path 非 None 时进 RPC params。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {"tree": {"name": "GameUI", "type": "Control", "path": "/root/GameUI"}}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.get_scene_tree(depth=2, path="/root/GameUI")
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["params"] == {"depth": 2, "path": "/root/GameUI"}
+
+
+@pytest.mark.asyncio
+async def test_get_scene_tree_omits_path_when_none() -> None:
+    """issue #150：path=None 时 params 不带 path，保留旧客户端兼容路径。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {"tree": {"name": "root", "type": "Node", "path": "/root"}}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.get_scene_tree(depth=2)
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert "path" not in captured["params"]
+
+
 # ---- issue #153: find_nodes 服务端节点搜索 ----
 
 
