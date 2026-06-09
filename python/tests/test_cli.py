@@ -2386,6 +2386,152 @@ def test_tree_max_nodes_default_is_200() -> None:
     assert ns.max_nodes == 200
 
 
+# ── find：服务端节点搜索（issue #153）──
+
+
+def test_find_parser_defaults() -> None:
+    """无过滤 flag 时全部 None、limit 默认 20；--from 落 ns.from_path
+    （``from`` 是 Python 关键字，不能做属性名）。精确档叫 --exact 而非
+    --text——全局输出格式 flag（--json/--text）注入每个子命令，撞名。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(["find", "--type", "Button"])
+    assert ns.type == "Button"
+    assert ns.exact is None
+    assert ns.contains is None
+    assert ns.name_pattern is None
+    assert ns.from_path is None
+    assert ns.limit == 20
+
+
+def test_find_parser_accepts_all_flags() -> None:
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args([
+        "find", "--from", "/root/GameUI", "--type", "Label",
+        "--contains", "开始", "--name-pattern", "Inv*", "--limit", "5",
+    ])
+    assert ns.from_path == "/root/GameUI"
+    assert ns.type == "Label"
+    assert ns.contains == "开始"
+    assert ns.name_pattern == "Inv*"
+    assert ns.limit == 5
+
+
+def test_find_exact_does_not_shadow_global_text_flag() -> None:
+    """``find --exact X --text`` 同时可用：--text 仍是全局输出格式 flag。"""
+    from godot_cli_control.cli import OUTPUT_TEXT, build_parser
+
+    ns = build_parser().parse_args(["find", "--exact", "开始", "--text"])
+    assert ns.exact == "开始"
+    assert ns.output_format == OUTPUT_TEXT
+
+
+def test_find_preflight_requires_at_least_one_filter(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """全空过滤器 = tree 的活，必须在连 daemon **之前**报 EXIT_USAGE（契约 #5）。"""
+    import json as _json
+
+    from godot_cli_control.cli import EXIT_USAGE, main
+
+    class _ShouldNotConnect:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("preflight 失效：find 无过滤器时不应连 daemon")
+
+    import godot_cli_control.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "GameClient", _ShouldNotConnect)
+    monkeypatch.setattr(sys, "argv", ["godot-cli-control", "find"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == EXIT_USAGE
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert "过滤器" in payload["error"]["message"]
+
+
+def test_find_preflight_text_and_contains_exclusive() -> None:
+    """--exact（精确）与 --contains（子串）互斥；单独给任一个都合法。"""
+    from godot_cli_control.cli import _preflight_find, build_parser
+
+    parser = build_parser()
+    ns = parser.parse_args(["find", "--exact", "a", "--contains", "b"])
+    with pytest.raises(ValueError, match="互斥"):
+        _preflight_find(ns)
+    _preflight_find(parser.parse_args(["find", "--exact", "a"]))  # 不抛即通过
+    _preflight_find(parser.parse_args(["find", "--contains", "b"]))
+
+
+def test_cmd_find_passes_namespace_args() -> None:
+    """cmd_find 必须把 ns 的全部 flag 透传给 client.find_nodes。"""
+    from unittest.mock import AsyncMock
+
+    from godot_cli_control.cli import cmd_find
+
+    mock_client = AsyncMock()
+    mock_client.find_nodes = AsyncMock(return_value={"matches": []})
+    ns = __import__("argparse").Namespace(
+        type="Button", exact=None, contains="开始",
+        name_pattern=None, from_path="/root/UI", limit=7,
+    )
+    result = asyncio.run(cmd_find(mock_client, ns))
+    assert result == {"matches": []}
+    mock_client.find_nodes.assert_awaited_once_with(
+        node_type="Button", text=None, text_contains="开始",
+        name_pattern=None, from_path="/root/UI", limit=7,
+    )
+
+
+def test_find_exit_code_follows_match_presence(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """退出码语义对齐 exists：0=有匹配, 1=零匹配——shell ``if`` 可直接用。"""
+    import json as _json
+
+    from godot_cli_control.cli import OUTPUT_JSON, RPC_BY_NAME, _run_rpc
+    from unittest.mock import AsyncMock, patch
+
+    spec = RPC_BY_NAME["find"]
+    ns = __import__("argparse").Namespace(
+        type="Button", exact=None, contains=None,
+        name_pattern=None, from_path=None, limit=20,
+    )
+
+    for matches, expected_rc in ([{"path": "/root/A", "type": "Button"}], 0), ([], 1):
+        mock_client = AsyncMock()
+        mock_client.find_nodes = AsyncMock(return_value={"matches": list(matches)})
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        with patch("godot_cli_control.cli.GameClient", return_value=mock_client):
+            rc = asyncio.run(_run_rpc(spec, ns, port=9999, fmt=OUTPUT_JSON))
+        assert rc == expected_rc, f"matches={matches} 应给 rc={expected_rc}"
+        payload = _json.loads(capsys.readouterr().out.strip())
+        assert payload["ok"] is True
+
+
+def test_fmt_find_text_lists_matches_and_truncation() -> None:
+    """text 模式：每行 path + [type] + text；truncated 时附提示行；空给 no matches。"""
+    from godot_cli_control.cli import _fmt_find_text
+
+    rendered = _fmt_find_text({
+        "matches": [
+            {"path": "/root/UI/@Button@12", "type": "Button", "text": "开始游戏"},
+            {"path": "/root/UI/Panel", "type": "Control"},
+        ],
+        "truncated": True,
+    })
+    lines = rendered.splitlines()
+    assert "/root/UI/@Button@12" in lines[0]
+    assert "Button" in lines[0]
+    assert "开始游戏" in lines[0]
+    assert "/root/UI/Panel" in lines[1]
+    assert "truncated" in lines[-1]
+
+    assert _fmt_find_text({"matches": []}) == "no matches"
+
+
 def test_set_text_value_disables_json_parse() -> None:
     """--text-value 让 set 把 value 当字面字符串，不走 JSON-or-string fallback。"""
     from godot_cli_control.cli import build_parser, _resolve_value_for_set

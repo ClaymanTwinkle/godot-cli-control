@@ -570,6 +570,67 @@ async def test_get_scene_tree_omits_path_when_none() -> None:
     assert "path" not in captured["params"]
 
 
+# ---- issue #153: find_nodes 服务端节点搜索 ----
+
+
+@pytest.mark.asyncio
+async def test_find_nodes_omits_unset_filters() -> None:
+    """只传 type 时，params 仅含 type+limit——服务端按「key 缺失=过滤器未启用」
+    判断，多余空 key 会被误判为启用空过滤器。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"matches": []}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.find_nodes(node_type="Button")
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["method"] == "find_nodes"
+    assert captured["params"] == {"type": "Button", "limit": 20}
+
+
+@pytest.mark.asyncio
+async def test_find_nodes_passes_all_filters() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {"matches": [{"path": "/root/A"}], "truncated": True}
+
+    client = client_mod.GameClient(port=1)
+    monkeypatch_target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        result = await client.find_nodes(
+            node_type="Label",
+            text_contains="开始",
+            name_pattern="Inv*",
+            from_path="/root/GameUI",
+            limit=5,
+        )
+    finally:
+        client_mod.GameClient.request = monkeypatch_target
+    assert captured["params"] == {
+        "type": "Label",
+        "text_contains": "开始",
+        "name_pattern": "Inv*",
+        "from": "/root/GameUI",
+        "limit": 5,
+    }
+    # 响应透传（含 truncated 信号），不做裁剪
+    assert result == {"matches": [{"path": "/root/A"}], "truncated": True}
+
+
 # ---- issue #45: wait_game_time / combo 不能给 game-time 操作设 wall-time 上限 ----
 #
 # 旧公式 seconds*3+10 假设 wall ≤ 3× game，在 Movie Maker (--write-movie) 模式下

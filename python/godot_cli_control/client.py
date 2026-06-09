@@ -321,6 +321,40 @@ class GameClient:
         )
         return result.get("children", [])
 
+    async def find_nodes(
+        self,
+        node_type: str | None = None,
+        text: str | None = None,
+        text_contains: str | None = None,
+        name_pattern: str | None = None,
+        from_path: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """服务端单次遍历搜索节点（issue #153），替代客户端 children+get_text
+        递归 BFS（程序化匿名 UI ``@Button@12`` 唯一可行的定位方式；录制模式下
+        每个 RPC 等帧渲染，几十次往返折成一次）。
+
+        过滤器 AND 语义，至少给一个：``node_type``（按类继承匹配，也认
+        class_name 脚本类）、``text``（text 属性精确）与 ``text_contains``
+        （子串）二选一、``name_pattern``（节点名通配 ``*``/``?``，大小写敏感）。
+        ``from_path`` 限定子树（默认全树 /root，含 autoload 与弹窗）；
+        ``limit`` 默认 20（服务端上限 500），超出附 ``truncated: true``
+        （tree 同款信号）。返回 ``{"matches": [{name,type,path,text?,visible?}],
+        "truncated"?}``，matches 按 BFS 浅层优先排序。未设的过滤器不进
+        params——服务端按 key 缺失判断未启用。"""
+        params: dict = {"limit": limit}
+        if node_type:
+            params["type"] = node_type
+        if text:
+            params["text"] = text
+        if text_contains:
+            params["text_contains"] = text_contains
+        if name_pattern:
+            params["name_pattern"] = name_pattern
+        if from_path:
+            params["from"] = from_path
+        return await self.request("find_nodes", params)
+
     async def screenshot(self, node: str | None = None) -> bytes:
         """Take a screenshot and return PNG bytes.
 

@@ -242,3 +242,26 @@ class GameBridge:
     def get_children(self, path: str, type_filter: str = "") -> list[dict]:
         """获取子节点列表。"""
         return self._run(self._client.get_children(path, type_filter=type_filter))
+
+    def find_nodes(
+        self,
+        node_type: str | None = None,
+        text: str | None = None,
+        text_contains: str | None = None,
+        name_pattern: str | None = None,
+        from_path: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """服务端节点搜索（issue #153）：按 类型/文本/名字通配 一次 RPC 拿齐
+        匹配路径，替代逐层 children+get_text 递归。过滤器语义与
+        ``GameClient.find_nodes`` 一致；返回 ``{"matches": [...], "truncated"?}``。"""
+        return self._run(
+            self._client.find_nodes(
+                node_type=node_type,
+                text=text,
+                text_contains=text_contains,
+                name_pattern=name_pattern,
+                from_path=from_path,
+                limit=limit,
+            )
+        )

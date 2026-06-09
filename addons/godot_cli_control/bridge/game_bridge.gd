@@ -213,6 +213,7 @@ func _register_methods() -> void:
 	_methods["is_visible"] = {"callable": _low_level_api.handle_is_visible, "kind": "sync"}
 	_methods["get_children"] = {"callable": _low_level_api.handle_get_children, "kind": "sync"}
 	_methods["get_scene_tree"] = {"callable": _low_level_api.handle_get_scene_tree, "kind": "sync"}
+	_methods["find_nodes"] = {"callable": _low_level_api.handle_find_nodes, "kind": "sync"}
 	# Wait API（异步）
 	_methods["wait_for_node"] = {"callable": _wait_api.wait_for_node_async, "kind": "async"}
 	_methods["wait_game_time"] = {"callable": _wait_api.wait_game_time_async, "kind": "async"}
