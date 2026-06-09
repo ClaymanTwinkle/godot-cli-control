@@ -238,6 +238,9 @@ func _register_methods() -> void:
 	_methods["input_combo_cancel"] = {
 		"callable": _input_sim_api.handle_combo_cancel, "kind": "sync"
 	}
+	# 坐标级鼠标事件（issue #154，同步）
+	_methods["click_at"] = {"callable": _input_sim_api.handle_click_at, "kind": "sync"}
+	_methods["mouse_move"] = {"callable": _input_sim_api.handle_mouse_move, "kind": "sync"}
 	# 输入模拟（async_with_id：handler 自行通过 _on_async_response 回响）
 	_methods["input_combo"] = {"callable": _input_sim_api.handle_combo, "kind": "async_with_id"}
 	# Scene API（异步）

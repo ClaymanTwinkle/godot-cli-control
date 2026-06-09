@@ -276,8 +276,10 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 - `combo --steps-json '[...]' [--wait]` (or `combo file.json` / `combo -` for stdin) — sequence
 - `combo-cancel` — abort running combo
 - `release-all` — release everything
+- `click-at <x> <y>` (or `--node <path>`) `[--button left|right|middle] [--double]` — coordinate-level mouse click (down→up), injected through the real event pipeline
+- `mouse-move <x> <y>` (or `--node <path>`) — inject one mouse-motion event (carries `relative`)
 
-`press` / `tap` / `hold` / `combo` inject an `InputEventAction` through the engine's event pipeline, so both polling APIs (`is_action_pressed`, `get_vector`) **and** event callbacks (`_input`, `_unhandled_input`) will see the injected input. Note: `InputEventAction` carries no mouse coordinates — position-dependent `_gui_input` widgets need `click` instead.
+`press` / `tap` / `hold` / `combo` inject an `InputEventAction` through the engine's event pipeline, so both polling APIs (`is_action_pressed`, `get_vector`) **and** event callbacks (`_input`, `_unhandled_input`) will see the injected input. `InputEventAction` carries no mouse coordinates — for position-dependent `_gui_input` widgets use `click-at` / `mouse-move` (coordinate-level, **viewport physical pixels**; `--node` targets a node's screen center) or `click <path>` (node-level UI click).
 
 `tap` / `hold` / `combo` are **async by default** — they return as soon as the input is armed, *before* the in-game motion finishes (see *Common pitfalls*). Add **`--wait`** to block until the action's duration elapses (game-time) so the next `get` reads the settled state — it folds an implicit `wait-time <duration>` into the same command/connection.
 
@@ -459,6 +461,10 @@ positional arguments:
     run                启动 daemon → 跑脚本 → 停 daemon
     init               在 Godot 项目根一键接入插件
     click              对 Control/Button 节点触发点击。
+    click-at           按坐标注入鼠标点击（down→up，走真实事件管线）。坐标用 viewport 物理像素；或用 --node
+                       取节点屏幕中心点。区别于 click（节点级 UI 点击）：能命中依赖光标位置的 _gui_input 控件。
+    mouse-move         按坐标注入一个鼠标移动事件（带 relative）。坐标用 viewport 物理像素；或用 --node
+                       取节点屏幕中心点。
     screenshot         截屏并写 PNG 文件。**路径必填**（旧版本可省、把 base64 喷到 stdout ——
                        已删，避免撑爆 AI 上下文）。
     sprite-info        渲染态聚合查询（issue #101）：Sprite2D / AnimatedSprite2D /
@@ -773,6 +779,52 @@ options:
 
 示例:
   godot-cli-control click /root/Main/StartButton
+
+$ godot-cli-control click-at --help
+usage: godot-cli-control click-at [-h] [--node NODE]
+                                  [--button {left,right,middle}] [--double]
+                                  [--json] [--text] [--no-json]
+                                  [x] [y]
+
+按坐标注入鼠标点击（down→up，走真实事件管线）。坐标用 viewport 物理像素；或用 --node 取节点屏幕中心点。区别于 click（节点级 UI 点击）：能命中依赖光标位置的 _gui_input 控件。
+
+positional arguments:
+  x                     viewport 物理像素 X（与 --node 二选一）
+  y                     viewport 物理像素 Y
+
+options:
+  -h, --help            show this help message and exit
+  --node NODE           取该节点屏幕中心点（绝对路径），与位置坐标二选一
+  --button {left,right,middle}
+                        鼠标键，默认 left
+  --double              双击（InputEventMouseButton.double_click=true）
+  --json                输出 JSON 信封（默认）
+  --text                输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json             --text 别名
+
+示例:
+  godot-cli-control click-at 320 240  |  click-at --node /root/Main/Slot3 --button right
+
+$ godot-cli-control mouse-move --help
+usage: godot-cli-control mouse-move [-h] [--node NODE] [--json] [--text]
+                                    [--no-json]
+                                    [x] [y]
+
+按坐标注入一个鼠标移动事件（带 relative）。坐标用 viewport 物理像素；或用 --node 取节点屏幕中心点。
+
+positional arguments:
+  x            viewport 物理像素 X（与 --node 二选一）
+  y            viewport 物理像素 Y
+
+options:
+  -h, --help   show this help message and exit
+  --node NODE  移到该节点屏幕中心点（绝对路径），与位置坐标二选一
+  --json       输出 JSON 信封（默认）
+  --text       输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json    --text 别名
+
+示例:
+  godot-cli-control mouse-move 400 300  |  mouse-move --node /root/Player
 
 $ godot-cli-control screenshot --help
 usage: godot-cli-control screenshot [-h] [--node NODE_PATH] [--json] [--text]
@@ -1401,6 +1453,8 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | Method | CLI equivalent |
 |---|---|
 | `await client.click(path)` | `click <path>` |
+| `await client.click_at(x, y, node=None, button="left", double=False)` | `click-at <x> <y> \| --node <path> [--button] [--double]` |
+| `await client.mouse_move(x, y, node=None)` | `mouse-move <x> <y> \| --node <path>` |
 | `await client.get_property(path, prop)` | `get <path> <prop>` — returns bare value only (no type field); use `client.request("get_property", ...)` to get `{"value", "type"}` shape |
 | `await client.get_properties(path, props)` | `get <path> <prop1> <prop2> ...` — returns `{prop: bare_value, ...}` dict (no type fields); use `client.request("get_properties", ...)` for full shape |
 | `await client.set_property(path, prop, value)` | `set <path> <prop> <json-value>` |
@@ -1537,7 +1591,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **`run <script>` opens a window even though stdout is piped** — by design. `run` grep's the script for `screenshot` and force-flips to GUI when found, so `bridge.screenshot(...)` doesn't 1006-fail under the dummy renderer. Pass `--no-gui-auto` to disable detection; explicit `--headless` always wins. See issue #65.
 - **`screenshot` used to fail with `1006` on the first call** — fixed. GameBridge now waits for the viewport's first frame before opening the port, so `connect succeeded` implies `viewport has rendered ≥ once`. The magic `bridge.wait(1.5)` before the first screenshot in older example scripts is no longer needed.
 - **`screenshot` of a large / hiDPI window used to fail with `-1001 "Connection closed by server"`** — fixed (#149). The base64 payload used to exceed the WebSocket client's 1 MB message limit (close code 1009), which surfaced as a *connection* error only on complex/large frames — looking like random flakiness. The daemon now writes the PNG to disk directly, so no image bytes cross the socket at any size. Workarounds like shrinking the window to 1280×720 before capturing are obsolete — remove them.
-- **`press`/`tap`/`hold`/`combo` inject `InputEventAction` (no mouse coordinates) — position-dependent `_gui_input` widgets need `click` instead.** These commands route through the engine's event pipeline, so `_input` / `_unhandled_input` callbacks receive the event; however, `InputEventAction` does not carry a screen position. UI controls that rely on cursor position (e.g. `TextureButton` with a custom shape, `TouchScreenButton`) won't fire `_gui_input` correctly — use `click <path>` for those.
+- **Coordinate-level mouse: `click-at` / `mouse-move` hit position-dependent widgets that `click` / `InputEventAction` can't.** `press`/`tap`/`hold`/`combo` inject `InputEventAction` (no screen position); `click <path>` emits straight to one already-known node. Controls that react to cursor position (a `TextureButton` with a custom shape, `TouchScreenButton`, world-space `Area2D` picking) need a real positioned mouse event — use `click-at <x> <y>` / `mouse-move <x> <y>` (or `--node <path>` for a node's screen center). Coordinates are **viewport physical pixels** (same system as `screenshot --node`). These inject via `Viewport.push_input`, so `_input` / `_gui_input` / physics picking see correct `position` / `relative` / `button_mask` — **but the global `Input` singleton polling (`get_global_mouse_position`, `is_mouse_button_pressed`) is NOT updated; read mouse state from the event, not by polling.** `Area2D` picking additionally requires the project's *physics object picking* to be enabled.
 - **`wait-signal` must be armed before the action that fires it — each CLI call opens a new connection.** Every invocation of `godot-cli-control` is a fresh process that connects, makes the request, and disconnects. If you call `wait-signal` after the signal has already fired, you'll always timeout. Shell pattern: `godot-cli-control wait-signal /root/A my_signal & godot-cli-control tap jump; wait` — background the wait first, then trigger the action. If you need both on a single connection, use a `run` script (`def run(bridge): ...`) with `client.wait_signal(...)`.
 - **Replace magic `wait-time` sleeps with `wait-prop` or `wait-frames`.** Fixed `wait-time 0.3` guesses are fragile — they're too long when the game is fast, too short under load. Prefer: `wait-prop /root/Player on_floor true` (wait for state) or `wait-frames 4` (wait for a specific number of frames to render). These are more reliable and often 2-10× faster.
 - **`get` on a compound Variant returns an array + type — you can round-trip it straight into `set`.** `get /root/Player position` returns `{"value": [-2480.0, 1400.0], "type": "Vector2"}`. That `value` array is the exact format `set` accepts: `set /root/Player position '[-2480.0, 1400.0]'`. No conversion needed.

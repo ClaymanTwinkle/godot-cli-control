@@ -4288,3 +4288,128 @@ async def test_cmd_tree_forwards_path_and_depth() -> None:
     _preflight_tree(ns)
     await cmd_tree(_FakeClient(), ns)
     assert captured == {"depth": 2, "max_nodes": 200, "path": "/root/GameUI"}
+
+
+# ── issue #154：click-at / mouse-move 参数解析 + preflight + handler ──
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (
+            ["click-at", "320", "240"],
+            {"x": "320", "y": "240", "node": None, "button": "left", "double": False},
+        ),
+        (
+            ["click-at", "--node", "/root/Foo", "--button", "right"],
+            {"x": None, "y": None, "node": "/root/Foo", "button": "right", "double": False},
+        ),
+        (["click-at", "10", "20", "--double"], {"x": "10", "y": "20", "double": True}),
+        (["click-at", "5", "6", "--button", "middle"], {"button": "middle"}),
+        (["mouse-move", "100", "120"], {"x": "100", "y": "120", "node": None}),
+        (["mouse-move", "--node", "/root/Bar"], {"x": None, "y": None, "node": "/root/Bar"}),
+    ],
+)
+def test_click_at_mouse_move_parse(
+    argv: list[str], expected: dict[str, Any]
+) -> None:
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(argv)
+    assert ns.cmd == argv[0]
+    for attr, val in expected.items():
+        assert getattr(ns, attr) == val, (
+            f"{argv[0]}: ns.{attr} 期望 {val!r}，实际 {getattr(ns, attr)!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "argv,err_match",
+    [
+        (["click-at", "10", "20", "--node", "/root/Foo"], "互斥"),
+        (["click-at"], "坐标"),
+        (["click-at", "10"], "坐标"),  # 只给 x，y 缺
+        (["click-at", "abc", "def"], "数字"),
+        (["mouse-move", "5", "10", "--node", "/root/Bar"], "互斥"),
+        (["mouse-move"], "坐标"),
+    ],
+)
+def test_click_at_mouse_move_preflight_usage_errors(
+    argv: list[str], err_match: str
+) -> None:
+    from godot_cli_control.cli import RPC_SPECS, build_parser
+
+    spec = next(s for s in RPC_SPECS if s.name == argv[0])
+    assert spec.preflight is not None, f"{argv[0]} 应有 preflight"
+    ns = build_parser().parse_args(argv)
+    with pytest.raises(ValueError, match=err_match):
+        spec.preflight(ns)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["click-at", "10", "20"],
+        ["click-at", "--node", "/root/Foo"],
+        ["mouse-move", "100", "120"],
+        ["mouse-move", "--node", "/root/Bar"],
+    ],
+)
+def test_click_at_mouse_move_preflight_ok(argv: list[str]) -> None:
+    from godot_cli_control.cli import RPC_SPECS, build_parser
+
+    spec = next(s for s in RPC_SPECS if s.name == argv[0])
+    ns = build_parser().parse_args(argv)
+    spec.preflight(ns)  # 合法用法不应抛
+
+
+@pytest.mark.asyncio
+async def test_cmd_click_at_passes_coords_to_client() -> None:
+    from godot_cli_control.cli import build_parser, cmd_click_at
+
+    captured: dict = {}
+
+    class _FakeClient:
+        async def click_at(self, x, y, *, node=None, button="left", double=False):
+            captured.update(x=x, y=y, node=node, button=button, double=double)
+            return {"x": x, "y": y}
+
+    ns = build_parser().parse_args(["click-at", "320", "240", "--button", "right"])
+    await cmd_click_at(_FakeClient(), ns)
+    # 字面坐标走 float 转换
+    assert captured == {
+        "x": 320.0, "y": 240.0, "node": None, "button": "right", "double": False
+    }
+
+
+@pytest.mark.asyncio
+async def test_cmd_click_at_node_mode() -> None:
+    from godot_cli_control.cli import build_parser, cmd_click_at
+
+    captured: dict = {}
+
+    class _FakeClient:
+        async def click_at(self, x, y, *, node=None, button="left", double=False):
+            captured.update(node=node, button=button, double=double)
+            return {"x": 1, "y": 2}
+
+    ns = build_parser().parse_args(["click-at", "--node", "/root/Slot", "--double"])
+    await cmd_click_at(_FakeClient(), ns)
+    assert captured["node"] == "/root/Slot"
+    assert captured["double"] is True
+
+
+@pytest.mark.asyncio
+async def test_cmd_mouse_move_passes_coords() -> None:
+    from godot_cli_control.cli import build_parser, cmd_mouse_move
+
+    captured: dict = {}
+
+    class _FakeClient:
+        async def mouse_move(self, x, y, *, node=None):
+            captured.update(x=x, y=y, node=node)
+            return {"x": x, "y": y, "relative": [x, y]}
+
+    ns = build_parser().parse_args(["mouse-move", "100", "120"])
+    await cmd_mouse_move(_FakeClient(), ns)
+    assert captured == {"x": 100.0, "y": 120.0, "node": None}

@@ -577,6 +577,51 @@ class GameClient:
         result = await self.request("input_get_pressed")
         return [str(a) for a in result.get("actions", [])]
 
+    # 鼠标按钮名 → Godot MOUSE_BUTTON_* 常量（服务端期望 int）。issue #154。
+    _MOUSE_BUTTONS = {"left": 1, "right": 2, "middle": 3}
+
+    async def click_at(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        *,
+        node: str | None = None,
+        button: str = "left",
+        double: bool = False,
+    ) -> dict:
+        """坐标级鼠标点击（issue #154）：down→up。
+
+        ``node`` 给定时取其屏幕中心点（忽略 x/y），否则用字面 viewport 物理像素
+        坐标。``button`` ∈ left/right/middle。区别于 ``click``（节点级 UI 点击）：
+        走真实事件管线，能命中依赖光标位置的 _gui_input 控件。
+        """
+        if button not in self._MOUSE_BUTTONS:
+            raise ValueError(
+                f"click_at: 未知 button {button!r}（可选 left/right/middle）"
+            )
+        params: dict = {"button": self._MOUSE_BUTTONS[button], "double": double}
+        if node is not None:
+            params["node"] = node
+        else:
+            params["x"] = x
+            params["y"] = y
+        return await self.request("click_at", params)
+
+    async def mouse_move(
+        self, x: float = 0.0, y: float = 0.0, *, node: str | None = None
+    ) -> dict:
+        """坐标级鼠标移动（issue #154）：产生一个带 relative 的 InputEventMouseMotion。
+
+        ``node`` 给定时移到其屏幕中心点，否则用字面 viewport 物理像素坐标。
+        """
+        params: dict = {}
+        if node is not None:
+            params["node"] = node
+        else:
+            params["x"] = x
+            params["y"] = y
+        return await self.request("mouse_move", params)
+
     async def list_input_actions(
         self, include_builtin: bool = False
     ) -> list[str]:

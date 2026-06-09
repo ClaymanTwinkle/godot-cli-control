@@ -1262,3 +1262,123 @@ def test_client_port_takes_precedence_over_instance(tmp_path: Path, monkeypatch:
     # instance="server" 对应目录不存在；若 instance 触发了 IO 则会报错/回退 DEFAULT_PORT
     c = GameClient(port=1234, instance="server")
     assert c._port == 1234
+
+
+# ── issue #154：坐标级鼠标事件（click_at / mouse_move，P1）──
+
+
+@pytest.mark.asyncio
+async def test_click_at_sends_literal_coords() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"success": True}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.click_at(50, 60)
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["method"] == "click_at"
+    assert captured["params"] == {"x": 50, "y": 60, "button": 1, "double": False}
+
+
+@pytest.mark.asyncio
+async def test_click_at_node_omits_coords_and_maps_button() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {"success": True}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.click_at(0, 0, node="/root/Foo", button="right")
+    finally:
+        client_mod.GameClient.request = target
+    # node 模式不带 x/y；button 名映射成 Godot MOUSE_BUTTON_RIGHT=2
+    assert captured["params"] == {"node": "/root/Foo", "button": 2, "double": False}
+    assert "x" not in captured["params"] and "y" not in captured["params"]
+
+
+@pytest.mark.asyncio
+async def test_click_at_middle_button_and_double() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.click_at(10, 10, button="middle", double=True)
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["params"]["button"] == 3  # MOUSE_BUTTON_MIDDLE
+    assert captured["params"]["double"] is True
+
+
+@pytest.mark.asyncio
+async def test_click_at_invalid_button_raises() -> None:
+    import godot_cli_control.client as client_mod
+
+    client = client_mod.GameClient(port=1)
+    # 映射阶段就抛 ValueError，不发请求（不连接）
+    with pytest.raises(ValueError, match="button"):
+        await client.click_at(10, 10, button="scroll")
+
+
+@pytest.mark.asyncio
+async def test_mouse_move_sends_literal_coords() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"relative": [100, 120]}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.mouse_move(100, 120)
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["method"] == "mouse_move"
+    assert captured["params"] == {"x": 100, "y": 120}
+
+
+@pytest.mark.asyncio
+async def test_mouse_move_node_omits_coords() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.mouse_move(0, 0, node="/root/Bar")
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["params"] == {"node": "/root/Bar"}

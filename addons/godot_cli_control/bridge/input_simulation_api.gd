@@ -20,6 +20,9 @@ var _combo_completed_steps: int = 0
 var _combo_request_id: String = ""
 # 用于 GameBridge 发送响应
 var _send_response_callback: Callable = Callable()
+# 坐标级鼠标事件（issue #154）：上一次注入的鼠标位置，用于 InputEventMouseMotion
+# 的 relative 计算。viewport 物理像素系，初始 (0,0)。
+var _last_mouse_pos: Vector2 = Vector2.ZERO
 
 
 func setup(send_response: Callable) -> void:
@@ -291,6 +294,93 @@ func _do_release(action: String) -> void:
 	ev.action = action
 	ev.pressed = false
 	Input.parse_input_event(ev)
+
+
+# ── 坐标级鼠标事件注入（issue #154，P1: click-at / mouse-move）──
+#
+# 经 viewport 注入真实事件管线（详见 _emit_mouse_button 上方的路径取舍说明），
+# 让依赖光标位置的 _gui_input 控件 / 全局 _input / 物理 picking 能命中——这是
+# click（定点 emit、需预知目标节点）补不上的坐标级能力。坐标统一用 viewport 物理
+# 像素系；--node 糖衣复用 RenderApi.compute_node_screen_rect 取节点中心点
+# （已含 viewport.get_final_transform()，与 screenshot 取图侧同系，#137）。
+
+func handle_click_at(params: Dictionary) -> Dictionary:
+	var point: Variant = _resolve_point(params, "node", "x", "y")
+	if point is Dictionary:
+		return point as Dictionary
+	var pos: Vector2 = point as Vector2
+	var button: int = int(params.get("button", MOUSE_BUTTON_LEFT))
+	var double: bool = bool(params.get("double", false))
+	_emit_mouse_button(pos, button, true, double)
+	_emit_mouse_button(pos, button, false, double)
+	return {"success": true, "x": pos.x, "y": pos.y, "button": button, "double": double}
+
+
+func handle_mouse_move(params: Dictionary) -> Dictionary:
+	var point: Variant = _resolve_point(params, "node", "x", "y")
+	if point is Dictionary:
+		return point as Dictionary
+	var pos: Vector2 = point as Vector2
+	var rel: Vector2 = pos - _last_mouse_pos
+	_emit_mouse_motion(pos, 0)
+	return {"success": true, "x": pos.x, "y": pos.y, "relative": [rel.x, rel.y]}
+
+
+## 解析坐标：优先 ``node`` key（取节点中心点），否则字面 ``x``/``y``。
+## 返回 Vector2（物理像素）或 error Dictionary（1001 找不到 / 1010 非 CanvasItem /
+## -32602 既无 node 又无坐标）。compute_node_screen_rect 失败时本身就返回
+## {"error": {...}}（1010），直接透传。
+func _resolve_point(params: Dictionary, node_key: String, x_key: String, y_key: String) -> Variant:
+	if params.has(node_key):
+		var path: String = params[node_key] as String
+		var node: Node = get_tree().root.get_node_or_null(path)
+		if node == null:
+			return _err(CliControlErrorCodes.NODE_NOT_FOUND, "Node not found: %s" % path)
+		var rect_or_err: Variant = RenderApi.compute_node_screen_rect(node)
+		if rect_or_err is Dictionary:
+			return rect_or_err
+		return (rect_or_err as Rect2).get_center()
+	if params.has(x_key) and params.has(y_key):
+		return Vector2(params[x_key] as float, params[y_key] as float)
+	return _err(
+		CliControlErrorCodes.INVALID_PARAMS,
+		"requires literal x,y or a node path (got neither)",
+	)
+
+
+# 鼠标事件统一走 get_viewport().push_input()，而非 action 事件用的
+# Input.parse_input_event。原因（与 action 的取舍不同，刻意区分）：
+#   1. relative 自控：parse_input_event 会用 Input 单例内部追踪的 mouse_pos
+#      重算 InputEventMouseMotion.relative，覆盖我们设的差值（headless 下 mouse_pos
+#      恒 (0,0)，relative 直接错）。push_input 保留 ev.relative —— 这是 P2 drag
+#      插值序列正确性的刚需。
+#   2. 同路径保序：button 与 motion 必须走同一管道，否则 Input 单例的 buffer 与
+#      viewport 直分发的到达顺序可能错乱（drag 的 down→motion→up 会乱序）。
+#   3. 与现有 click handler 的直接 emit 同精神（都不经 Input 单例）。
+# 已知限制：不更新 Input 单例的全局鼠标轮询（get_global_mouse_position /
+# is_mouse_button_pressed）。事件的 position / relative / button_mask 对
+# _input / _gui_input / 物理 picking 有效；读鼠标态请从事件参数读，勿用轮询。
+func _emit_mouse_button(pos: Vector2, button: int, pressed: bool, double: bool = false) -> void:
+	var ev: InputEventMouseButton = InputEventMouseButton.new()
+	ev.button_index = button
+	ev.pressed = pressed
+	ev.double_click = double
+	ev.position = pos
+	ev.global_position = pos
+	# 按下时带本键的 button_mask（松开归零），与真实事件一致。mask = 1 << (idx-1)。
+	ev.button_mask = (1 << (button - 1)) if pressed else 0
+	get_viewport().push_input(ev)
+	_last_mouse_pos = pos
+
+
+func _emit_mouse_motion(pos: Vector2, button_mask: int = 0) -> void:
+	var ev: InputEventMouseMotion = InputEventMouseMotion.new()
+	ev.position = pos
+	ev.global_position = pos
+	ev.relative = pos - _last_mouse_pos
+	ev.button_mask = button_mask
+	get_viewport().push_input(ev)
+	_last_mouse_pos = pos
 
 
 func _err(code: int, message: String) -> Dictionary:
