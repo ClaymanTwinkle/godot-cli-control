@@ -1382,3 +1382,93 @@ async def test_mouse_move_node_omits_coords() -> None:
     finally:
         client_mod.GameClient.request = target
     assert captured["params"] == {"node": "/root/Bar"}
+
+
+# ── issue #154 P2：坐标级拖拽（drag）──
+
+
+@pytest.mark.asyncio
+async def test_drag_literal_coords_uses_long_op_timeout() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return {"success": True, "from": [0, 0], "to": [100, 50]}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.drag(0, 0, 100, 50)
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["method"] == "drag"
+    assert captured["params"] == {
+        "x1": 0, "y1": 0, "x2": 100, "y2": 50,
+        "button": 1, "duration": 0.3, "steps": 10,
+    }
+    # 长操作生死线（受 time_scale 的 game-time 插值），与 combo / wait 同源
+    assert captured["timeout"] == client_mod._resolve_long_op_timeout()
+
+
+@pytest.mark.asyncio
+async def test_drag_node_endpoints_omit_coords() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.drag(from_node="/root/A", to_node="/root/B", button="right")
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["params"] == {
+        "from_node": "/root/A", "to_node": "/root/B",
+        "button": 2, "duration": 0.3, "steps": 10,
+    }
+    for k in ("x1", "y1", "x2", "y2"):
+        assert k not in captured["params"]
+
+
+@pytest.mark.asyncio
+async def test_drag_mixed_from_node_to_literal() -> None:
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["params"] = params
+        return {}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.drag(0, 0, 200, 150, from_node="/root/A", duration=0.5, steps=20)
+    finally:
+        client_mod.GameClient.request = target
+    # from 走节点、to 走字面：两端独立
+    assert captured["params"] == {
+        "from_node": "/root/A", "x2": 200, "y2": 150,
+        "button": 1, "duration": 0.5, "steps": 20,
+    }
+
+
+@pytest.mark.asyncio
+async def test_drag_invalid_button_raises() -> None:
+    import godot_cli_control.client as client_mod
+
+    client = client_mod.GameClient(port=1)
+    # 映射阶段就抛，不发请求
+    with pytest.raises(ValueError, match="button"):
+        await client.drag(0, 0, 1, 1, button="scroll")

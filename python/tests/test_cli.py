@@ -4413,3 +4413,146 @@ async def test_cmd_mouse_move_passes_coords() -> None:
     ns = build_parser().parse_args(["mouse-move", "100", "120"])
     await cmd_mouse_move(_FakeClient(), ns)
     assert captured == {"x": 100.0, "y": 120.0, "node": None}
+
+
+# ── issue #154 P2：drag 参数解析 + preflight + handler ──
+# CLI 面：``drag [x1 y1 x2 y2] [--from-node P] [--to-node Q] [--button] [--duration]
+# [--steps]``。坐标用变长 coords 列表 + 内容消歧（tree 同款）：用 --from-node /
+# --to-node 的那一端不占坐标，故 coords 个数 ∈ {0,2,4}。
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (
+            ["drag", "0", "0", "100", "50"],
+            {
+                "coords": ["0", "0", "100", "50"],
+                "from_node": None, "to_node": None,
+                "button": "left", "duration": "0.3", "steps": "10",
+            },
+        ),
+        (
+            ["drag", "--from-node", "/root/A", "--to-node", "/root/B", "--button", "right"],
+            {"coords": [], "from_node": "/root/A", "to_node": "/root/B", "button": "right"},
+        ),
+        (
+            ["drag", "10", "20", "--to-node", "/root/B", "--duration", "0.5", "--steps", "20"],
+            {"coords": ["10", "20"], "to_node": "/root/B", "duration": "0.5", "steps": "20"},
+        ),
+    ],
+)
+def test_drag_parse(argv: list[str], expected: dict[str, Any]) -> None:
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(argv)
+    assert ns.cmd == "drag"
+    for attr, val in expected.items():
+        assert getattr(ns, attr) == val, (
+            f"drag: ns.{attr} 期望 {val!r}，实际 {getattr(ns, attr)!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "argv,err_match",
+    [
+        # 用 --from-node 的同时又给了 4 个坐标 → 起点端不该占坐标，个数对不上
+        (["drag", "0", "0", "1", "1", "--from-node", "/root/A"], "坐标"),
+        (["drag", "0", "0", "1", "1", "--to-node", "/root/B"], "坐标"),
+        (["drag", "--from-node", "/root/A"], "坐标"),  # 终点端缺坐标
+        (["drag", "0", "0"], "坐标"),                  # 终点端缺坐标
+        (["drag", "abc", "def", "1", "1"], "数字"),     # 坐标非数字
+        (["drag", "0", "0", "1", "1", "--steps", "0"], "steps"),
+        (["drag", "0", "0", "1", "1", "--duration", "-1"], "duration"),
+    ],
+)
+def test_drag_preflight_usage_errors(argv: list[str], err_match: str) -> None:
+    from godot_cli_control.cli import RPC_SPECS, build_parser
+
+    spec = next(s for s in RPC_SPECS if s.name == "drag")
+    assert spec.preflight is not None
+    ns = build_parser().parse_args(argv)
+    with pytest.raises(ValueError, match=err_match):
+        spec.preflight(ns)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["drag", "0", "0", "100", "50"],                            # 起终都用坐标
+        ["drag", "--from-node", "/root/A", "--to-node", "/root/B"],  # 起终都用节点
+        ["drag", "10", "20", "--to-node", "/root/B"],               # 起点坐标 + 终点节点
+        ["drag", "--from-node", "/root/A", "30", "40"],             # 起点节点 + 终点坐标
+    ],
+)
+def test_drag_preflight_ok(argv: list[str]) -> None:
+    from godot_cli_control.cli import RPC_SPECS, build_parser
+
+    spec = next(s for s in RPC_SPECS if s.name == "drag")
+    ns = build_parser().parse_args(argv)
+    spec.preflight(ns)  # 合法用法不抛
+
+
+@pytest.mark.asyncio
+async def test_cmd_drag_literal_coords() -> None:
+    from godot_cli_control.cli import build_parser, cmd_drag
+
+    captured: dict = {}
+
+    class _FakeClient:
+        async def drag(self, x1, y1, x2, y2, *, from_node=None, to_node=None,
+                       button="left", duration=0.3, steps=10):
+            captured.update(
+                x1=x1, y1=y1, x2=x2, y2=y2, from_node=from_node, to_node=to_node,
+                button=button, duration=duration, steps=steps,
+            )
+            return {"from": [x1, y1], "to": [x2, y2]}
+
+    ns = build_parser().parse_args(
+        ["drag", "0", "0", "100", "50", "--button", "right", "--steps", "5"]
+    )
+    await cmd_drag(_FakeClient(), ns)
+    # cmd_drag 自己经 _resolve_drag 把坐标转 float、duration/steps 归一
+    assert captured == {
+        "x1": 0.0, "y1": 0.0, "x2": 100.0, "y2": 50.0,
+        "from_node": None, "to_node": None,
+        "button": "right", "duration": 0.3, "steps": 5,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cmd_drag_node_endpoints() -> None:
+    from godot_cli_control.cli import build_parser, cmd_drag
+
+    captured: dict = {}
+
+    class _FakeClient:
+        async def drag(self, x1, y1, x2, y2, *, from_node=None, to_node=None,
+                       button="left", duration=0.3, steps=10):
+            captured.update(from_node=from_node, to_node=to_node)
+            return {"from": [1, 2], "to": [3, 4]}
+
+    ns = build_parser().parse_args(["drag", "--from-node", "/root/A", "--to-node", "/root/B"])
+    await cmd_drag(_FakeClient(), ns)
+    assert captured == {"from_node": "/root/A", "to_node": "/root/B"}
+
+
+@pytest.mark.asyncio
+async def test_cmd_drag_mixed_from_node_to_literal() -> None:
+    from godot_cli_control.cli import build_parser, cmd_drag
+
+    captured: dict = {}
+
+    class _FakeClient:
+        async def drag(self, x1, y1, x2, y2, *, from_node=None, to_node=None,
+                       button="left", duration=0.3, steps=10):
+            captured.update(x1=x1, y1=y1, x2=x2, y2=y2, from_node=from_node, to_node=to_node)
+            return {}
+
+    # 起点用节点，终点 30 40 由 coords 落到 to 端（内容消歧）
+    ns = build_parser().parse_args(["drag", "--from-node", "/root/A", "30", "40"])
+    await cmd_drag(_FakeClient(), ns)
+    assert captured == {
+        "x1": 0.0, "y1": 0.0, "x2": 30.0, "y2": 40.0,
+        "from_node": "/root/A", "to_node": None,
+    }

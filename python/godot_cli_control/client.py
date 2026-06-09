@@ -622,6 +622,52 @@ class GameClient:
             params["y"] = y
         return await self.request("mouse_move", params)
 
+    async def drag(
+        self,
+        x1: float = 0.0,
+        y1: float = 0.0,
+        x2: float = 0.0,
+        y2: float = 0.0,
+        *,
+        from_node: str | None = None,
+        to_node: str | None = None,
+        button: str = "left",
+        duration: float = 0.3,
+        steps: int = 10,
+    ) -> dict:
+        """坐标级拖拽（issue #154 P2）：start 按下 → 按 duration/steps 插值移动 → end 松开。
+
+        两端各自二选一：``from_node`` / ``to_node`` 给定时取对应节点屏幕中心点
+        （忽略字面坐标），否则用字面 viewport 物理像素坐标。``button`` ∈
+        left/right/middle。``duration`` 是 game-time（受 Engine.time_scale，与
+        combo 同语义），``steps`` 是插值分段数。
+
+        客户端用长操作生死线（同 combo / wait_game_time，issue #45）：drag 完成
+        是 game-time 维度，wall-time 不可预测；死连接靠 ws ping/pong 兜底。
+        """
+        if button not in self._MOUSE_BUTTONS:
+            raise ValueError(
+                f"drag: 未知 button {button!r}（可选 left/right/middle）"
+            )
+        params: dict = {
+            "button": self._MOUSE_BUTTONS[button],
+            "duration": duration,
+            "steps": steps,
+        }
+        if from_node is not None:
+            params["from_node"] = from_node
+        else:
+            params["x1"] = x1
+            params["y1"] = y1
+        if to_node is not None:
+            params["to_node"] = to_node
+        else:
+            params["x2"] = x2
+            params["y2"] = y2
+        return await self.request(
+            "drag", params, timeout=_resolve_long_op_timeout()
+        )
+
     async def list_input_actions(
         self, include_builtin: bool = False
     ) -> list[str]:

@@ -427,3 +427,109 @@ func test_mouse_move_node_returns_center() -> void:
 	var result: Dictionary = _api.handle_mouse_move({"node": String(ctl.get_path())})
 	assert_does_not_have(result, "error")
 	assert_eq(Vector2(result.x, result.y), expected, "mouse-move --node 应移到节点中心")
+
+
+# ── drag（issue #154 P2）────────────────────────────────────────────
+# handle_drag 是协程（kind=async）：button-down 与 mutex 在第一个 await 前同步完成，
+# 随后按 duration/steps 分摊插值出 motion，最后 button-up。测试统一用小 duration，
+# await 整个协程拿到所有已注入事件（push_input 同步分发，与 click-at 测试同源）。
+
+func test_drag_emits_down_interp_motions_up() -> void:
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	var result: Dictionary = await _api.handle_drag(
+		{"x1": 0.0, "y1": 0.0, "x2": 100.0, "y2": 50.0, "duration": 0.05, "steps": 5}
+	)
+	assert_does_not_have(result, "error")
+	await wait_process_frames(2)
+	assert_eq(probe.buttons.size(), 2, "drag 应注入 down + up 两个按钮事件")
+	assert_eq(probe.motions.size(), 5, "steps=5 应注入 5 个 motion")
+	var down: InputEventMouseButton = probe.buttons[0]
+	var up: InputEventMouseButton = probe.buttons[1]
+	assert_true(down.pressed, "第一个按钮事件应为 down")
+	assert_false(up.pressed, "最后一个按钮事件应为 up")
+	assert_eq(down.position, Vector2(0, 0), "down 落在起点")
+	assert_eq(up.position, Vector2(100, 50), "up 落在终点")
+	# 线性插值：i/steps，i=1..5 → (20,10) (40,20) (60,30) (80,40) (100,50)
+	assert_eq(probe.motions[0].position, Vector2(20, 10), "首个 motion = lerp(1/5)")
+	assert_eq(probe.motions[4].position, Vector2(100, 50), "末个 motion 落在终点")
+	assert_eq(probe.motions[0].relative, Vector2(20, 10), "首个 motion relative = 与起点差值")
+	assert_eq(Vector2(result.to[0], result.to[1]), Vector2(100, 50), "result.to 回终点")
+
+
+func test_drag_motions_carry_button_mask() -> void:
+	# drag 过程中按钮处于按下态：每个 motion 的 button_mask 必须带住该键，
+	# 否则被拖物体的 _gui_input 收到「没按键的移动」会误判为悬停而非拖拽。
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	await _api.handle_drag(
+		{"x1": 0.0, "y1": 0.0, "x2": 60.0, "y2": 0.0, "duration": 0.03, "steps": 3}
+	)
+	await wait_process_frames(2)
+	for mv: InputEventMouseMotion in probe.motions:
+		assert_eq(
+			mv.button_mask, MOUSE_BUTTON_MASK_LEFT, "drag 期间 motion 应带住左键 mask"
+		)
+
+
+func test_drag_concurrent_returns_1014() -> void:
+	# 第一个 drag 跑到首个 await create_timer 让出，此时 _mouse_drag_active=true。
+	# 不 await（让其挂起），立即发第二个 drag —— 应同步拿到 1014，不被允许并发。
+	_api.handle_drag(
+		{"x1": 0.0, "y1": 0.0, "x2": 100.0, "y2": 100.0, "duration": 0.02, "steps": 2}
+	)
+	var second: Dictionary = await _api.handle_drag({"x1": 5.0, "y1": 5.0, "x2": 9.0, "y2": 9.0})
+	assert_has(second, "error")
+	assert_eq(int(second.error.code), 1014, "drag 进行中再次 drag 应回 DRAG_IN_PROGRESS(1014)")
+	# 排空第一个 drag，避免悬挂协程污染后续测试
+	await wait_seconds(0.1)
+	assert_false(_api._mouse_drag_active, "首个 drag 完成后 mutex 应复位")
+
+
+func test_drag_release_all_during_drag_emits_button_up() -> void:
+	# 中断保护：drag 进行中（button 已 down）被 release_all 打断时，必须补一个
+	# mouse-up，否则被拖控件永远收不到释放、卡在「正在拖拽」态。
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	_api.handle_drag(
+		{"x1": 0.0, "y1": 0.0, "x2": 200.0, "y2": 200.0, "duration": 0.5, "steps": 50}
+	)
+	await wait_process_frames(2)
+	assert_true(_api._mouse_drag_active, "drag 进行中 mutex 应为 true")
+	_api.release_all()
+	await wait_process_frames(2)
+	var ups: Array = probe.buttons.filter(func(e: InputEventMouseButton) -> bool: return not e.pressed)
+	assert_gt(ups.size(), 0, "release_all 中断 drag 应补一个 mouse-up")
+	assert_false(_api._mouse_drag_active, "release_all 应复位 drag mutex")
+	# 排空已被取消的协程（resume 后看到 flag=false 即早退，不再注入事件）
+	await wait_seconds(0.1)
+
+
+func test_drag_from_node_resolves_center() -> void:
+	var ctl := Control.new()
+	ctl.position = Vector2(10, 20)
+	ctl.size = Vector2(40, 60)
+	add_child_autofree(ctl)
+	var expected: Vector2 = (_RenderApiScript.compute_node_screen_rect(ctl) as Rect2).get_center()
+	var result: Dictionary = await _api.handle_drag(
+		{"from_node": String(ctl.get_path()), "x2": 5.0, "y2": 5.0, "duration": 0.02, "steps": 2}
+	)
+	assert_does_not_have(result, "error")
+	assert_eq(Vector2(result.from[0], result.from[1]), expected, "from_node 应解析到节点中心")
+	assert_eq(Vector2(result.to[0], result.to[1]), Vector2(5, 5), "to 用字面坐标")
+
+
+func test_drag_from_node_not_found_returns_1001() -> void:
+	var result: Dictionary = await _api.handle_drag(
+		{"from_node": "/root/__no_drag_node__", "x2": 1.0, "y2": 1.0}
+	)
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1001, "from_node 找不到应回 NODE_NOT_FOUND(1001)")
+
+
+func test_drag_invalid_steps_returns_invalid_params() -> void:
+	var result: Dictionary = await _api.handle_drag(
+		{"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0, "steps": 0}
+	)
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602, "steps<1 应回 INVALID_PARAMS(-32602)")

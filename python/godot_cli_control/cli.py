@@ -229,6 +229,63 @@ def _preflight_mouse_move(ns: argparse.Namespace) -> None:
     _preflight_xy_or_node(ns, "mouse-move")
 
 
+def _resolve_drag(
+    ns: argparse.Namespace,
+) -> tuple[tuple[float, float] | None, tuple[float, float] | None, str, float, int]:
+    """把 drag 的 coords 列表 + --from-node/--to-node + duration/steps 解析成
+    ``(from_xy, to_xy, button, duration, steps)``，``from_xy``/``to_xy`` 为
+    ``(x, y)`` 或 ``None``（该端用节点中心）。
+
+    coords 用变长列表 + 内容消歧（tree 同款）：用 --from-node / --to-node 的那一端
+    不占坐标，故坐标数 = (起点是否字面 ? 2 : 0) + (终点是否字面 ? 2 : 0) ∈ {0,2,4}，
+    按「起点在前」顺序分配。坐标数不符 / 非数字 / duration<0 / steps<1 抛 ValueError。
+
+    preflight 与 cmd_drag 共用此函数（单一事实源）：preflight 调用它仅作校验、丢弃
+    结果，连 daemon 前就把用法错拦下（不让 agent 干等连接重试）。
+    """
+    coords: list[str] = list(getattr(ns, "coords", None) or [])
+    from_node: str | None = getattr(ns, "from_node", None)
+    to_node: str | None = getattr(ns, "to_node", None)
+    need = (0 if from_node else 2) + (0 if to_node else 2)
+    if len(coords) != need:
+        raise ValueError(
+            f"drag: 需要 {need} 个坐标（起点+终点各 2；用 --from-node/--to-node "
+            f"的一端不占坐标），收到 {len(coords)} 个"
+        )
+    nums: list[float] = []
+    for c in coords:
+        try:
+            nums.append(float(c))
+        except (TypeError, ValueError):
+            raise ValueError(f"drag: 坐标必须是数字，收到 {c!r}")
+    i = 0
+    from_xy: tuple[float, float] | None = None
+    if from_node is None:
+        from_xy = (nums[i], nums[i + 1])
+        i += 2
+    to_xy: tuple[float, float] | None = None
+    if to_node is None:
+        to_xy = (nums[i], nums[i + 1])
+        i += 2
+    try:
+        duration = float(ns.duration)
+    except (TypeError, ValueError):
+        raise ValueError(f"drag: duration 必须是数字，收到 {ns.duration!r}")
+    if duration < 0:
+        raise ValueError(f"drag: duration 不能为负，收到 {duration}")
+    try:
+        steps = int(ns.steps)
+    except (TypeError, ValueError):
+        raise ValueError(f"drag: steps 必须是整数，收到 {ns.steps!r}")
+    if steps < 1:
+        raise ValueError(f"drag: steps 必须 >= 1，收到 {steps}")
+    return from_xy, to_xy, ns.button, duration, steps
+
+
+def _preflight_drag(ns: argparse.Namespace) -> None:
+    _resolve_drag(ns)  # 仅校验，结果丢弃
+
+
 def _preflight_combo(ns: argparse.Namespace) -> None:
     """连 daemon 前用同一份解析逻辑校验 combo 输入；抛 ValueError 即用法错。
 
@@ -471,6 +528,20 @@ async def cmd_mouse_move(client: GameClient, ns: argparse.Namespace) -> dict:
     if node:
         return await client.mouse_move(0.0, 0.0, node=node)
     return await client.mouse_move(float(ns.x), float(ns.y))
+
+
+async def cmd_drag(client: GameClient, ns: argparse.Namespace) -> dict:
+    # _resolve_drag 已被 preflight 跑过一遍（生产路径）；这里再跑一次拿解析值，
+    # 它是纯函数、与 preflight 单一事实源，重复调用无副作用。
+    from_xy, to_xy, button, duration, steps = _resolve_drag(ns)
+    kwargs: dict = {"button": button, "duration": duration, "steps": steps}
+    if ns.from_node:
+        kwargs["from_node"] = ns.from_node
+    if ns.to_node:
+        kwargs["to_node"] = ns.to_node
+    x1, y1 = from_xy if from_xy is not None else (0.0, 0.0)
+    x2, y2 = to_xy if to_xy is not None else (0.0, 0.0)
+    return await client.drag(x1, y1, x2, y2, **kwargs)
 
 
 async def cmd_screenshot(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -909,6 +980,49 @@ def _register_mouse_move_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _register_drag_args(p: argparse.ArgumentParser) -> None:
+    """drag 的参数：变长 ``coords`` + ``--from-node`` / ``--to-node`` + 时序 flag。
+
+    coords 个数随两端是否用节点而定（消歧在 ``_resolve_drag``）：起终都用坐标=4 个、
+    一端用节点=2 个、都用节点=0 个。default 用字符串，统一由 ``_resolve_drag``
+    归一（与 hold preflight 同风格）。"""
+    p.add_argument(
+        "coords",
+        nargs="*",
+        metavar="x1 y1 x2 y2",
+        help=(
+            "字面坐标（viewport 物理像素）：起终都用坐标给 4 个、一端用 "
+            "--from-node/--to-node 则给该端外的 2 个、两端都用节点则不给。"
+        ),
+    )
+    p.add_argument(
+        "--from-node",
+        default=None,
+        help="起点取该节点屏幕中心点（绝对路径），与起点坐标二选一",
+    )
+    p.add_argument(
+        "--to-node",
+        default=None,
+        help="终点取该节点屏幕中心点（绝对路径），与终点坐标二选一",
+    )
+    p.add_argument(
+        "--button",
+        choices=("left", "right", "middle"),
+        default="left",
+        help="鼠标键，默认 left",
+    )
+    p.add_argument(
+        "--duration",
+        default="0.3",
+        help="拖拽时长（秒，game-time，受 time_scale），默认 0.3",
+    )
+    p.add_argument(
+        "--steps",
+        default="10",
+        help="插值分段数（每段一个 motion 事件），默认 10",
+    )
+
+
 def _register_tree_args(p: argparse.ArgumentParser) -> None:
     # issue #150：第一个位置参数以 / 开头当 node path（子树根），否则当 depth。
     # 消歧 + 校验在 _preflight_tree 里做（argparse 无法靠内容区分两个可选位置参数）。
@@ -1109,6 +1223,30 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         extra_args=_register_mouse_move_args,
         preflight=_preflight_mouse_move,
         text_formatter=lambda r: f"moved to ({r['x']}, {r['y']})",
+    ),
+    RpcSpec(
+        name="drag",
+        handler=cmd_drag,
+        description=(
+            "坐标级拖拽（issue #154）：起点按下鼠标键 → 按 duration/steps 插值移动 "
+            "→ 终点松开（走真实事件管线，motion 全程带住按键 mask）。坐标用 viewport "
+            "物理像素，或用 --from-node/--to-node 取节点屏幕中心点。duration 是 "
+            "game-time（受 Engine.time_scale，与 combo 同语义）。同一时刻只允许一个 "
+            "drag 在途，再发回 1014。"
+        ),
+        positionals=(),  # 由 extra_args 注册（变长 coords + 节点/时序 flag）
+        example=(
+            "drag 100 100 300 200  |  "
+            "drag --from-node /root/Inv/Slot1 --to-node /root/Map/Cell"
+        ),
+        extra_args=_register_drag_args,
+        preflight=_preflight_drag,
+        text_formatter=lambda r: (
+            "drag cancelled"
+            if r.get("cancelled")
+            else f"dragged ({r['from'][0]}, {r['from'][1]}) -> "
+            f"({r['to'][0]}, {r['to'][1]})"
+        ),
     ),
     RpcSpec(
         name="screenshot",

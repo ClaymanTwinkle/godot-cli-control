@@ -23,6 +23,11 @@ var _send_response_callback: Callable = Callable()
 # 坐标级鼠标事件（issue #154）：上一次注入的鼠标位置，用于 InputEventMouseMotion
 # 的 relative 计算。viewport 物理像素系，初始 (0,0)。
 var _last_mouse_pos: Vector2 = Vector2.ZERO
+# drag 互斥（issue #154 P2）：协程插值期间为 true。同时兼作取消信号——
+# release_all 把它置 false，挂起的 drag 协程 resume 后据此早退（不再注入事件）。
+var _mouse_drag_active: bool = false
+# 当前 drag 持有的鼠标键，供 release_all 中断时补对应的 mouse-up。
+var _drag_button: int = MOUSE_BUTTON_LEFT
 
 
 func setup(send_response: Callable) -> void:
@@ -145,6 +150,12 @@ func release_all() -> void:
 		for action: String in _held_actions:
 			_do_release(action)
 		_held_actions.clear()
+	# 中断在途 drag（issue #154 P2）：补一个 mouse-up 避免被拖控件卡在「拖拽中」，
+	# 并复位 mutex —— 挂起的 drag 协程 resume 后看到 false 即早退、不再注入事件。
+	# 先复位再 emit：顺序无关（_emit 不读 flag），但语义上先解锁。
+	if _mouse_drag_active:
+		_mouse_drag_active = false
+		_emit_mouse_button(_last_mouse_pos, _drag_button, false, false)
 
 
 # ── Combo ──
@@ -324,6 +335,59 @@ func handle_mouse_move(params: Dictionary) -> Dictionary:
 	var rel: Vector2 = pos - _last_mouse_pos
 	_emit_mouse_motion(pos, 0)
 	return {"success": true, "x": pos.x, "y": pos.y, "relative": [rel.x, rel.y]}
+
+
+## 坐标级拖拽（issue #154 P2，kind=async 协程）：start 处按下鼠标键 → 按
+## duration/steps 分摊插值出 motion（每步 await create_timer，受 Engine.time_scale，
+## 与 combo 同 game-time 语义、暂停时仍随 GameBridge PROCESS_MODE_ALWAYS 推进）→
+## end 处松开。dispatcher await 整个协程再回响应；插值期间 _in_flight>0，
+## idle-timeout 不会半路打断。
+##
+## 单拖拽互斥（_mouse_drag_active）：已有 drag 在途再调 → 1014。坐标解析与参数
+## 校验都在第一个 await 之前完成，失败直接返回、不占用 mutex。中途被 release_all
+## 取消时（mutex 被置 false），协程 resume 后据此早退。
+func handle_drag(params: Dictionary) -> Dictionary:
+	if _mouse_drag_active:
+		return _err(CliControlErrorCodes.DRAG_IN_PROGRESS, "drag in progress")
+	var from_point: Variant = _resolve_point(params, "from_node", "x1", "y1")
+	if from_point is Dictionary:
+		return from_point as Dictionary
+	var to_point: Variant = _resolve_point(params, "to_node", "x2", "y2")
+	if to_point is Dictionary:
+		return to_point as Dictionary
+	var start: Vector2 = from_point as Vector2
+	var target: Vector2 = to_point as Vector2
+	var button: int = int(params.get("button", MOUSE_BUTTON_LEFT))
+	var duration: float = float(params.get("duration", 0.3))
+	var steps: int = int(params.get("steps", 10))
+	if steps < 1:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "steps must be >= 1 (got %d)" % steps)
+	if duration < 0.0:
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "duration must be >= 0 (got %s)" % duration)
+	_mouse_drag_active = true
+	_drag_button = button
+	# 起点按下：_emit_mouse_button 同步把 _last_mouse_pos 设为 start，
+	# 让首个插值 motion 的 relative 是「与起点的差值」。
+	_emit_mouse_button(start, button, true, false)
+	var mask: int = 1 << (button - 1)
+	var step_dt: float = duration / float(steps)
+	for i: int in range(1, steps + 1):
+		await get_tree().create_timer(step_dt).timeout
+		# 被 release_all 取消：它已复位 mutex 并补过 mouse-up，这里直接早退不再注入。
+		if not _mouse_drag_active:
+			return {"success": true, "cancelled": true}
+		var pos: Vector2 = start.lerp(target, float(i) / float(steps))
+		_emit_mouse_motion(pos, mask)
+	_emit_mouse_button(target, button, false, false)
+	_mouse_drag_active = false
+	return {
+		"success": true,
+		"from": [start.x, start.y],
+		"to": [target.x, target.y],
+		"button": button,
+		"steps": steps,
+		"duration": duration,
+	}
 
 
 ## 解析坐标：优先 ``node`` key（取节点中心点），否则字面 ``x``/``y``。

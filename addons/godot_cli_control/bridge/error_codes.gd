@@ -48,6 +48,10 @@ const FEATURE_UNAVAILABLE: int = 1012
 # 无写权限 / 路径非法）。与客户端 -1004 区分：那是 CLI 进程本地写不进，
 # 这是 daemon 进程写不进。永久错（与 1002/1003 同族）——修路径前重试无意义。
 const WRITE_FAILED: int = 1013
+# drag 互斥（issue #154 P2）：已有一个 drag 协程在插值中又收到 drag 请求。
+# 状态类错（与 1004 COMBO_IN_PROGRESS 同族）——同一时刻只允许一个鼠标拖拽
+# 在途，agent 应等上一个完成（或 release-all 取消）再发。
+const DRAG_IN_PROGRESS: int = 1014
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600
