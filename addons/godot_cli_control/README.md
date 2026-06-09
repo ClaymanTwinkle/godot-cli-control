@@ -83,6 +83,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | Method | Example |
 |---|---|
 | `click(path)` | `await client.click("/root/MyScene/Button")` |
+| `click_at(x, y, node=None, button="left", double=False)` | `await client.click_at(320, 240)` or `client.click_at(node="/root/Slot", button="right")` — coordinate-level mouse click via the real event pipeline (viewport physical px); CLI: `click-at <x> <y> \| --node <path> [--button] [--double]` |
+| `mouse_move(x, y, node=None)` | `await client.mouse_move(400, 300)` — inject one mouse-motion event (with `relative`); CLI: `mouse-move <x> <y> \| --node <path>` |
 | `get_property(path, property)` | `await client.get_property("/root/Player", "position")` — returns bare value; CLI `get` returns `{"value": ..., "type"?: ...}` shape |
 | `get_properties(path, properties)` | `await client.get_properties("/root/Player", ["position", "health"])` — multi-property atomic read; returns `{prop: bare_value, ...}` dict |
 | `set_property(path, property, value)` | `await client.set_property("/root/Player", "visible", False)` |
@@ -121,7 +123,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 
 > **`--wait`**: `tap` / `hold` / `combo` return as soon as the input is armed, *before* the motion finishes. Add `--wait` (e.g. `hold run 1.5 --wait`) to block until the action's duration elapses (game-time) so the next read sees the settled state — equivalent to following the command with `wait-time <duration>` on the same connection.
 
-> **Event pipeline**: `press` / `tap` / `hold` / `combo` inject an `InputEventAction` through the engine's event pipeline — both polling (`is_action_pressed`, `get_vector`) **and** event callbacks (`_input`, `_unhandled_input`) see the input. `InputEventAction` carries no mouse coordinates; position-dependent `_gui_input` widgets need `click` instead.
+> **Event pipeline**: `press` / `tap` / `hold` / `combo` inject an `InputEventAction` through the engine's event pipeline — both polling (`is_action_pressed`, `get_vector`) **and** event callbacks (`_input`, `_unhandled_input`) see the input. `InputEventAction` carries no mouse coordinates; for position-dependent `_gui_input` widgets use `click_at` / `mouse_move` (coordinate-level, viewport physical pixels, via `Viewport.push_input`) or `click` (node-level). Note `click_at` / `mouse_move` don't update the global `Input` mouse-polling state — read `position` / `relative` from the event, not by polling.
 
 > **No-arg `GameClient()` / `GameBridge()`**: with no `port` argument they auto-discover the daemon's port from `.cli_control/instances/<name>/port` (falling back to `9877`). Pass `instance="server"` to target a named instance when multiple are running (explicit `port` always wins over `instance`). A no-arg call in a single-instance environment still works as before.
 

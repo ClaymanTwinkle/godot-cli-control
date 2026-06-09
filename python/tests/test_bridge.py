@@ -90,6 +90,19 @@ class _StubClient:
     async def combo(self, steps: list[dict]) -> dict:
         return self._record("combo", (steps,), {})
 
+    async def click_at(
+        self, x: float, y: float, *, node: str | None = None,
+        button: str = "left", double: bool = False,
+    ) -> dict:
+        return self._record(
+            "click_at", (x, y), {"node": node, "button": button, "double": double}
+        )
+
+    async def mouse_move(
+        self, x: float, y: float, *, node: str | None = None
+    ) -> dict:
+        return self._record("mouse_move", (x, y), {"node": node})
+
     async def combo_cancel(self) -> dict:
         return self._record("combo_cancel", (), {})
 
@@ -905,3 +918,33 @@ def test_loop_closed_when_connect_raises(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert len(captured) == 1, "应恰好创建了一个 event loop"
     assert captured[0].is_closed(), "connect 失败后 event loop 必须已 close，否则会泄漏"
+
+
+# ── issue #154：坐标级鼠标事件（click_at / mouse_move，P1）──
+
+
+def test_click_at_literal_coords(stub_client: dict) -> None:
+    b, c = _make_bridge(stub_client)
+    c.returns["click_at"] = {"success": True}
+    result = b.click_at(50, 60)
+    assert c.calls[-1] == (
+        "click_at", (50, 60), {"node": None, "button": "left", "double": False}
+    )
+    assert result == {"success": True}
+    b.close()
+
+
+def test_click_at_node_and_button_passthrough(stub_client: dict) -> None:
+    b, c = _make_bridge(stub_client)
+    b.click_at(node="/root/Foo", button="right", double=True)
+    assert c.calls[-1] == (
+        "click_at", (0.0, 0.0), {"node": "/root/Foo", "button": "right", "double": True}
+    )
+    b.close()
+
+
+def test_mouse_move_passthrough(stub_client: dict) -> None:
+    b, c = _make_bridge(stub_client)
+    b.mouse_move(100, 120)
+    assert c.calls[-1] == ("mouse_move", (100, 120), {"node": None})
+    b.close()

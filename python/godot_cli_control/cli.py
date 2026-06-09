@@ -200,6 +200,35 @@ def _preflight_hold(ns: argparse.Namespace) -> None:
         )
 
 
+def _preflight_xy_or_node(ns: argparse.Namespace, cmd: str) -> None:
+    """坐标命令（click-at / mouse-move）的用法校验：``x y`` 字面坐标与 ``--node``
+    二选一、且齐全。连 daemon 前拦，避免 agent 干等连接重试才发现自己既没给坐标
+    也没给 node、或两者都给、或坐标不是数字。
+    """
+    node: str | None = getattr(ns, "node", None)
+    x = ns.x
+    y = ns.y
+    if node is not None:
+        if x is not None or y is not None:
+            raise ValueError(f"{cmd}: 位置坐标与 --node 互斥，二选一")
+        return
+    if x is None or y is None:
+        raise ValueError(f"{cmd}: 需要 `x y` 两个坐标，或用 --node <绝对路径>")
+    try:
+        float(x)
+        float(y)
+    except (TypeError, ValueError):
+        raise ValueError(f"{cmd}: 坐标必须是数字，收到 x={x!r} y={y!r}")
+
+
+def _preflight_click_at(ns: argparse.Namespace) -> None:
+    _preflight_xy_or_node(ns, "click-at")
+
+
+def _preflight_mouse_move(ns: argparse.Namespace) -> None:
+    _preflight_xy_or_node(ns, "mouse-move")
+
+
 def _preflight_combo(ns: argparse.Namespace) -> None:
     """连 daemon 前用同一份解析逻辑校验 combo 输入；抛 ValueError 即用法错。
 
@@ -426,6 +455,22 @@ async def _maybe_block_for_duration(
 
 async def cmd_click(client: GameClient, ns: argparse.Namespace) -> dict:
     return await client.click(ns.node_path)
+
+
+async def cmd_click_at(client: GameClient, ns: argparse.Namespace) -> dict:
+    node: str | None = getattr(ns, "node", None)
+    if node:
+        return await client.click_at(0.0, 0.0, node=node, button=ns.button, double=ns.double)
+    return await client.click_at(
+        float(ns.x), float(ns.y), button=ns.button, double=ns.double
+    )
+
+
+async def cmd_mouse_move(client: GameClient, ns: argparse.Namespace) -> dict:
+    node: str | None = getattr(ns, "node", None)
+    if node:
+        return await client.mouse_move(0.0, 0.0, node=node)
+    return await client.mouse_move(float(ns.x), float(ns.y))
 
 
 async def cmd_screenshot(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -835,6 +880,35 @@ def _register_combo_args(p: argparse.ArgumentParser) -> None:
     _register_wait_flag(p)
 
 
+def _register_click_at_args(p: argparse.ArgumentParser) -> None:
+    """click-at 的可选 flag：``--node`` 取节点中心、``--button``、``--double``。"""
+    p.add_argument(
+        "--node",
+        default=None,
+        help="取该节点屏幕中心点（绝对路径），与位置坐标二选一",
+    )
+    p.add_argument(
+        "--button",
+        choices=("left", "right", "middle"),
+        default="left",
+        help="鼠标键，默认 left",
+    )
+    p.add_argument(
+        "--double",
+        action="store_true",
+        help="双击（InputEventMouseButton.double_click=true）",
+    )
+
+
+def _register_mouse_move_args(p: argparse.ArgumentParser) -> None:
+    """mouse-move 的可选 flag：``--node`` 取节点中心。"""
+    p.add_argument(
+        "--node",
+        default=None,
+        help="移到该节点屏幕中心点（绝对路径），与位置坐标二选一",
+    )
+
+
 def _register_tree_args(p: argparse.ArgumentParser) -> None:
     # issue #150：第一个位置参数以 / 开头当 node path（子树根），否则当 depth。
     # 消歧 + 校验在 _preflight_tree 里做（argparse 无法靠内容区分两个可选位置参数）。
@@ -1002,6 +1076,39 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         ),
         example="click /root/Main/StartButton",
         text_formatter=lambda r: f"clicked: {r}",
+    ),
+    RpcSpec(
+        name="click-at",
+        handler=cmd_click_at,
+        description=(
+            "按坐标注入鼠标点击（down→up，走真实事件管线）。坐标用 viewport 物理"
+            "像素；或用 --node 取节点屏幕中心点。区别于 click（节点级 UI 点击）："
+            "能命中依赖光标位置的 _gui_input 控件。"
+        ),
+        positionals=(
+            Positional("x", "?", "viewport 物理像素 X（与 --node 二选一）"),
+            Positional("y", "?", "viewport 物理像素 Y"),
+        ),
+        example="click-at 320 240  |  click-at --node /root/Main/Slot3 --button right",
+        extra_args=_register_click_at_args,
+        preflight=_preflight_click_at,
+        text_formatter=lambda r: f"clicked at ({r['x']}, {r['y']})",
+    ),
+    RpcSpec(
+        name="mouse-move",
+        handler=cmd_mouse_move,
+        description=(
+            "按坐标注入一个鼠标移动事件（带 relative）。坐标用 viewport 物理像素；"
+            "或用 --node 取节点屏幕中心点。"
+        ),
+        positionals=(
+            Positional("x", "?", "viewport 物理像素 X（与 --node 二选一）"),
+            Positional("y", "?", "viewport 物理像素 Y"),
+        ),
+        example="mouse-move 400 300  |  mouse-move --node /root/Player",
+        extra_args=_register_mouse_move_args,
+        preflight=_preflight_mouse_move,
+        text_formatter=lambda r: f"moved to ({r['x']}, {r['y']})",
     ),
     RpcSpec(
         name="screenshot",

@@ -143,6 +143,26 @@ class GameBridge:
         """点击 UI 节点。"""
         return self._run(self._client.click(path))
 
+    def click_at(
+        self,
+        x: float = 0.0,
+        y: float = 0.0,
+        *,
+        node: str | None = None,
+        button: str = "left",
+        double: bool = False,
+    ) -> dict:
+        """坐标级鼠标点击（issue #154）。node 给定时取其中心点，否则用字面坐标。"""
+        return self._run(
+            self._client.click_at(x, y, node=node, button=button, double=double)
+        )
+
+    def mouse_move(
+        self, x: float = 0.0, y: float = 0.0, *, node: str | None = None
+    ) -> dict:
+        """坐标级鼠标移动（issue #154），产生带 relative 的 motion 事件。"""
+        return self._run(self._client.mouse_move(x, y, node=node))
+
     # ── 输入模拟 ──
 
     def hold(self, action: str, duration: float) -> None:

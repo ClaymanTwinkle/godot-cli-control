@@ -296,3 +296,134 @@ func test_press_still_updates_polling_state() -> void:
 	_api.handle_action_release({"action": "ui_accept"})
 	Input.flush_buffered_events()
 	assert_false(Input.is_action_pressed("ui_accept"), "release 后应清除")
+
+
+# ── issue #154：坐标级鼠标事件注入（click-at / mouse-move，P1） ──────
+#
+# 走 Input.parse_input_event 注入真实管线（与 #97 InputEventAction 同思路），
+# 坐标用 viewport 物理像素系；--node 糖衣复用 RenderApi.compute_node_screen_rect
+# 取中心点。坐标系换算正确性直接断言 handler 返回的 x/y（纯坐标计算，headless
+# 必测、不依赖事件路由到哪个 viewport）；事件序列断言用主 viewport 探针。
+
+const _RenderApiScript := preload("res://addons/godot_cli_control/bridge/render_api.gd")
+
+
+## 鼠标事件探针：记录 _input 收到的 InputEventMouseButton / InputEventMouseMotion
+class _MouseProbe extends Node:
+	var buttons: Array = []
+	var motions: Array = []
+
+	func _input(event: InputEvent) -> void:
+		if event is InputEventMouseButton:
+			buttons.append(event)
+		elif event is InputEventMouseMotion:
+			motions.append(event)
+
+
+# ── click-at ──────────────────────────────────────────────────────
+
+func test_click_at_emits_button_down_then_up() -> void:
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	var result: Dictionary = _api.handle_click_at({"x": 50.0, "y": 60.0})
+	assert_does_not_have(result, "error")
+	# parse_input_event 注入的事件在输入泵分发；等两帧确保送达（与 #97 测试一致）
+	await wait_process_frames(2)
+	assert_eq(probe.buttons.size(), 2, "click-at 应注入 down + up 两个鼠标按钮事件")
+	var down: InputEventMouseButton = probe.buttons[0]
+	var up: InputEventMouseButton = probe.buttons[1]
+	assert_true(down.pressed, "第一个事件应为 pressed=true")
+	assert_false(up.pressed, "第二个事件应为 pressed=false")
+	assert_eq(down.button_index, MOUSE_BUTTON_LEFT, "默认左键")
+	assert_eq(down.position, Vector2(50, 60), "down position 应为传入坐标")
+	assert_eq(up.position, Vector2(50, 60), "up position 应为传入坐标")
+
+
+func test_click_at_button_right() -> void:
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	_api.handle_click_at({"x": 10.0, "y": 10.0, "button": MOUSE_BUTTON_RIGHT})
+	await wait_process_frames(2)
+	assert_eq(probe.buttons.size(), 2)
+	assert_eq(probe.buttons[0].button_index, MOUSE_BUTTON_RIGHT, "--button right 应注入右键")
+
+
+func test_click_at_double_click_flag() -> void:
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	_api.handle_click_at({"x": 10.0, "y": 10.0, "double": true})
+	await wait_process_frames(2)
+	assert_eq(probe.buttons.size(), 2)
+	assert_true(probe.buttons[0].double_click, "--double 应置 double_click=true")
+
+
+func test_click_at_node_returns_screen_rect_center() -> void:
+	# 坐标系回归（#137 同类）：--node 中心点必须经 viewport final transform，落在
+	# 取图侧的物理像素系。SubViewport size(200,100)+override(100,50)+stretch = scale 2，
+	# Control (10,20,30,40) → rect (20,40,60,80) → center (50,80)。
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(200, 100)
+	viewport.size_2d_override = Vector2i(100, 50)
+	viewport.size_2d_override_stretch = true
+	add_child_autofree(viewport)
+	var ctl := Control.new()
+	ctl.position = Vector2(10, 20)
+	ctl.size = Vector2(30, 40)
+	viewport.add_child(ctl)
+	var expected: Vector2 = (_RenderApiScript.compute_node_screen_rect(ctl) as Rect2).get_center()
+	var result: Dictionary = _api.handle_click_at({"node": String(ctl.get_path())})
+	assert_does_not_have(result, "error")
+	assert_eq(Vector2(result.x, result.y), expected, "click-at --node 应点在节点中心（物理像素系）")
+
+
+func test_click_at_node_not_found_returns_1001() -> void:
+	var result: Dictionary = _api.handle_click_at({"node": "/root/__no_such_node_154__"})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1001, "--node 找不到应回 NODE_NOT_FOUND(1001)")
+
+
+func test_click_at_node_non_canvasitem_returns_1010() -> void:
+	var plain := Node.new()
+	plain.name = "PlainNode154"
+	add_child_autofree(plain)
+	var result: Dictionary = _api.handle_click_at({"node": String(plain.get_path())})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1010, "--node 非 CanvasItem 应回 UNSUPPORTED_NODE_TYPE(1010)")
+
+
+# ── mouse-move ────────────────────────────────────────────────────
+
+func test_mouse_move_emits_motion_with_relative() -> void:
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	# fresh _api，_last_mouse_pos 默认 (0,0)
+	var result: Dictionary = _api.handle_mouse_move({"x": 100.0, "y": 120.0})
+	assert_does_not_have(result, "error")
+	await wait_process_frames(2)
+	assert_eq(probe.motions.size(), 1, "mouse-move 应注入一个 motion 事件")
+	var mv: InputEventMouseMotion = probe.motions[0]
+	assert_eq(mv.position, Vector2(100, 120))
+	assert_eq(mv.relative, Vector2(100, 120), "首次 move 的 relative = 目标 - (0,0)")
+	assert_eq(Vector2(result.relative[0], result.relative[1]), Vector2(100, 120))
+
+
+func test_mouse_move_relative_accumulates() -> void:
+	# 第二次 move 的 relative 应是与上一次位置的差值（_last_mouse_pos 被更新）
+	_api.handle_mouse_move({"x": 100.0, "y": 100.0})
+	var probe := _MouseProbe.new()
+	add_child_autofree(probe)
+	_api.handle_mouse_move({"x": 130.0, "y": 140.0})
+	await wait_process_frames(2)
+	assert_eq(probe.motions.size(), 1)
+	assert_eq(probe.motions[0].relative, Vector2(30, 40), "relative = 与上次位置差值")
+
+
+func test_mouse_move_node_returns_center() -> void:
+	var ctl := Control.new()
+	ctl.position = Vector2(10, 20)
+	ctl.size = Vector2(40, 60)
+	add_child_autofree(ctl)
+	var expected: Vector2 = (_RenderApiScript.compute_node_screen_rect(ctl) as Rect2).get_center()
+	var result: Dictionary = _api.handle_mouse_move({"node": String(ctl.get_path())})
+	assert_does_not_have(result, "error")
+	assert_eq(Vector2(result.x, result.y), expected, "mouse-move --node 应移到节点中心")
