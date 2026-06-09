@@ -103,6 +103,19 @@ class _StubClient:
     ) -> dict:
         return self._record("mouse_move", (x, y), {"node": node})
 
+    async def drag(
+        self, x1: float = 0.0, y1: float = 0.0, x2: float = 0.0, y2: float = 0.0,
+        *, from_node: str | None = None, to_node: str | None = None,
+        button: str = "left", duration: float = 0.3, steps: int = 10,
+    ) -> dict:
+        return self._record(
+            "drag", (x1, y1, x2, y2),
+            {
+                "from_node": from_node, "to_node": to_node,
+                "button": button, "duration": duration, "steps": steps,
+            },
+        )
+
     async def combo_cancel(self) -> dict:
         return self._record("combo_cancel", (), {})
 
@@ -947,4 +960,29 @@ def test_mouse_move_passthrough(stub_client: dict) -> None:
     b, c = _make_bridge(stub_client)
     b.mouse_move(100, 120)
     assert c.calls[-1] == ("mouse_move", (100, 120), {"node": None})
+    b.close()
+
+
+# ── issue #154 P2：drag ──
+
+
+def test_drag_literal_passthrough(stub_client: dict) -> None:
+    b, c = _make_bridge(stub_client)
+    c.returns["drag"] = {"success": True, "from": [0, 0], "to": [100, 50]}
+    result = b.drag(0, 0, 100, 50)
+    assert c.calls[-1] == (
+        "drag", (0, 0, 100, 50),
+        {"from_node": None, "to_node": None, "button": "left", "duration": 0.3, "steps": 10},
+    )
+    assert result == {"success": True, "from": [0, 0], "to": [100, 50]}
+    b.close()
+
+
+def test_drag_node_endpoints_passthrough(stub_client: dict) -> None:
+    b, c = _make_bridge(stub_client)
+    b.drag(from_node="/root/A", to_node="/root/B", button="middle", duration=0.5, steps=20)
+    assert c.calls[-1] == (
+        "drag", (0.0, 0.0, 0.0, 0.0),
+        {"from_node": "/root/A", "to_node": "/root/B", "button": "middle", "duration": 0.5, "steps": 20},
+    )
     b.close()

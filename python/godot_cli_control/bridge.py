@@ -163,6 +163,31 @@ class GameBridge:
         """坐标级鼠标移动（issue #154），产生带 relative 的 motion 事件。"""
         return self._run(self._client.mouse_move(x, y, node=node))
 
+    def drag(
+        self,
+        x1: float = 0.0,
+        y1: float = 0.0,
+        x2: float = 0.0,
+        y2: float = 0.0,
+        *,
+        from_node: str | None = None,
+        to_node: str | None = None,
+        button: str = "left",
+        duration: float = 0.3,
+        steps: int = 10,
+    ) -> dict:
+        """坐标级拖拽（issue #154 P2）：down → 按 duration/steps 插值 motion → up。
+
+        两端 ``from_node`` / ``to_node`` 给定时取节点中心，否则用字面坐标。
+        """
+        return self._run(
+            self._client.drag(
+                x1, y1, x2, y2,
+                from_node=from_node, to_node=to_node,
+                button=button, duration=duration, steps=steps,
+            )
+        )
+
     # ── 输入模拟 ──
 
     def hold(self, action: str, duration: float) -> None:
