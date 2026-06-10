@@ -1728,6 +1728,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             port=ns.port,
             idle_timeout=idle_seconds,
             time_scale=getattr(ns, "time_scale", None),
+            always_on_top=ns.always_on_top,
         )
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
@@ -2093,6 +2094,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
                     fps=ns.fps,
                     port=ns.port,
                     idle_timeout=idle_seconds,
+                    always_on_top=ns.always_on_top,
                 )
             except DaemonError as e:
                 # daemon 起不来是 infra 前置失败（端口冲突、godot bin 不可执行等），
@@ -2621,6 +2623,14 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
         "--gui",
         action="store_true",
         help="强制开窗。覆盖 isatty 自动判（例如 stdout 是 pipe 仍想看到窗口）。",
+    )
+    p.add_argument(
+        "--no-always-on-top",
+        action="store_false",
+        dest="always_on_top",
+        default=True,
+        help="录制时不强制窗口置顶（默认 --record 置顶，防 macOS 遮挡窗口冻帧 / Movie "
+        "Maker 写 stale 帧）。仅 --record 时有意义。",
     )
     p.add_argument("--fps", type=int, default=30, help="录制帧率，默认 30")
     p.add_argument(
