@@ -89,6 +89,12 @@ func _ready() -> void:
 		print("GameBridge: Engine.time_scale = %s (from --cli-time-scale)" % startup_scale)
 	# 构建统一方法注册表
 	_register_methods()
+	# 录制防遮挡冻帧（#156 子问题 B）：daemon 传 --game-bridge-always-on-top 时置顶窗口。
+	# macOS 对被遮挡窗口节流渲染 → Movie Maker 写 stale 帧；置顶根治。失焦无碍、遮挡才致命。
+	if _has_cli_flag("--game-bridge-always-on-top"):
+		var w := get_window()
+		if w:
+			w.always_on_top = true
 	# 缓存 outbound buffer 大小（ProjectSettings 可覆盖默认 10MB，至少 1MB）
 	var mb: int = int(
 		ProjectSettings.get_setting(SETTING_OUTBOUND_BUFFER_MB, DEFAULT_OUTBOUND_BUFFER_MB)
