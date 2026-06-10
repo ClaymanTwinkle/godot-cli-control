@@ -37,6 +37,10 @@ var _diag_api: DiagnosticsApi = null
 # - async: handler(params) -> await Dictionary，dispatcher await 后 send response
 # - async_with_id: handler(params, request_id) -> void，handler 自行通过 callback 回响
 var _methods: Dictionary = {}
+# quit RPC（#156）：退出动作抽成可注入 Callable，GUT 里替换成 spy 不真退。
+# 默认 get_tree().quit() —— SceneTree.quit() 延迟到当前帧末执行，dispatcher 已在
+# 本帧同步发出 {ok} 响应，给 ws 一次 poll flush 机会；client 端另有「断连=成功」兜底。
+var _quit_action: Callable = func() -> void: get_tree().quit()
 
 
 func _ready() -> void:
@@ -256,11 +260,21 @@ func _register_methods() -> void:
 	_methods["pause"] = {"callable": _time_api.handle_pause, "kind": "sync"}
 	_methods["unpause"] = {"callable": _time_api.handle_unpause, "kind": "sync"}
 	_methods["step_frames"] = {"callable": _time_api.step_frames_async, "kind": "async"}
+	# quit（#156，sync）：内部 RPC，无对应 CLI 子命令——用户语义即 daemon stop
+	# （契约 4 有意例外）。daemon stop 在 SIGTERM 前发此 RPC 让 Movie Maker flush 尾帧。
+	_methods["quit"] = {"callable": _handle_quit, "kind": "sync"}
 
 
 # screenshot wrapper：params 透传（issue #101 起带可选 "node" 裁剪参数）
 func _wrap_screenshot(params: Dictionary) -> Dictionary:
 	return await _low_level_api.take_screenshot_async(params)
+
+
+# quit handler（#156）：请求引擎优雅退出。返回 {ok} 让 dispatcher 正常发响应，
+# 退出动作走 _quit_action（默认 get_tree().quit()，帧末生效）。
+func _handle_quit(_params: Dictionary) -> Dictionary:
+	_quit_action.call()
+	return {"ok": true}
 
 
 func _handle_message(raw: String) -> void:

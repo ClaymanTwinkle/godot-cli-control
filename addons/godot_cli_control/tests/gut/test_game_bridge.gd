@@ -526,6 +526,20 @@ func test_registry_has_scene_methods() -> void:
 	assert_eq(str(_bridge._methods["scene_change"]["kind"]), "async")
 
 
+# ── quit RPC（#156） ───────────────────────────────────────────────
+
+func test_quit_registered_responds_ok_and_invokes_quit_action() -> void:
+	# 退出动作替换成 spy，避免 get_tree().quit() 把测试进程带走
+	var quit_called := [false]
+	_bridge._quit_action = func() -> void: quit_called[0] = true
+	_send('{"id":"q1","method":"quit","params":{}}')
+	var f: Dictionary = _last_frame()
+	assert_eq(str(f.get("id", "MISSING")), "q1", "响应应回带请求 id")
+	assert_has(f, "result")
+	assert_true(bool(f.result.get("ok", false)), "quit 应回 {ok:true}")
+	assert_true(quit_called[0], "quit handler 应调用注入的退出动作")
+
+
 # ── 注册表完整性：time API（issue #102） ─────────────────────────────
 
 func test_registry_has_time_methods() -> void:

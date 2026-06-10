@@ -196,3 +196,57 @@ def test_record_produces_valid_mp4(godot_project: Path) -> None:
         f"录像分辨率应与项目窗口 {_VIEW_W}x{_VIEW_H} 一致，实际 "
         f"{stream.get('width')}x{stream.get('height')}：{probe}"
     )
+
+
+def test_graceful_stop_preserves_tail_frames(godot_project: Path) -> None:
+    """graceful daemon stop 的端到端冒烟：record → wait-time → daemon stop（优雅退出）
+    → 转码，断言产出**有效完整**的 mp4（rc==0、非空、时长 ≥ 主动推进的 game-time）。
+
+    守护边界（重要）：Movie Maker 从 Godot 启动即录，产物含不定量启动帧，其量级与
+    SIGTERM 丢失的 4-6s 尾帧相当——e2e 时长粒度**无法**精确拦截「丢 N 秒尾帧」。
+    「尾帧在 SIGTERM 前被 flush」的精确回归由单测守护：
+    test_daemon.py::test_stop_graceful_success_skips_terminate（确认走优雅退出而非
+    SIGTERM）+ bridge quit RPC 测试 + GameClient.quit() 测试。本 e2e 拦的是 graceful
+    路径产出空 / 损坏 / 严重截断的 mp4。
+    """
+    project = godot_project
+    avi = project / "tail.avi"
+    mp4 = avi.with_suffix(".mp4")
+
+    # 主动推进的 game-time；本测试仅用 wait-time（无需 tap——背景运动由 _process(delta)
+    # 驱动，与 test_record_produces_valid_mp4 的 tap+wait-time 组合有意区分）。
+    _RECORD_SECONDS = 3.0
+
+    # 幂等保底：清掉上一个测试可能残留的 daemon，避免 start 撞已存在实例
+    try:
+        _run_cli(project, "daemon", "stop", timeout=30)
+    except Exception:
+        pass
+
+    start = _run_cli(
+        project, "daemon", "start",
+        "--record", "--movie-path", str(avi), "--fps", str(_FPS),
+        timeout=120,
+    )
+    assert start["ok"] is True and start["result"]["started"], start
+
+    try:
+        # 按 game-time 推进录像帧（与 Movie Maker 帧对齐）
+        wt = _run_cli(project, "wait-time", str(_RECORD_SECONDS))
+        assert wt["ok"] is True, wt
+    finally:
+        # daemon stop → 优雅退出 flush 尾帧 + 转码
+        stop = _run_cli(project, "daemon", "stop", timeout=60)
+        assert stop["ok"] is True, stop
+        assert stop["result"].get("rc") == 0, f"转码应成功：{stop}"
+
+    assert mp4.exists() and mp4.stat().st_size > 0, f"应产出非空 mp4（avi 存在={avi.exists()}）"
+    probe = _ffprobe(mp4)
+    duration = float(probe.get("format", {}).get("duration", 0.0))
+    # 单向安全下界：产物至少覆盖我们主动推进的 game-time（启动帧只会让 duration 更长，
+    # 不会更短）。这拦的是 graceful 路径产出空 / 损坏 / 严重截断的 mp4——不是精确尾帧守护
+    # （见 docstring：启动帧量级与 SIGTERM 丢失量相当，e2e 时长粒度无法精确区分）。
+    assert duration >= _RECORD_SECONDS, (
+        f"graceful stop 产物仅 {duration:.2f}s，低于主动推进的 game-time {_RECORD_SECONDS}s"
+        f" —— mp4 损坏 / 严重截断（avi 存在={avi.exists()}）"
+    )

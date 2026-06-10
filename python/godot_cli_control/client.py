@@ -262,6 +262,33 @@ class GameClient:
             )
         return response.get("result", {})
 
+    async def quit(self, timeout: float = 5.0) -> None:
+        """请 daemon 优雅退出（让 Movie Maker flush AVI 尾帧）。
+
+        成功 = 收到响应，或响应到达前连接被 daemon 关闭（已退出）。两者都正常返回。
+        仅当 timeout 内既无响应又未断连时抛 asyncio.TimeoutError，由上层降级 SIGTERM。
+        不复用 request()——daemon quit 后大概率收不到响应，严格 await 会误判超时。
+        """
+        assert self._ws is not None, "Not connected"
+        req_id = str(uuid.uuid4())[:8]
+        msg = {"id": req_id, "method": "quit", "params": {}}
+        future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+        self._pending[req_id] = future
+        try:
+            await self._ws.send(json.dumps(msg))
+        except websockets.ConnectionClosed:
+            self._pending.pop(req_id, None)
+            return  # 连接已关 = daemon 已退出 = 成功
+        try:
+            await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending.pop(req_id, None)
+            raise
+        except ConnectionError:
+            # _listen 在断连时对 pending future set_exception(ConnectionError)
+            # （client.py 的 _listen finally）= daemon 已退出 = 成功。
+            return
+
     # ---- Low-level API ----
 
     async def click(self, path: str) -> dict:
