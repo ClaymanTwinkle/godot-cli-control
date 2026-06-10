@@ -302,7 +302,8 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 - `step-frames <n> [--physics]` — while paused, advance exactly N frames (1..3600) then stop (deterministic stepping for physics assertions). Requires `pause` first — otherwise error `1009`, exit 1. Returns `{"stepped": N, "paused": true}`.
 
 **Render:**
-- `screenshot <path> [--node <node-path>]` — write PNG (path is **required** as of 0.2.0). The PNG is written **by the daemon process directly to disk** (CLI resolves the path to absolute and creates parent dirs first), so image size is unlimited — no payload ever crosses the WebSocket, and hiDPI / 4K fullscreen captures work without shrinking the window. With `--node`, the full screenshot is cropped to that node's screen-space AABB (canvas/camera transform included) and the envelope reports the actual crop: `{"path": ..., "bytes": N, "node": ..., "region": [x, y, w, h]}` (viewport pixels, already clipped to the viewport). Errors: `1001` unknown node, `1010` bounds undeterminable, `1011` off-screen, `1013` daemon can't write the path. Like any screenshot it needs a real renderer — headless daemons return `1006`.
+- `screenshot <path> [--node <node-path>]` — write PNG (path is **required** as of 0.2.0). The PNG is written **by the daemon process directly to disk** (CLI resolves the path to absolute and creates parent dirs first), so image size is unlimited — no payload ever crosses the WebSocket, and hiDPI / 4K fullscreen captures work without shrinking the window. With `--node`, the full screenshot is cropped to that node's screen-space AABB (canvas/camera transform included) and the envelope reports the actual crop: `{"path": ..., "bytes": N, "node": ..., "region": [x, y, w, h]}` (viewport pixels, already clipped to the viewport). Errors: `1001` unknown node, `1010` bounds undeterminable, `1011` off-screen, `1013` daemon can't write the path. Like any screenshot it needs a real renderer — headless daemons return `1006`. The server calls `RenderingServer.force_draw()` before capture, so you get the freshest frame even if the window is occluded.
+  - Envelope may include `"stale_suspect": true` when bytes are identical to the previous screenshot — a risk hint (not a hard stale assertion; a static game scene also triggers it). Retry after `wait-frames 2` if you need certainty.
 - `sprite-info <node-path>` — aggregate "what is this node actually rendering" query for `Sprite2D` / `AnimatedSprite2D` / `TextureRect` (error `1010` for anything else). Pure property read — **works headless**. Key fields:
   - common: `type`, `visible`, `visible_in_tree`, `modulate` `[r,g,b,a]`; textures are reported as `{"path": "res://..."|null, "size": [w,h]}` (+ `atlas`/`atlas_region` when it's an `AtlasTexture`); `path` is `null` for runtime-built textures.
   - `Sprite2D`: `texture`, `flip_h/v`, `frame`, `frame_coords`, `hframes/vframes`, `region_enabled`, `region_rect`, and **`effective_region` `[x,y,w,h]`** — the atlas rect actually being drawn (region wins when enabled, else computed from the frame grid). Assert "the sprite shows frame N" against this instead of reading internal bookkeeping fields.
@@ -438,6 +439,7 @@ Key constraints:
 - `--record` **requires** `--movie-path` (daemon refuses to start otherwise).
 - `--movie-path` must end in **`.avi` or `.png`** (case-insensitive) — that's all Godot Movie Maker can write. Anything else (e.g. `.mp4`) used to make Godot log "Can't find movie writer" and keep running **without recording anything** (false-success exit 0); the CLI now rejects other extensions up front with a `-1003` usage error (exit 64). Want an `.mp4`? Pass `.avi` — the transcode at `daemon stop` produces it.
 - `--record` needs a **real renderer**, so it cannot run with `--headless`: Godot Movie Maker's `add_frame()` reads the viewport texture, which the headless dummy renderer leaves null → SIGSEGV on the first frame. The daemon therefore **rejects `--record --headless` with exit code 2** before launching Godot. You don't need to pass `--gui`: when `--record` is set the daemon auto-opens a window even in a non-TTY (subagent / pipe / CI) shell that would otherwise default to headless.
+- **macOS occlusion** — `--record` sets the window `always_on_top` by default to prevent stale (duplicate) frames caused by macOS rendering throttling for occluded windows. Pass `--no-always-on-top` to disable if always-on-top interferes with your workflow.
 - The `.mp4` is produced **only when `daemon stop` runs**; `kill -9` leaves the raw `.avi` behind.
 - **`daemon stop` exits the game gracefully** (via an internal `quit` RPC before SIGTERM), so Movie Maker flushes its write buffer and **no tail frames are lost** — no sacrificial `wait()` pad needed at script end. Falls back to SIGTERM automatically if the RPC fails.
 - `ffmpeg` must be on `PATH` for transcoding. If transcoding fails, the raw `.avi` is kept and `daemon stop` exits with code `2` (transcode log at `.cli_control/ffmpeg.log`).
@@ -597,7 +599,8 @@ options:
 $ godot-cli-control daemon start --help
 usage: godot-cli-control daemon start [-h] [--record]
                                       [--movie-path MOVIE_PATH]
-                                      [--headless | --gui] [--fps FPS]
+                                      [--headless | --gui]
+                                      [--no-always-on-top] [--fps FPS]
                                       [--port PORT]
                                       [--idle-timeout IDLE_TIMEOUT]
                                       [--name NAME] [--time-scale TIME_SCALE]
@@ -615,6 +618,8 @@ options:
   --headless            无窗口模式。默认值：stdout 非 TTY 时自动 headless（CI / pipe /
                         agent）。与 --record 互斥（录制需真实渲染器）。
   --gui                 强制开窗。覆盖 isatty 自动判（例如 stdout 是 pipe 仍想看到窗口）。
+  --no-always-on-top    录制时不强制窗口置顶（默认 --record 置顶，防 macOS 遮挡窗口冻帧 / Movie Maker
+                        写 stale 帧）。仅 --record 时有意义。
   --fps FPS             录制帧率，默认 30
   --port PORT           GameBridge 监听端口（默认 0 = OS 自动分配；写入
                         .cli_control/instances/<name>/port）
@@ -693,7 +698,8 @@ options:
 
 $ godot-cli-control run --help
 usage: godot-cli-control run [-h] [--record] [--movie-path MOVIE_PATH]
-                             [--headless | --gui] [--fps FPS] [--port PORT]
+                             [--headless | --gui] [--no-always-on-top]
+                             [--fps FPS] [--port PORT]
                              [--idle-timeout IDLE_TIMEOUT] [--name NAME]
                              [--no-gui-auto] [--json] [--text] [--no-json]
                              script
@@ -713,6 +719,8 @@ options:
   --headless            无窗口模式。默认值：stdout 非 TTY 时自动 headless（CI / pipe /
                         agent）。与 --record 互斥（录制需真实渲染器）。
   --gui                 强制开窗。覆盖 isatty 自动判（例如 stdout 是 pipe 仍想看到窗口）。
+  --no-always-on-top    录制时不强制窗口置顶（默认 --record 置顶，防 macOS 遮挡窗口冻帧 / Movie Maker
+                        写 stale 帧）。仅 --record 时有意义。
   --fps FPS             录制帧率，默认 30
   --port PORT           GameBridge 监听端口（默认 0 = OS 自动分配；写入
                         .cli_control/instances/<name>/port）
@@ -1646,6 +1654,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **`time-scale` also shortens the wall-clock duration of `wait-time` (game-time semantics unchanged) — don't "compensate" wait times after scaling.** `wait-time 1.0` always waits 1 in-game second regardless of `Engine.time_scale`. At `time_scale=5`, that 1 game-second completes in 0.2 wall-clock seconds — don't multiply your wait values, they're already correct.
 - **`pause` / `time-scale` are engine-global state — in raw CLI sequences and `run` scripts, restore them in `try/finally`; only the pytest `bridge` fixture restores them for you.** The daemon outlives your command/script: if it dies between `pause` and `unpause` (or after `time-scale 5`), every later command runs against a frozen / fast-forwarded tree, and the symptom ("everything mysteriously stuck") doesn't point back at time control. The pytest plugin's `bridge` fixture undoes both at teardown (best-effort `unpause` + `time_scale` back to its setup-time snapshot); outside pytest the cleanup is on you.
 - **With `--record` (Movie Maker fixed-FPS), `time_scale` still applies — the captured video plays back sped-up.** Don't combine `--record` with a high `time_scale` unless you intentionally want a fast-forward video. Movie Maker renders a fixed number of frames per game-time at the configured `--fps`; with a higher `time_scale` each rendered frame covers more game-time, so the frame count stays the same but the animation appears fast-forwarded at normal playback speed.
+- **`screenshot` returns `stale_suspect: true` — the frame may or may not be stale.** `stale_suspect` appears when this screenshot's bytes are byte-for-byte identical to the previous one. It is a *risk hint*, not a guaranteed-stale assertion: a genuinely static game (score screen, freeze-frame) will also trigger it. If you need certainty, force a known state change before screenshotting (e.g. `wait-frames 2`), then check the flag again. The underlying cause is macOS window occlusion throttling. `--record` defaults to `always_on_top` to prevent stale frames during recording; `screenshot` mitigates this independently by calling `RenderingServer.force_draw()` server-side before capture.
 
 ---
 
