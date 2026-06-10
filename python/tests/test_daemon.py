@@ -802,6 +802,72 @@ def test_start_record_writes_movie_path_file_and_args(
     assert daemon.movie_path_file.read_text().strip() == str(movie)
 
 
+# ── start always_on_top（#156 子问题 B / B1） ──
+
+
+def _capture_start_args(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **start_kwargs: Any) -> list[str]:
+    """跑 daemon.start(**start_kwargs)，返回捕获的 Popen args 列表。
+    照搬 test_start_record_writes_movie_path_file_and_args 的 patch 栈（registry
+    隔离由模块级 autouse fixture _isolate_registry 负责）。"""
+    _touch_godot_project(tmp_path)
+    fake_bin = tmp_path / "fake_godot"
+    fake_bin.write_text("")
+    fake_bin.chmod(0o755)
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999_999_700
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def _record_popen(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr("godot_cli_control.daemon.find_godot_binary", lambda: str(fake_bin))
+    monkeypatch.setattr("godot_cli_control.daemon._ensure_imported", lambda *a, **k: None)
+    monkeypatch.setattr("godot_cli_control.daemon.subprocess.Popen", _record_popen)
+    monkeypatch.setattr("godot_cli_control.daemon.time.sleep", lambda *_: None)
+    monkeypatch.setattr("godot_cli_control.daemon._wait_port_ready", lambda *a, **k: True)
+
+    Daemon(tmp_path).start(**start_kwargs)
+    return captured["args"]
+
+
+def test_start_record_adds_always_on_top_arg_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """record=True 默认 always_on_top → Godot args 含 --game-bridge-always-on-top。"""
+    args = _capture_start_args(
+        tmp_path, monkeypatch,
+        record=True, movie_path=str(tmp_path / "r.avi"), port=29993, always_on_top=True,
+    )
+    assert "--game-bridge-always-on-top" in args
+
+
+def test_start_record_no_always_on_top_omits_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """record=True always_on_top=False → 不加该 arg。"""
+    args = _capture_start_args(
+        tmp_path, monkeypatch,
+        record=True, movie_path=str(tmp_path / "r.avi"), port=29992, always_on_top=False,
+    )
+    assert "--game-bridge-always-on-top" not in args
+
+
+def test_start_non_record_omits_always_on_top_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非 record → always_on_top 无意义，不加该 arg。"""
+    args = _capture_start_args(
+        tmp_path, monkeypatch, record=False, port=29991, always_on_top=True,
+    )
+    assert "--game-bridge-always-on-top" not in args
+
+
 # ── start 立即崩溃捕获 ──
 
 

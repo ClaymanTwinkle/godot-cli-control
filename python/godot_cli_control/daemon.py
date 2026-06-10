@@ -152,6 +152,7 @@ class Daemon:
         wait_seconds: int = 30,
         idle_timeout: int = 0,
         time_scale: float | None = None,
+        always_on_top: bool = True,
     ) -> int:
         """启动 Godot daemon，等端口就绪后返回 PID。"""
         # 项目根校验：拒绝在非 Godot 项目目录跑，避免 Godot 用 --path .
@@ -248,6 +249,10 @@ class Daemon:
         env = os.environ.copy()
         if record:
             args += ["--write-movie", movie_path, "--fixed-fps", str(fps)]
+            if always_on_top:
+                # macOS 遮挡窗口会冻帧、Movie Maker 照写 stale 帧（#156 子问题 B）；
+                # 录制默认置顶根治。--no-always-on-top 可关。
+                args.append("--game-bridge-always-on-top")
             env["GODOT_MOVIE_MAKER"] = "1"
             self.movie_path_file.write_text(movie_path)
             print(f"录制模式：{movie_path} ({fps}fps)", file=sys.stderr)

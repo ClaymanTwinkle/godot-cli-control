@@ -1129,3 +1129,18 @@ func test_find_nodes_from_scopes_search_to_subtree() -> void:
 	var matches: Array = result.get("matches", [])
 	assert_eq(matches.size(), 1, "Panel 子树内只有 开始游戏 按钮含 开始")
 	assert_string_contains(str((matches[0] as Dictionary).get("name")), "@Button@")
+
+
+# ── _mark_screenshot_stale_check (#156 子问题 B / B3) ────────────────
+
+func test_stale_check_first_call_not_stale() -> void:
+	var buf := PackedByteArray([1, 2, 3])
+	assert_false(_api._mark_screenshot_stale_check(buf), "首张截图永不 stale")
+
+func test_stale_check_same_bytes_is_stale() -> void:
+	_api._mark_screenshot_stale_check(PackedByteArray([1, 2, 3]))  # 第一张，记录
+	assert_true(_api._mark_screenshot_stale_check(PackedByteArray([1, 2, 3])), "独立对象、相同字节 → stale_suspect")
+
+func test_stale_check_different_bytes_not_stale() -> void:
+	_api._mark_screenshot_stale_check(PackedByteArray([1, 2, 3]))
+	assert_false(_api._mark_screenshot_stale_check(PackedByteArray([4, 5, 6])), "不同字节 → 非 stale")

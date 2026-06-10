@@ -711,6 +711,7 @@ def test_cmd_run_emits_envelope_on_daemon_start_failure(
         fps=30,
         port=0,
         idle_timeout="0",
+        always_on_top=True,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_run(ns)
@@ -1297,6 +1298,7 @@ def test_daemon_start_emits_json_envelope_on_success(
         headless=True,
         fps=30,
         port=9877,
+        always_on_top=True,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_daemon_start(ns)
@@ -1327,6 +1329,7 @@ def test_daemon_start_text_mode_keeps_silent_success(
         headless=True,
         fps=30,
         port=9877,
+        always_on_top=True,
         output_format=OUTPUT_TEXT,
     )
     assert cmd_daemon_start(ns) == 0
@@ -1365,6 +1368,7 @@ def test_daemon_start_rejects_record_with_explicit_headless(
         fps=30,
         port=0,
         idle_timeout="0",
+        always_on_top=True,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_daemon_start(ns)
@@ -2799,6 +2803,7 @@ class TestCmdRunGuiAutoDetect:
             fps=30,
             port=0,
             idle_timeout="0",
+            always_on_top=True,
             output_format=OUTPUT_JSON,
         )
         rc = cmd_run(ns)
@@ -2831,6 +2836,7 @@ class TestCmdRunGuiAutoDetect:
             fps=30,
             port=0,
             idle_timeout="0",
+            always_on_top=True,
             output_format=OUTPUT_JSON,
         )
         rc = cmd_run(ns)
@@ -2863,6 +2869,7 @@ class TestCmdRunGuiAutoDetect:
             fps=30,
             port=0,
             idle_timeout="0",
+            always_on_top=True,
             output_format=OUTPUT_JSON,
         )
         rc = cmd_run(ns)
@@ -3136,6 +3143,7 @@ def test_cmd_daemon_start_daemonerror_exits_infra_with_1006(
         fps=30,
         port=0,
         idle_timeout="0",
+        always_on_top=True,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_daemon_start(ns)
@@ -3642,6 +3650,7 @@ def test_daemon_start_json_includes_instance(
         port=0,
         idle_timeout="0",
         time_scale=None,
+        always_on_top=True,
         output_format=OUTPUT_JSON,
     )
     rc = cmd_daemon_start(ns)

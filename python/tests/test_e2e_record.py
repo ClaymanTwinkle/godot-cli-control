@@ -250,3 +250,50 @@ def test_graceful_stop_preserves_tail_frames(godot_project: Path) -> None:
         f"graceful stop 产物仅 {duration:.2f}s，低于主动推进的 game-time {_RECORD_SECONDS}s"
         f" —— mp4 损坏 / 严重截断（avi 存在={avi.exists()}）"
     )
+
+
+def test_record_sets_window_always_on_top(godot_project: Path) -> None:
+    """daemon start --record 默认置窗口 always_on_top；读 /root:always_on_top 应为 True。"""
+    project = godot_project
+    avi = project / "aot.avi"
+    # 幂等保底：清掉上一个测试可能残留的 daemon，避免 start 撞已存在实例
+    try:
+        _run_cli(project, "daemon", "stop", timeout=30)
+    except Exception:
+        pass
+    start = _run_cli(
+        project, "daemon", "start",
+        "--record", "--movie-path", str(avi), "--fps", str(_FPS),
+        timeout=120,
+    )
+    assert start["ok"] is True and start["result"]["started"], start
+    try:
+        got = _run_cli(project, "get", "/root", "always_on_top")
+        assert got["ok"] is True, got
+        assert got["result"]["value"] is True, f"record 应置 always_on_top：{got}"
+    finally:
+        _run_cli(project, "daemon", "stop", timeout=60)
+
+
+def test_record_no_always_on_top_opt_out(godot_project: Path) -> None:
+    """--no-always-on-top → /root:always_on_top 为 False。"""
+    project = godot_project
+    avi = project / "aot_off.avi"
+    # 幂等保底：清掉上一个测试可能残留的 daemon，避免 start 撞已存在实例
+    try:
+        _run_cli(project, "daemon", "stop", timeout=30)
+    except Exception:
+        pass
+    start = _run_cli(
+        project, "daemon", "start",
+        "--record", "--movie-path", str(avi), "--fps", str(_FPS),
+        "--no-always-on-top",
+        timeout=120,
+    )
+    assert start["ok"] is True and start["result"]["started"], start
+    try:
+        got = _run_cli(project, "get", "/root", "always_on_top")
+        assert got["ok"] is True, got
+        assert got["result"]["value"] is False, f"--no-always-on-top 应不置顶：{got}"
+    finally:
+        _run_cli(project, "daemon", "stop", timeout=60)
