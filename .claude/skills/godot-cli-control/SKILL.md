@@ -14,7 +14,7 @@ WebSocket bridge for headless / scripted control of Godot 4 scenes. A daemon pro
 **Output is JSON by default.** Every RPC subcommand prints a single-line envelope on stdout:
 
 - success: `{"ok": true, "result": <data>}` — exit 0 (or per-command exit code, see *Exit codes* below)
-- error:   `{"ok": false, "error": {"code": <int>, "message": "..."}}` — exit 1 (RPC error) / 2 (connection, timeout) / 64 (usage)
+- error:   `{"ok": false, "error": {"code": <int>, "message": "..."}}` — exit 1 (RPC error) / 2 (connection, timeout) / 4 (recording saved, transcode failed) / 64 (usage)
 
 Pipe straight into `jq` or `json.loads`. Add `--text` (or `--no-json`) to switch back to the legacy human-readable strings if you really want them.
 
@@ -51,7 +51,8 @@ godot-cli-control daemon stop --all --project .
 |---|---|
 | 0 | Success (or, for `exists` / `visible` / `wait-node` / `wait-prop` / `wait-signal` / `find`, the boolean was true / found / matched / emitted / at least one match) |
 | 1 | RPC error (server returned `{"error":...}`); also `exists`/`visible`=false, `wait-node`/`wait-prop`/`wait-signal`=timeout, `find`=zero matches, `daemon status`=stopped |
-| 2 | Connection / IO error (daemon not running) or infra pre-condition failure (daemon failed to start, `daemon stop` encountered a system error — these carry client code `-1006`). Also: **`daemon stop` returns 2** when the daemon stopped cleanly but `ffmpeg` transcode of the recorded `.avi`→`.mp4` failed — the raw `.avi` is kept and `.cli_control/ffmpeg.log` has the details. `run <script>` propagates this: a successful script + failed transcode still exits 2. |
+| 2 | Connection / IO error (daemon not running) or infra pre-condition failure (daemon failed to start, `daemon stop` encountered a system error — these carry client code `-1006`). |
+| 4 | **Recording-only soft failure**: `daemon stop` / `run` stopped the process cleanly and kept the raw `.avi`, but the `ffmpeg` `.avi`→`.mp4` transcode failed (`.cli_control/ffmpeg.log` has details). Envelope stays `ok:true` with a `daemon_stop_warning`. `daemon stop --all` does **not** fold this into its aggregate (still `0|3`); it surfaces as that entry's `rc:4`. |
 | 3 | Aggregate partial/total failure: `daemon stop --all` (at least one daemon failed to stop) or an `--instance all` broadcast where at least one instance's per-instance `rc` was non-zero (RPC error, connection error, or a semantic false like `exists`). Per-target `rc` is in the JSON `result.stopped[]` / `result.instances[]`. |
 | 64 | Usage error — argparse parse failure (missing / invalid args, unknown subcommand), a pre-flight reject caught before connecting (`combo` with no steps / malformed `--steps-json` / `combo -` from a TTY, `hold` with a non-positive duration), a bad runtime argument (`tap` / `wait-time` given a non-number, a `set`/`call` value that fails JSON parsing), **or** `run <script>` given a non-existent path / a script with no `run(bridge)` function, **or** a multi-instance targeting error (≥ 2 instances running without `--instance` / `--name`, an explicitly named instance that is not running, `--instance` and `--name` given conflicting values, or a selected instance whose port file is not readable yet — daemon still starting, retry in a moment). All carry client code `-1003` and consistently exit 64 (#82 / #111). |
 
@@ -85,9 +86,9 @@ godot-cli-control daemon logs --name server --tail 50    # logs for a specific i
 - **`daemon status` payload when running**: `{"state": "running", "pid": N, "port": M, "instance": "<name>"}`.
 - **`daemon status` payload when stopped**: `{"state": "stopped"}`. If the previous launch wrote `.cli_control/instances/<name>/godot.log` or recorded an exit code, the envelope also includes `"last_log": "<path>"` and/or `"last_exit_code": <int>` — use these to diagnose why the daemon died without manually grepping under `.cli_control/`.
 - **`daemon ls` payload**: `{"daemons": [{"project_root", "pid", "port", "instance", "started_at", "godot_bin", "log_path"}, ...]}`. Dead records (PID gone) are auto-pruned on each call, so this is the canonical list of *actually-alive* daemons across all projects on the machine. Text output columns: `pid\tport\tinstance\tproject_root\tstarted_at`.
-- **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","instance","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-instance stop result; the top-level `rc` is the aggregate exit code.
+- **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","instance","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-instance stop result; the top-level `rc` is the aggregate exit code. A per-instance transcode-only failure shows as that entry's `rc: 4` but does not bump the aggregate (`0|3`, `3` only on a hard stop failure).
 - **`daemon logs [--tail N]` payload**: `{"path": "<godot.log>", "lines": [...], "returned": N, "instance": "<name>"}` (default 50, max 1000). Reads the file client-side — **no RPC**, so it works post-mortem after the daemon crashed or stopped (the companion to `daemon status`'s `last_log` hint: status tells you where the log is, `logs` hands you the tail directly). No log file yet → `-1006`, exit 2.
-- **`daemon start --time-scale N`**: sets `Engine.time_scale = N` (range `(0, 100]`) from the very first frame of the Godot process. Useful to run an entire test suite at e.g. 5× speed. **Asymmetry**: `run <script>` mode does not support `--time-scale` as a startup flag — inside the script call `bridge.time_scale(5)` on the first line instead; or use `daemon start --time-scale 5` beforehand and connect the script to the already-running daemon.
+- **`daemon start --time-scale N`**: sets `Engine.time_scale = N` (range `(0, 100]`) from the very first frame of the Godot process. Useful to run an entire test suite at e.g. 5× speed. `run <script>` also accepts `--time-scale N` (passed through to the auto-started daemon, #157) — equivalent to `bridge.time_scale(N)` on the script's first line.
 
 ## Multi-instance (multiple daemons for one project)
 
@@ -137,7 +138,7 @@ When ≥ 2 instances are running and you omit `--instance`, the error JSON is:
 
 — read the `message`, pick a name from the list, and re-run with `--instance <name>`.
 
-`--instance` (top-level) and `--name` (daemon subcommands) are equivalent; passing both with the same value is allowed, different values → -1003 conflict error. `--instance` and `--port` are mutually exclusive (both select which daemon to talk to).
+`--instance` (top-level) and `--name` (daemon subcommands) are equivalent; passing both with the same value is allowed, different values → -1003 conflict error. `--instance` and `--port` are mutually exclusive (both select which daemon to talk to); giving both in any position order is a `-1003` usage / exit 64 error.
 
 **Upgrade-period note**: if you have a legacy daemon started with an older version of the CLI (its pid/port files sit directly under `.cli_control/` instead of `.cli_control/instances/<name>/`), `daemon ls` may temporarily show two lines for the same project. Stop the legacy daemon and the extra line disappears — no manual file migration needed.
 
@@ -255,7 +256,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 ## Command catalogue
 
 **Read:**
-- `get <path> <prop> [<prop2> ...]` — read one or more node properties in a single atomic frame. Single-property result: `{"value": <encoded>, "type": "<GodotType>"}` (type field present only for compound Variants — Vector2, Color, etc.; absent for primitives like `bool`/`int`/`float`/`String`). Multi-property result: `{"values": {"<prop>": {"value": ..., "type"?: ...}, ...}}`. Sub-path form: `get <path> position:x` reads a scalar leaf of a compound Variant (e.g. returns `{"value": 1.5}` with no type field). Security note: sub-path reading can reach write-blacklisted nested attributes (e.g. `script:source_code`) — read-only diagnostic capability, intentional under localhost-only + debug-build gate.
+- `get <path> <prop> [<prop2> ...]` — read one or more node properties in a single atomic frame. Single-property result: `{"value": <encoded>, "type": "<GodotType>"}` (type field present only for compound Variants — Vector2, Color, etc.; absent for primitives like `bool`/`int`/`float`/`String`). Multi-property result: `{"values": {"<prop>": {"value": ..., "type"?: ...}, ...}}`. Sub-path form: `get <path> position:x` reads a scalar leaf of a compound Variant (e.g. returns `{"value": 1.5}` with no type field). A typo'd leaf on a **closed compound type** (Vector2/3/4 family) now fails loud with `1002` listing the valid leaves; other compound types (Color, Transform, …) still return `{"value": null}` for an unknown leaf (open leaf set — can't validate without false positives). Security note: sub-path reading can reach write-blacklisted nested attributes (e.g. `script:source_code`) — read-only diagnostic capability, intentional under localhost-only + debug-build gate.
 - `text <path>` — read Label / Button text
 - `exists <path>` — boolean existence check (exit-code-as-result)
 - `visible <path>` — boolean visibility check (exit-code-as-result)
@@ -442,7 +443,7 @@ Key constraints:
 - **macOS occlusion** — `--record` sets the window `always_on_top` by default to prevent stale (duplicate) frames caused by macOS rendering throttling for occluded windows. Pass `--no-always-on-top` to disable if always-on-top interferes with your workflow.
 - The `.mp4` is produced **only when `daemon stop` runs**; `kill -9` leaves the raw `.avi` behind.
 - **`daemon stop` exits the game gracefully** (via an internal `quit` RPC before SIGTERM), so Movie Maker flushes its write buffer and **no tail frames are lost** — no sacrificial `wait()` pad needed at script end. Falls back to SIGTERM automatically if the RPC fails.
-- `ffmpeg` must be on `PATH` for transcoding. If transcoding fails, the raw `.avi` is kept and `daemon stop` exits with code `2` (transcode log at `.cli_control/ffmpeg.log`).
+- `ffmpeg` must be on `PATH` for transcoding. If transcoding fails, the raw `.avi` is kept and `daemon stop` exits with code `4` (transcode log at `.cli_control/ffmpeg.log`).
 - `--fps` controls the **fixed simulation framerate** Godot runs at while recording — set it to your target video framerate.
 - Output path is relative to cwd; use absolute paths if your script changes cwd.
 - Long `wait-time` / `combo` / recording ops are bounded client-side by a fixed **600s** wall-time fail-safe (not a per-call timeout — game-time vs wall-time can't be predicted). A genuinely long operation (e.g. a > 10-minute recording) that trips it can raise the ceiling via `GODOT_CLI_LONG_OP_TIMEOUT=<seconds>` (e.g. `1800`); a non-positive / non-numeric value is ignored and falls back to 600s.
@@ -701,7 +702,8 @@ usage: godot-cli-control run [-h] [--record] [--movie-path MOVIE_PATH]
                              [--headless | --gui] [--no-always-on-top]
                              [--fps FPS] [--port PORT]
                              [--idle-timeout IDLE_TIMEOUT] [--name NAME]
-                             [--no-gui-auto] [--json] [--text] [--no-json]
+                             [--time-scale TIME_SCALE] [--no-gui-auto]
+                             [--json] [--text] [--no-json]
                              script
 
 若 daemon 未运行则先启动，加载用户脚本调用其 run(bridge) 函数，脚本结束后停掉刚启动的 daemon（已在跑的 daemon 保持原状）。脚本里抛任何异常都会以 exit code 1 退出并打印 traceback。
@@ -729,6 +731,9 @@ options:
                         quit。不传时回退读 .cli_control/config.json 的
                         idle_timeout（issue #44），省得每次手敲。
   --name NAME           实例名（默认 default；多实例并行时用于选靶，等价顶层 --instance；两者同时传值须一致）
+  --time-scale TIME_SCALE
+                        启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 提速用（同 daemon
+                        start）
   --no-gui-auto         禁用脚本静态检测自动 GUI。默认含 screenshot 调用的脚本在非 TTY （subagent /
                         pipe / CI）下也强制开窗 —— headless dummy renderer 拿不到
                         viewport texture，截图会 1006 fail。
@@ -780,18 +785,22 @@ GODOT_BIN 查找顺序：
 可以手动 `export GODOT_BIN=/path/to/godot` 或写到 .cli_control/godot_bin。
 
 $ godot-cli-control click --help
-usage: godot-cli-control click [-h] [--json] [--text] [--no-json] node_path
+usage: godot-cli-control click [-h] [--json] [--text] [--no-json]
+                               [--port PORT | --instance INSTANCE]
+                               node_path
 
 对 Control/Button 节点触发点击。
 
 positional arguments:
-  node_path   绝对节点路径（必须以 /root/ 开头），如 /root/Main/StartButton
+  node_path            绝对节点路径（必须以 /root/ 开头），如 /root/Main/StartButton
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control click /root/Main/StartButton
@@ -800,6 +809,7 @@ $ godot-cli-control click-at --help
 usage: godot-cli-control click-at [-h] [--node NODE]
                                   [--button {left,right,middle}] [--double]
                                   [--json] [--text] [--no-json]
+                                  [--port PORT | --instance INSTANCE]
                                   [x] [y]
 
 按坐标注入鼠标点击（down→up，走真实事件管线）。坐标用 viewport 物理像素；或用 --node 取节点屏幕中心点。区别于 click（节点级 UI 点击）：能命中依赖光标位置的 _gui_input 控件。
@@ -817,6 +827,8 @@ options:
   --json                输出 JSON 信封（默认）
   --text                输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json             --text 别名
+  --port PORT           （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE   （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control click-at 320 240  |  click-at --node /root/Main/Slot3 --button right
@@ -824,20 +836,23 @@ options:
 $ godot-cli-control mouse-move --help
 usage: godot-cli-control mouse-move [-h] [--node NODE] [--json] [--text]
                                     [--no-json]
+                                    [--port PORT | --instance INSTANCE]
                                     [x] [y]
 
 按坐标注入一个鼠标移动事件（带 relative）。坐标用 viewport 物理像素；或用 --node 取节点屏幕中心点。
 
 positional arguments:
-  x            viewport 物理像素 X（与 --node 二选一）
-  y            viewport 物理像素 Y
+  x                    viewport 物理像素 X（与 --node 二选一）
+  y                    viewport 物理像素 Y
 
 options:
-  -h, --help   show this help message and exit
-  --node NODE  移到该节点屏幕中心点（绝对路径），与位置坐标二选一
-  --json       输出 JSON 信封（默认）
-  --text       输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json    --text 别名
+  -h, --help           show this help message and exit
+  --node NODE          移到该节点屏幕中心点（绝对路径），与位置坐标二选一
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control mouse-move 400 300  |  mouse-move --node /root/Player
@@ -847,6 +862,7 @@ usage: godot-cli-control drag [-h] [--from-node FROM_NODE] [--to-node TO_NODE]
                               [--button {left,right,middle}]
                               [--duration DURATION] [--steps STEPS] [--json]
                               [--text] [--no-json]
+                              [--port PORT | --instance INSTANCE]
                               [x1 y1 x2 y2 ...]
 
 坐标级拖拽（issue #154）：起点按下鼠标键 → 按 duration/steps 插值移动 → 终点松开（走真实事件管线，motion 全程带住按键 mask）。坐标用 viewport 物理像素，或用 --from-node/--to-node 取节点屏幕中心点。duration 是 game-time（受 Engine.time_scale，与 combo 同语义）。同一时刻只允许一个 drag 在途，再发回 1014。
@@ -867,6 +883,8 @@ options:
   --json                输出 JSON 信封（默认）
   --text                输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json             --text 别名
+  --port PORT           （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE   （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control drag 100 100 300 200  |  drag --from-node /root/Inv/Slot1 --to-node /root/Map/Cell
@@ -874,38 +892,44 @@ options:
 $ godot-cli-control screenshot --help
 usage: godot-cli-control screenshot [-h] [--node NODE_PATH] [--json] [--text]
                                     [--no-json]
+                                    [--port PORT | --instance INSTANCE]
                                     output_path
 
 截屏并写 PNG 文件。**路径必填**（旧版本可省、把 base64 喷到 stdout —— 已删，避免撑爆 AI 上下文）。
 
 positional arguments:
-  output_path       PNG 输出路径（必填）
+  output_path          PNG 输出路径（必填）
 
 options:
-  -h, --help        show this help message and exit
-  --node NODE_PATH  按该节点的屏幕 AABB 裁剪截图（issue #101），产出小图供像素级断言。节点在屏幕外/零尺寸 →
-                    1011；非 CanvasItem/算不出边界 → 1010。
-  --json            输出 JSON 信封（默认）
-  --text            输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json         --text 别名
+  -h, --help           show this help message and exit
+  --node NODE_PATH     按该节点的屏幕 AABB 裁剪截图（issue #101），产出小图供像素级断言。节点在屏幕外/零尺寸 →
+                       1011；非 CanvasItem/算不出边界 → 1010。
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control screenshot out.png --node /root/Game/Player/Sprite
 
 $ godot-cli-control sprite-info --help
 usage: godot-cli-control sprite-info [-h] [--json] [--text] [--no-json]
+                                     [--port PORT | --instance INSTANCE]
                                      node_path
 
 渲染态聚合查询（issue #101）：Sprite2D / AnimatedSprite2D / TextureRect 的 texture、实际图集区域（effective_region / frame_texture）、翻转、帧号、modulate、visible 一次拿齐。纯属性读，headless 可用。非 sprite 类节点 → 1010。
 
 positional arguments:
-  node_path   绝对节点路径，如 /root/Game/Player/Sprite
+  node_path            绝对节点路径，如 /root/Game/Player/Sprite
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control sprite-info /root/Game/Player/Sprite
@@ -913,23 +937,26 @@ options:
 $ godot-cli-control errors --help
 usage: godot-cli-control errors [-h] [--since MARKER] [--limit N] [--json]
                                 [--text] [--no-json]
+                                [--port PORT | --instance INSTANCE]
 
 结构化查询运行期捕获的 push_error / push_warning（issue #103）。返回 {errors, marker, dropped, truncated}；--since 传上次 marker 只看新增（「本用例期间应零 push_error」断言的原语），--limit 0 纯拿基线。需 Godot 4.5+（Logger API），老引擎报 1012。
 
 options:
-  -h, --help      show this help message and exit
-  --since MARKER  只看 seq > MARKER 的新增（传上一次响应的 marker，实现「本用例期间」语义）
-  --limit N       最多返回 N 条（0..1000；0 = 纯基线查询，只拿 marker 不取数据）
-  --json          输出 JSON 信封（默认）
-  --text          输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json       --text 别名
+  -h, --help           show this help message and exit
+  --since MARKER       只看 seq > MARKER 的新增（传上一次响应的 marker，实现「本用例期间」语义）
+  --limit N            最多返回 N 条（0..1000；0 = 纯基线查询，只拿 marker 不取数据）
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control errors --since 42
 
 $ godot-cli-control tree --help
 usage: godot-cli-control tree [-h] [--max-nodes MAX_NODES] [--json] [--text]
-                              [--no-json]
+                              [--no-json] [--port PORT | --instance INSTANCE]
                               [path-or-depth] [depth]
 
 dump 场景树为 JSON（省略 path 取当前场景，传 /root 起的路径取子树）。
@@ -948,82 +975,98 @@ options:
   --json                输出 JSON 信封（默认）
   --text                输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json             --text 别名
+  --port PORT           （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE   （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control tree /root/GameUI 2
 
 $ godot-cli-control press --help
-usage: godot-cli-control press [-h] [--json] [--text] [--no-json] action
+usage: godot-cli-control press [-h] [--json] [--text] [--no-json]
+                               [--port PORT | --instance INSTANCE]
+                               action
 
 按下输入动作（持续按住，需配 release 释放）。
 
 positional arguments:
-  action      InputMap 动作名，如 jump
+  action               InputMap 动作名，如 jump
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control press jump
 
 $ godot-cli-control release --help
-usage: godot-cli-control release [-h] [--json] [--text] [--no-json] action
+usage: godot-cli-control release [-h] [--json] [--text] [--no-json]
+                                 [--port PORT | --instance INSTANCE]
+                                 action
 
 释放之前 press 按下的输入动作。
 
 positional arguments:
-  action      InputMap 动作名
+  action               InputMap 动作名
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control release jump
 
 $ godot-cli-control tap --help
 usage: godot-cli-control tap [-h] [--wait] [--json] [--text] [--no-json]
+                             [--port PORT | --instance INSTANCE]
                              action [duration]
 
 短按动作（press → 等待 → release）。默认异步立即返回；加 --wait 阻塞到时长结束。
 
 positional arguments:
-  action      InputMap 动作名
-  duration    按下时长（秒），默认 0.1
+  action               InputMap 动作名
+  duration             按下时长（秒），默认 0.1
 
 options:
-  -h, --help  show this help message and exit
-  --wait      阻塞到动作时长（game-time）结束再返回，再读状态即结算后值；默认异步立即返回。等价于命令后再跑一次 wait-time
-              <时长>，但复用同一连接。
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --wait               阻塞到动作时长（game-time）结束再返回，再读状态即结算后值；默认异步立即返回。等价于命令后再跑一次
+                       wait-time <时长>，但复用同一连接。
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control tap jump 0.2
 
 $ godot-cli-control hold --help
 usage: godot-cli-control hold [-h] [--wait] [--json] [--text] [--no-json]
+                              [--port PORT | --instance INSTANCE]
                               action duration
 
 按住动作指定时长（秒），到点自动释放。默认命令立即返回（动作在游戏里持续该时长）；要读动作完成后的状态请加 --wait（或命令后先 wait-time <时长>）。
 
 positional arguments:
-  action      InputMap 动作名
-  duration    按住时长（秒，必须 > 0）
+  action               InputMap 动作名
+  duration             按住时长（秒，必须 > 0）
 
 options:
-  -h, --help  show this help message and exit
-  --wait      阻塞到动作时长（game-time）结束再返回，再读状态即结算后值；默认异步立即返回。等价于命令后再跑一次 wait-time
-              <时长>，但复用同一连接。
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --wait               阻塞到动作时长（game-time）结束再返回，再读状态即结算后值；默认异步立即返回。等价于命令后再跑一次
+                       wait-time <时长>，但复用同一连接。
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control hold jump 1.5
@@ -1031,6 +1074,7 @@ options:
 $ godot-cli-control combo --help
 usage: godot-cli-control combo [-h] [--steps-json STEPS_JSON] [--wait]
                                [--json] [--text] [--no-json]
+                               [--port PORT | --instance INSTANCE]
                                [json_file]
 
 依次执行一段输入动作。三种喂法：位置 ``<file.json>`` / 位置 ``-`` (stdin) / ``--steps-json '[...]'``。
@@ -1048,6 +1092,8 @@ options:
   --json                输出 JSON 信封（默认）
   --text                输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json             --text 别名
+  --port PORT           （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE   （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control combo --steps-json '[{"action":"jump","duration":0.2}]'
@@ -1073,146 +1119,172 @@ step schema（每个 step 二选一，按数组顺序串行执行）:
 
 $ godot-cli-control release-all --help
 usage: godot-cli-control release-all [-h] [--json] [--text] [--no-json]
+                                     [--port PORT | --instance INSTANCE]
 
 释放所有当前持有的输入动作。
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control release-all
 
 $ godot-cli-control get --help
 usage: godot-cli-control get [-h] [--json] [--text] [--no-json]
+                             [--port PORT | --instance INSTANCE]
                              node_path props [props ...]
 
 读节点属性（1 个或多个；多个时服务端同帧原子读，issue #100）。复合类型（Vector2 等）返回与 set 同 schema 的数组 + type 字段，可直接回灌 set（issue #99）。支持 sub-path：position:x。
 
 positional arguments:
-  node_path   绝对节点路径，如 /root/Main
-  props       属性名，1 个或多个；支持 sub-path 如 position:x
+  node_path            绝对节点路径，如 /root/Main
+  props                属性名，1 个或多个；支持 sub-path 如 position:x
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control get /root/Player position visible
 
 $ godot-cli-control set --help
 usage: godot-cli-control set [-h] [--text-value] [--json] [--text] [--no-json]
+                             [--port PORT | --instance INSTANCE]
                              node_path prop value
 
 写节点属性。value 优先按 JSON 解析（数字/数组/对象），失败退回字符串。加 --text-value 强制把 value 当字符串，避开 null/true/false/数字 footgun。
 
 positional arguments:
-  node_path     绝对节点路径
-  prop          属性名
-  value         JSON 字面量或字符串。例：'42' / '"hello"' / '[10, 20]' / 'hello'
+  node_path            绝对节点路径
+  prop                 属性名
+  value                JSON 字面量或字符串。例：'42' / '"hello"' / '[10, 20]' / 'hello'
 
 options:
-  -h, --help    show this help message and exit
-  --text-value  把 value 当字面字符串，不走 JSON 解析（避开 'null'/'true'/数字 footgun）
-  --json        输出 JSON 信封（默认）
-  --text        输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json     --text 别名
+  -h, --help           show this help message and exit
+  --text-value         把 value 当字面字符串，不走 JSON 解析（避开 'null'/'true'/数字 footgun）
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control set /root/Main/Score text "42"
 
 $ godot-cli-control call --help
 usage: godot-cli-control call [-h] [--text-value] [--json] [--text]
-                              [--no-json]
+                              [--no-json] [--port PORT | --instance INSTANCE]
                               node_path method [args ...]
 
 调节点方法。每个参数同 set：先 JSON 解析，失败退回字符串。返回值原样（同 ``get`` 渲染规则）。
 
 positional arguments:
-  node_path     绝对节点路径，如 /root/Main
-  method        节点上的方法名
-  args          方法参数；每个先按 JSON 解析失败 fallback 字符串
+  node_path            绝对节点路径，如 /root/Main
+  method               节点上的方法名
+  args                 方法参数；每个先按 JSON 解析失败 fallback 字符串
 
 options:
-  -h, --help    show this help message and exit
-  --text-value  把所有 args 当字面字符串，不走 JSON 解析
-  --json        输出 JSON 信封（默认）
-  --text        输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json     --text 别名
+  -h, --help           show this help message and exit
+  --text-value         把所有 args 当字面字符串，不走 JSON 解析
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control call /root/Main start_game 1 "easy"
 
 $ godot-cli-control text --help
-usage: godot-cli-control text [-h] [--json] [--text] [--no-json] node_path
+usage: godot-cli-control text [-h] [--json] [--text] [--no-json]
+                              [--port PORT | --instance INSTANCE]
+                              node_path
 
 读 Label / Button 的 text（get_text 的便捷形式）。
 
 positional arguments:
-  node_path   绝对节点路径
+  node_path            绝对节点路径
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control text /root/Main/Title
 
 $ godot-cli-control exists --help
-usage: godot-cli-control exists [-h] [--json] [--text] [--no-json] node_path
+usage: godot-cli-control exists [-h] [--json] [--text] [--no-json]
+                                [--port PORT | --instance INSTANCE]
+                                node_path
 
 节点是否存在。退出码：0=true, 1=false, 2=连接/超时错误。shell ``if godot-cli-control exists /root/Foo; then …`` 可用。
 
 positional arguments:
-  node_path   绝对节点路径
+  node_path            绝对节点路径
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control exists /root/Main/Boss
 
 $ godot-cli-control visible --help
-usage: godot-cli-control visible [-h] [--json] [--text] [--no-json] node_path
+usage: godot-cli-control visible [-h] [--json] [--text] [--no-json]
+                                 [--port PORT | --instance INSTANCE]
+                                 node_path
 
 节点是否可见。退出码同 exists：0=true, 1=false, 2=infra error。
 
 positional arguments:
-  node_path   绝对节点路径
+  node_path            绝对节点路径
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control visible /root/Main/Hud
 
 $ godot-cli-control children --help
 usage: godot-cli-control children [-h] [--json] [--text] [--no-json]
+                                  [--port PORT | --instance INSTANCE]
                                   node_path [type_filter]
 
 列出节点的直接子节点（一层）。
 
 positional arguments:
-  node_path    绝对节点路径
-  type_filter  可选类型过滤，如 Button / Label
+  node_path            绝对节点路径
+  type_filter          可选类型过滤，如 Button / Label
 
 options:
-  -h, --help   show this help message and exit
-  --json       输出 JSON 信封（默认）
-  --text       输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json    --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control children /root/Main
@@ -1222,6 +1294,7 @@ usage: godot-cli-control find [-h] [--from NODE_PATH] [--type CLASS]
                               [--exact TEXT] [--contains SUBSTR]
                               [--name-pattern GLOB] [--limit N] [--json]
                               [--text] [--no-json]
+                              [--port PORT | --instance INSTANCE]
 
 服务端单次遍历按 类型/文本/名字通配 搜索节点（issue #153）——程序化匿名 UI（@Button@12 这类不稳定路径）按文本定位的原语，替代客户端 children+text 逐层递归（录制模式下每个 RPC 等帧渲染，几十次往返折成一次）。过滤器 AND 语义，至少给一个；matches 按 BFS 浅层优先。退出码：0=有匹配, 1=零匹配, 2=infra error，shell ``if godot-cli-control find --exact OK; then …`` 可用。
 
@@ -1236,42 +1309,51 @@ options:
   --json               输出 JSON 信封（默认）
   --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control find --type Button --contains 开始
 
 $ godot-cli-control wait-node --help
 usage: godot-cli-control wait-node [-h] [--json] [--text] [--no-json]
+                                   [--port PORT | --instance INSTANCE]
                                    node_path [timeout]
 
 轮询直到节点出现（或 timeout）。退出码：0=found, 1=timeout, 2=infra error。
 
 positional arguments:
-  node_path   绝对节点路径
-  timeout     超时秒，默认 5
+  node_path            绝对节点路径
+  timeout              超时秒，默认 5
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control wait-node /root/Main/StartButton 5
 
 $ godot-cli-control wait-time --help
-usage: godot-cli-control wait-time [-h] [--json] [--text] [--no-json] seconds
+usage: godot-cli-control wait-time [-h] [--json] [--text] [--no-json]
+                                   [--port PORT | --instance INSTANCE]
+                                   seconds
 
 按 game time 等待 N 秒（在 --write-movie 模式下与录像帧对齐）。
 
 positional arguments:
-  seconds     等待秒数（服务端范围 0 ≤ seconds ≤ 3600；client 在 ≤0 时短路返回成功）
+  seconds              等待秒数（服务端范围 0 ≤ seconds ≤ 3600；client 在 ≤0 时短路返回成功）
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control wait-time 0.5
@@ -1280,6 +1362,7 @@ $ godot-cli-control wait-prop --help
 usage: godot-cli-control wait-prop [-h] [--op {eq,ne,gt,lt,ge,le}]
                                    [--timeout TIMEOUT] [--tolerance TOLERANCE]
                                    [--json] [--text] [--no-json]
+                                   [--port PORT | --instance INSTANCE]
                                    node_path prop value
 
 逐帧轮询直到属性满足条件（或 timeout）。退出码：0=命中, 1=超时, 2=infra error。超时返回 reason（timeout/node_not_found/property_not_found）+ 最后读到的值，便于诊断 typo。
@@ -1299,26 +1382,31 @@ options:
   --json                输出 JSON 信封（默认）
   --text                输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json             --text 别名
+  --port PORT           （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE   （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control wait-prop /root/Player position:x 500 --op gt --timeout 3
 
 $ godot-cli-control wait-signal --help
 usage: godot-cli-control wait-signal [-h] [--json] [--text] [--no-json]
+                                     [--port PORT | --instance INSTANCE]
                                      node_path signal_name [timeout]
 
 等信号发射（或 timeout），命中带回编码后的信号参数。退出码：0=命中, 1=超时, 2=infra error。注意：必须先挂等待再触发动作（见 SKILL.md pitfall）。
 
 positional arguments:
-  node_path    绝对节点路径
-  signal_name  信号名，如 body_entered
-  timeout      超时秒（0..3600，默认 5）
+  node_path            绝对节点路径
+  signal_name          信号名，如 body_entered
+  timeout              超时秒（0..3600，默认 5）
 
 options:
-  -h, --help   show this help message and exit
-  --json       输出 JSON 信封（默认）
-  --text       输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json    --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control wait-signal /root/Area door_opened 3
@@ -1326,19 +1414,22 @@ options:
 $ godot-cli-control wait-frames --help
 usage: godot-cli-control wait-frames [-h] [--physics] [--json] [--text]
                                      [--no-json]
+                                     [--port PORT | --instance INSTANCE]
                                      frames
 
 等 N 个 process 帧（--physics 等物理帧）。确定性帧推进，替代短 sleep。
 
 positional arguments:
-  frames      等待帧数（1..3600）
+  frames               等待帧数（1..3600）
 
 options:
-  -h, --help  show this help message and exit
-  --physics   等 physics_frame（默认 process_frame）
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --physics            等 physics_frame（默认 process_frame）
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control wait-frames 3 --physics
@@ -1346,15 +1437,18 @@ options:
 $ godot-cli-control scene-reload --help
 usage: godot-cli-control scene-reload [-h] [--timeout TIMEOUT] [--json]
                                       [--text] [--no-json]
+                                      [--port PORT | --instance INSTANCE]
 
 重载当前场景并阻塞到新场景 ready（per-test 隔离原语）。失败（无 current scene / 超时）报 1008，exit 1。注意：返回后此前缓存的所有节点路径/引用全部失效。
 
 options:
-  -h, --help         show this help message and exit
-  --timeout TIMEOUT  等新场景 ready 的超时秒（>0 且 <=3600，默认 10）
-  --json             输出 JSON 信封（默认）
-  --text             输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json          --text 别名
+  -h, --help           show this help message and exit
+  --timeout TIMEOUT    等新场景 ready 的超时秒（>0 且 <=3600，默认 10）
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control scene-reload
@@ -1362,64 +1456,77 @@ options:
 $ godot-cli-control scene-change --help
 usage: godot-cli-control scene-change [-h] [--timeout TIMEOUT] [--json]
                                       [--text] [--no-json]
+                                      [--port PORT | --instance INSTANCE]
                                       scene_path
 
 切换到指定场景并阻塞到新场景 ready。路径不存在/加载失败/超时 报 1008，exit 1。
 
 positional arguments:
-  scene_path         目标场景资源路径（res:// 或 uid://）
+  scene_path           目标场景资源路径（res:// 或 uid://）
 
 options:
-  -h, --help         show this help message and exit
-  --timeout TIMEOUT  等新场景 ready 的超时秒（>0 且 <=3600，默认 10）
-  --json             输出 JSON 信封（默认）
-  --text             输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json          --text 别名
+  -h, --help           show this help message and exit
+  --timeout TIMEOUT    等新场景 ready 的超时秒（>0 且 <=3600，默认 10）
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control scene-change res://levels/level2.tscn
 
 $ godot-cli-control time-scale --help
-usage: godot-cli-control time-scale [-h] [--json] [--text] [--no-json] [value]
+usage: godot-cli-control time-scale [-h] [--json] [--text] [--no-json]
+                                    [--port PORT | --instance INSTANCE]
+                                    [value]
 
 读 / 写 Engine.time_scale（无参 = 读）。wait-time 按 game time 计，倍速后语义不变、墙钟变快。合法域 (0, 100]。注意：--record 下仍生效，录出的是加速画面。
 
 positional arguments:
-  value       新倍速（>0 且 <=100）；省略则读当前值
+  value                新倍速（>0 且 <=100）；省略则读当前值
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control time-scale 5
 
 $ godot-cli-control pause --help
 usage: godot-cli-control pause [-h] [--json] [--text] [--no-json]
+                               [--port PORT | --instance INSTANCE]
 
 暂停 SceneTree（get_tree().paused = true）。幂等；返回 {"paused": true}。
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control pause
 
 $ godot-cli-control unpause --help
 usage: godot-cli-control unpause [-h] [--json] [--text] [--no-json]
+                                 [--port PORT | --instance INSTANCE]
 
 恢复 SceneTree（paused = false）。幂等；返回 {"paused": false}。
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control unpause
@@ -1427,62 +1534,74 @@ options:
 $ godot-cli-control step-frames --help
 usage: godot-cli-control step-frames [-h] [--physics] [--json] [--text]
                                      [--no-json]
+                                     [--port PORT | --instance INSTANCE]
                                      frames
 
 paused 状态下确定性推进 N 帧再停（物理断言银弹：推 N 个物理帧后状态必然确定）。必须先 pause，否则报 1009，exit 1。
 
 positional arguments:
-  frames      推进帧数（1..3600）
+  frames               推进帧数（1..3600）
 
 options:
-  -h, --help  show this help message and exit
-  --physics   推进 physics_frame（默认 process_frame）
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --physics            推进 physics_frame（默认 process_frame）
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control step-frames 3 --physics
 
 $ godot-cli-control pressed --help
 usage: godot-cli-control pressed [-h] [--json] [--text] [--no-json]
+                                 [--port PORT | --instance INSTANCE]
 
 列出当前模拟器持有的输入动作（press + held 去重合并）。
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control pressed
 
 $ godot-cli-control combo-cancel --help
 usage: godot-cli-control combo-cancel [-h] [--json] [--text] [--no-json]
+                                      [--port PORT | --instance INSTANCE]
 
 取消正在运行的 combo（不影响 press/hold）。
 
 options:
-  -h, --help  show this help message and exit
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control combo-cancel
 
 $ godot-cli-control actions --help
 usage: godot-cli-control actions [-h] [--all] [--json] [--text] [--no-json]
+                                 [--port PORT | --instance INSTANCE]
 
 列出运行项目的 InputMap 动作。默认过滤 ui_* 内置；加 ``--all`` 看全。
 
 options:
-  -h, --help  show this help message and exit
-  --all       包含 ui_* 内置动作（默认仅项目自定义动作）
-  --json      输出 JSON 信封（默认）
-  --text      输出旧的人类可读字符串（不再加信封；errors 走 stderr）
-  --no-json   --text 别名
+  -h, --help           show this help message and exit
+  --all                包含 ui_* 内置动作（默认仅项目自定义动作）
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
 
 示例:
   godot-cli-control actions
@@ -1551,7 +1670,8 @@ def run(bridge):
 **Exit code (when `run` started the daemon itself):**
 - `0` — script succeeded and daemon stopped cleanly.
 - `1` — script raised (envelope carries `code: -1005` with the exception summary; full traceback on stderr).
-- `2` — script-path / daemon-start failed, **or** the script succeeded but the auto-`daemon stop` afterwards hit an ffmpeg transcode failure (success envelope still emits, with `daemon_stop_warning` populated; raw `.avi` is preserved).
+- `2` — script-path / daemon-start failed (OS-level; carries `-1006`).
+- `4` — script succeeded but the auto-`daemon stop` afterwards hit an ffmpeg transcode failure (success envelope still emits, with `daemon_stop_warning` populated; raw `.avi` is preserved).
 - `64` — argparse usage error (e.g. malformed `--idle-timeout`).
 
 ## pytest plugin (preferred for end-to-end test suites)
@@ -1625,7 +1745,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Daemon won't start** — check `.cli_control/godot_bin` exists and points at a real Godot 4 binary, or `export GODOT_BIN=/path/to/godot`. See `godot-cli-control init -h` for the full lookup chain.
 - **Output flags work in any position** — `--json` / `--text` / `--no-json` are accepted both before and after subcommands as of this fix.
 - **There are two independent `--port` flags — don't confuse them:**
-  - Top-level `godot-cli-control --port N <subcommand>`: the GameBridge port an RPC subcommand connects to (auto-discovered from `.cli_control/instances/<name>/port`; legacy `.cli_control/port` is read as fallback; override only when needed). **Must come before the subcommand.**
+  - Top-level `godot-cli-control --port N <subcommand>`: the GameBridge port an RPC subcommand connects to (auto-discovered from `.cli_control/instances/<name>/port`; legacy `.cli_control/port` is read as fallback; override only when needed). Accepts both positions now (#157): `--port N <subcommand>` or `<subcommand> ... --port N`.
   - `daemon start --port N`: the port the daemon itself listens on. This is a local flag of `start`, so — like any other `daemon` flag — its position doesn't matter.
 - **`combo` rejects everything with `1004`** — a combo is already running. Call `combo-cancel` (or `release-all`) to abort.
 - **`hold` / `press` persist after the command returns** — by design. Each CLI command is its own short-lived connection that closes *cleanly*, and a clean close does **not** release inputs. `hold <action> <dur>` auto-releases after `<dur>` seconds (its timer keeps running in the daemon); a sticky `press <action>` stays held until you call `release <action>` / `release-all` (or the daemon's idle-timeout shuts it down). If a character looks stuck moving, you probably left a `press` dangling — run `release-all`. (An *abnormal* drop — your client crashing or being killed mid-session — does trigger a safety `release-all`, so stuck keys can't outlive a dead client.)
@@ -1642,7 +1762,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **Replace magic `wait-time` sleeps with `wait-prop` or `wait-frames`.** Fixed `wait-time 0.3` guesses are fragile — they're too long when the game is fast, too short under load. Prefer: `wait-prop /root/Player on_floor true` (wait for state) or `wait-frames 4` (wait for a specific number of frames to render). These are more reliable and often 2-10× faster.
 - **`get` on a compound Variant returns an array + type — you can round-trip it straight into `set`.** `get /root/Player position` returns `{"value": [-2480.0, 1400.0], "type": "Vector2"}`. That `value` array is the exact format `set` accepts: `set /root/Player position '[-2480.0, 1400.0]'`. No conversion needed.
 - **Arrays/Dicts nested inside compound Variants encode as arrays but carry no `type` field — use a sub-path to read a typed leaf.** For example, a `Dictionary` property that happens to contain a `Vector3` will give you an untyped array. If you need the type, use `get <node> mydict:somekey` to read the leaf directly and get its type.
-- **Sub-path reading a non-existent leaf returns `null` — indistinguishable from a real `null` value (typo only detected at the top-level name).** `get /root/Node position:typo` returns `{"value": null}` with no error — the `":" `suffix is not validated beyond checking that `"position"` exists as a top-level property. Verify your leaf name carefully; the only error you'll get is `1002` if the part before `":"` itself doesn't exist.
+- **Sub-path leaf typo — behavior depends on the compound type.** For **Vector2/3/4 family** (closed leaf set), a typo'd leaf now fails loud with `1002` and lists the valid leaves (`x`, `y`, `z`, `w` as applicable) — e.g. `get /root/Node position:typo` → `{"ok": false, "error": {"code": 1002, "message": "unknown leaf 'typo' for Vector2; valid: x, y"}}`. For **other compound types** (Color, Transform, Basis, …) an unknown leaf still returns `{"value": null}` silently (open leaf set — server can't validate without false positives). Either way, `1002` is still returned if the part before `":"` itself doesn't exist as a top-level property.
 - **Python API (`bridge.get_property` / `bridge.get_properties`) returns bare values only — no `type` field.** These convenience methods strip the `type` from the server response to reduce boilerplate. When you need the `type` field (e.g. to distinguish `Vector2` from a plain 2-element array), go through `client.request("get_property", {"path": ..., "property": ...})` directly.
 - **After `scene-change` / `scene-reload`, all node paths from the previous scene are stale** — re-locate nodes with `wait-node` before touching them. The new scene root is a brand-new tree; any path cached from the old scene will return `1001 "node not found"`.
 - **"Tests green but the game logged errors" is undetectable unless you assert it — use `no_push_errors` (pytest) or the `errors --since` cursor (shell).** Business-level assertions can't see a `push_error` the game swallowed (the classic: a sprite fails to load, the NPC silently doesn't render, every position check still passes). Baseline `errors --limit 0` → act → `errors --since <marker>`. Needs Godot 4.5+ (error `1012` otherwise). Note `errors` only sees what was pushed *after* the bridge booted, and its ring keeps the last 1000 entries (`dropped > 0` = storm overflow).

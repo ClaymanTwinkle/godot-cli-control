@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -2160,7 +2161,7 @@ def test_daemon_stop_all_invokes_terminate(
 def test_daemon_stop_all_returns_partial_when_one_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """--all 中至少一条 stop 抛 DaemonError → rc=EXIT_PARTIAL（与 ffmpeg rc=2 区分）。"""
+    """--all 中至少一条 stop 抛 DaemonError → rc=EXIT_PARTIAL（与 ffmpeg 转码失败 rc=4 区分）。"""
     from godot_cli_control import registry
     from godot_cli_control.daemon import DaemonError
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
@@ -2180,18 +2181,20 @@ def test_daemon_stop_all_returns_partial_when_one_fails(
     import godot_cli_control.daemon as daemon_mod
     monkeypatch.setattr(daemon_mod.Daemon, "stop", fake_stop)
 
-    from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON, EXIT_PARTIAL
+    from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON, EXIT_PARTIAL, EXIT_INFRA_ERROR, EXIT_TRANSCODE_FAILED
     import argparse
     ns = argparse.Namespace(all=True, project=None, output_format=OUTPUT_JSON)
     rc = cmd_daemon_stop(ns)
     assert rc == EXIT_PARTIAL
-    assert EXIT_PARTIAL != 2, "EXIT_PARTIAL 必须与 EXIT_INFRA_ERROR 区分，避免与单项目 ffmpeg rc=2 撞码"
+    assert EXIT_PARTIAL not in (EXIT_INFRA_ERROR, EXIT_TRANSCODE_FAILED), (
+        "EXIT_PARTIAL 必须与 infra(2) / 单项目转码失败(4) 都区分，避免撞码"
+    )
 
 
-def test_daemon_stop_all_ffmpeg_rc2_does_not_promote_to_partial(
+def test_daemon_stop_all_transcode_failure_does_not_promote_to_partial(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """单条 stop 返回 2（ffmpeg 转码失败但 daemon 已停）不算 --all 失败 —— rc 应为 0。"""
+    """单条 stop 返回 4（ffmpeg 转码失败但 daemon 已停）不算 --all 失败 —— rc 应为 0。"""
     from godot_cli_control import registry
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
     proj = tmp_path / "p"
@@ -2200,7 +2203,8 @@ def test_daemon_stop_all_ffmpeg_rc2_does_not_promote_to_partial(
     registry.register(proj, pid=os.getpid(), port=1, godot_bin="x", log_path="y")
 
     import godot_cli_control.daemon as daemon_mod
-    monkeypatch.setattr(daemon_mod.Daemon, "stop", lambda self: 2)
+    from godot_cli_control.daemon import STOP_RC_TRANSCODE_FAILED
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", lambda self: STOP_RC_TRANSCODE_FAILED)
 
     from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON
     import argparse
@@ -4120,6 +4124,48 @@ def test_name_and_instance_conflict_is_usage_error(
     assert not stop_called, "不应调用 stop"
 
 
+def test_run_parses_time_scale():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["run", "script.py", "--time-scale", "5"])
+    assert ns.time_scale == 5.0
+
+
+def test_run_passes_time_scale_to_daemon_start(tmp_path, monkeypatch, capsys):
+    """cmd_run 必须把 --time-scale 透传进 daemon.start（与 daemon start 对称）。"""
+    from godot_cli_control import cli
+
+    script = tmp_path / "s.py"
+    script.write_text("def run(bridge):\n    pass\n")
+
+    captured = {}
+
+    class _FakeDaemon:
+        def __init__(self, *a, **k):
+            pass
+
+        def is_running(self):
+            return False
+
+        def start(self, **kwargs):
+            captured.update(kwargs)
+            return 1
+
+        def current_port(self):
+            return 12345
+
+        def stop(self):
+            return 0
+
+    import godot_cli_control.daemon as daemon_mod
+    monkeypatch.setattr(daemon_mod, "Daemon", _FakeDaemon)
+    monkeypatch.setattr(cli, "_exec_user_script", lambda *a, **k: 0)
+
+    ns = cli.build_parser().parse_args(["run", str(script), "--time-scale", "5"])
+    rc = cli.cmd_run(ns)
+    assert rc == 0
+    assert captured.get("time_scale") == 5.0
+
+
 def test_name_and_instance_same_value_ok(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4565,3 +4611,38 @@ async def test_cmd_drag_mixed_from_node_to_literal() -> None:
         "x1": 0.0, "y1": 0.0, "x2": 30.0, "y2": 40.0,
         "from_node": "/root/A", "to_node": None,
     }
+
+
+# ── #157 item2：RPC 子命令后置 --port / --instance ──
+
+def test_rpc_subcommand_accepts_trailing_port():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["exists", "/root/Foo", "--port", "9999"])
+    assert ns.port == 9999
+
+
+def test_rpc_subcommand_leading_port_still_works():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["--port", "9999", "exists", "/root/Foo"])
+    assert ns.port == 9999
+
+
+def test_rpc_subcommand_trailing_instance_all():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["exists", "/root/Foo", "--instance", "all"])
+    assert ns.instance == "all"
+
+
+def test_cross_position_port_and_instance_conflict(monkeypatch, capsys):
+    """--instance 前置 + --port 后置：两个 mutex 都照不到，guard 兜成 usage 错。"""
+    from godot_cli_control import cli
+    monkeypatch.setattr(
+        sys, "argv",
+        ["godot-cli-control", "--instance", "client1", "exists", "/root/Foo", "--port", "5"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 64
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False
+    assert out["error"]["code"] == -1003

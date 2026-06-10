@@ -26,7 +26,8 @@
 3. **退出码语义化**
    - 0 = 成功 / 布尔 true / 节点存在 / wait 命中
    - 1 = RPC 错（含 `exists`/`visible`=false、`wait-node` timeout、`daemon status` stopped）
-   - 2 = 连接 / IO 错，或 infra 前置失败（daemon 起不来、daemon stop 系统错误；这些带 `-1006`）；`daemon stop` ffmpeg 转码失败也是 2
+   - 2 = 连接 / IO 错，或 infra 前置失败（daemon 起不来、daemon stop 系统错误；这些带 `-1006`）
+   - 4 = `daemon stop` / `run` 进程已正常停止、原始 AVI 保留、仅 ffmpeg 转 mp4 失败（信封仍 ok:true + daemon_stop_warning）；`daemon stop --all` 聚合不计此项（仍只 DaemonError → 3），转码失败只反映在 per-entry rc
    - 64 = 用法错：argparse + RPC 子命令的 preflight / 运行期参数解析失败，以及 `run <script>` 脚本路径不存在或缺 `run(bridge)`；统一携带 `-1003`（#82 / #111：`-1003` 恒等于 64）
    - 3 = 聚合操作部分/全部失败：`daemon stop --all` 至少一个目标失败，或 `--instance all` 广播至少一个实例 rc≠0（专用，避免与 2 撞）
    - shell `if godot-cli-control exists /root/Foo; then …` 必须能用。

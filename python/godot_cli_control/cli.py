@@ -48,6 +48,9 @@ EXIT_INFRA_ERROR = 2  # 连接 / 超时 / 用户输入解析失败
 # stop rc=2 是「daemon 已停但 ffmpeg 转码失败」的合法成功旁路；--all 聚合若也用 2，
 # 调用方分不清「全停成功只是某个 transcode 失败」与「真有 daemon 没停掉」。
 EXIT_PARTIAL = 3  # 聚合操作（daemon stop --all / --instance all 广播）部分或全部目标失败
+EXIT_TRANSCODE_FAILED = 4  # #157：daemon 已正常停止、原始 AVI 保留、仅 ffmpeg 转码失败
+# （进程已停、信封仍 ok:true + daemon_stop_warning）。值须等于 daemon.STOP_RC_TRANSCODE_FAILED，
+# drift 由 test_transcode_failed_exit_code_single_source 守。
 EXIT_USAGE = 64  # 命令组合无效（如 combo 既无文件又无 --steps-json）
 
 # RPC 错误统一信封（无论 --json 还是 --text）的连接/超时占位 code。GD 端
@@ -1879,7 +1882,7 @@ def cmd_daemon_stop(ns: argparse.Namespace) -> int:
         _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
         return EXIT_INFRA_ERROR
     if fmt == OUTPUT_JSON:
-        # rc 0=正常停 / 2=ffmpeg 转码失败但 daemon 已停。两种都算"stopped"，
+        # rc 0=正常停 / 4=ffmpeg 转码失败但 daemon 已停。两种都算"stopped"，
         # 把 rc 透出让 agent 决定要不要 retry transcode。
         _emit_success_payload({"stopped": True, "rc": rc, "instance": inst, "project_root": str(target)})
     return rc
@@ -2094,6 +2097,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
                     fps=ns.fps,
                     port=ns.port,
                     idle_timeout=idle_seconds,
+                    time_scale=getattr(ns, "time_scale", None),
                     always_on_top=ns.always_on_top,
                 )
             except DaemonError as e:
@@ -2138,9 +2142,12 @@ def cmd_run(ns: argparse.Namespace) -> int:
                     stop_warning = f"daemon stop raised: {e}"
                 else:
                     if stop_rc != 0:
-                        # rc 0 / 2 由 Daemon.stop 定义：2 = ffmpeg transcode 失败
-                        # 但进程已停。让 envelope 携带这一信号，给 agent retry 提示。
-                        stop_warning = f"daemon stop rc={stop_rc}"
+                        # stop() 现仅返回 0 或 STOP_RC_TRANSCODE_FAILED(4)：4 = ffmpeg
+                        # 转码失败但进程已停、原始 AVI 保留。让 envelope 携带这一信号。
+                        stop_warning = (
+                            f"daemon stop rc={stop_rc} "
+                            "(mp4 transcode failed; raw recording preserved)"
+                        )
                 if exit_code == 0 and stop_rc != 0:
                     exit_code = stop_rc
             if (
@@ -2686,6 +2693,31 @@ def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_connection_flags(p: argparse.ArgumentParser) -> None:
+    """RPC 子命令的后置 ``--port`` / ``--instance``（#157）。
+
+    与 ``_add_output_format_flags`` 同款：``default=argparse.SUPPRESS`` 使这两个
+    flag 只在显式后置传入时才写 namespace，不覆盖顶层 ``conn_grp`` 的
+    ``default=None``。这样 RPC 子命令既能写 ``--port N <cmd>``（顶层），也能写
+    ``<cmd> ... --port N``（本处），消灭「--port 必须前置」pitfall。per-subparser
+    mutex 守同位置同给；跨位置同给（一前一后）由 ``main()`` 的 guard 兜——顶层
+    mutex 与本处 mutex 都照不到跨位置。
+    """
+    grp = p.add_mutually_exclusive_group()
+    grp.add_argument(
+        "--port",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="（亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥",
+    )
+    grp.add_argument(
+        "--instance",
+        type=_instance_arg_allow_all,
+        default=argparse.SUPPRESS,
+        help="（亦可后置）目标实例名（all=广播）；与 --port 互斥",
+    )
+
+
 class _QuietPeekParser(argparse.ArgumentParser):
     """peek-parse 专用：error() 不往 stderr 打 usage/error，直接抛 SystemExit。
 
@@ -2908,6 +2940,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_daemon_flags(run_p)
     _add_instance_name_flag(run_p)
     run_p.add_argument(
+        "--time-scale",
+        type=_time_scale_arg,
+        default=None,
+        help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 提速用（同 daemon start）",
+    )
+    run_p.add_argument(
         "--no-gui-auto",
         action="store_true",
         help=(
@@ -3014,6 +3052,7 @@ def build_parser() -> argparse.ArgumentParser:
         if spec.extra_args is not None:
             spec.extra_args(sp)
         _add_output_format_flags(sp)
+        _add_connection_flags(sp)
     return parser
 
 
@@ -3243,6 +3282,17 @@ def main() -> None:
                 else:
                     print(f"错误：{e}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
+
+        # #157：跨位置 --port + --instance 同给——顶层 mutex 只管前置同给、
+        # subparser mutex 只管后置同给，二者跨位置（一前一后）都照不到。两者
+        # default 均 None，非 None 即「显式给过」→ 用法错（与 argparse mutex 同级）。
+        if ns.port is not None and ns.instance is not None:
+            msg = "--port 与 --instance 互斥：二选一（指定端口或实例名）"
+            if fmt == OUTPUT_JSON:
+                _emit_error_payload(CLIENT_CODE_USAGE, msg)
+            else:
+                print(f"错误：{msg}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
 
         # --instance all：广播路径（#145）——逐实例并发 + 聚合信封，
         # 不走单实例端口发现（preflight 已在上面跑过，screenshot 守卫等生效）。

@@ -951,13 +951,15 @@ def test_allocate_port_raises_when_occupied() -> None:
         sock.close()
 
 
-# ── stop 后录制转码失败 → 返回 2 ──
+# ── stop 后录制转码失败 → 返回 4（STOP_RC_TRANSCODE_FAILED）──
 
 
-def test_stop_returns_2_when_transcode_fails(
+def test_stop_returns_transcode_failed_rc_when_transcode_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """录制转码失败但进程已停 → stop 返回 2，让 CI 能感知录制问题。"""
+    """录制转码失败但进程已停 → stop 返回 STOP_RC_TRANSCODE_FAILED(4)，让 CI 能感知录制问题。"""
+    from godot_cli_control.daemon import STOP_RC_TRANSCODE_FAILED
+
     daemon = Daemon(tmp_path)
     daemon.control_dir.mkdir(parents=True, exist_ok=True)
     daemon.pid_file.write_text(str(os.getpid()))
@@ -975,7 +977,7 @@ def test_stop_returns_2_when_transcode_fails(
         "godot_cli_control.daemon._transcode_movie", lambda *a, **k: False
     )
 
-    assert daemon.stop() == 2
+    assert daemon.stop() == STOP_RC_TRANSCODE_FAILED
     # movie_path_file 已清理，下次 stop 不重复尝试
     assert not daemon.movie_path_file.exists()
 
@@ -2025,3 +2027,31 @@ def test_stop_falls_back_to_terminate_on_graceful_failure(
     d.stop()
     assert called["terminate"] == 1
     assert not d.pid_file.exists(), "stop() 必须清理 pid_file"
+
+
+# ── #157：转码失败专用退出码 4 ──
+
+
+def test_transcode_failed_returns_dedicated_rc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """daemon stop 转码失败 → 返回 STOP_RC_TRANSCODE_FAILED(4)，进程已停。"""
+    from godot_cli_control import daemon as daemon_mod
+
+    d = daemon_mod.Daemon(tmp_path)
+    monkeypatch.setattr(d, "read_pid", lambda: 4321)
+    monkeypatch.setattr(daemon_mod, "_process_alive", lambda pid: True)
+    monkeypatch.setattr(daemon_mod, "_process_is_godot", lambda pid: True)
+    monkeypatch.setattr(d, "_graceful_quit", lambda pid: True)
+    monkeypatch.setattr(d, "_cleanup_state_files", lambda: None)
+    d.movie_path_file.parent.mkdir(parents=True, exist_ok=True)
+    movie = tmp_path / "rec.avi"
+    movie.write_text("x")
+    d.movie_path_file.write_text(str(movie))
+    monkeypatch.setattr(daemon_mod, "_transcode_movie", lambda mp, cd: False)
+
+    assert d.stop() == daemon_mod.STOP_RC_TRANSCODE_FAILED == 4
+
+
+def test_transcode_failed_exit_code_single_source() -> None:
+    """cli.EXIT_TRANSCODE_FAILED 与 daemon.STOP_RC_TRANSCODE_FAILED 不许 drift。"""
+    from godot_cli_control import cli, daemon
+    assert cli.EXIT_TRANSCODE_FAILED == daemon.STOP_RC_TRANSCODE_FAILED == 4
