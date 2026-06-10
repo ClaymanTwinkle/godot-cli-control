@@ -4646,3 +4646,29 @@ def test_cross_position_port_and_instance_conflict(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is False
     assert out["error"]["code"] == -1003
+
+
+# ── emit-signal 子命令（#157 item4）──
+
+
+def test_emit_signal_parses_positionals_and_args():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["emit-signal", "/root/X", "item_selected", "0", "ok"])
+    assert ns.node_path == "/root/X"
+    assert ns.signal == "item_selected"
+    assert ns.args == ["0", "ok"]
+
+
+def test_emit_signal_handler_passes_decoded_args():
+    import asyncio
+    from godot_cli_control import cli
+    captured = {}
+
+    class _FakeClient:
+        async def emit_signal(self, path, signal, args=None):
+            captured.update(path=path, signal=signal, args=args)
+            return {"emitted": True}
+
+    ns = cli.build_parser().parse_args(["emit-signal", "/root/X", "ping", "42", "hi"])
+    asyncio.run(cli.cmd_emit_signal(_FakeClient(), ns))
+    assert captured == {"path": "/root/X", "signal": "ping", "args": [42, "hi"]}

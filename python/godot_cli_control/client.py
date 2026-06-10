@@ -328,6 +328,14 @@ class GameClient:
         )
         return result.get("result")
 
+    async def emit_signal(
+        self, path: str, signal: str, args: list | None = None
+    ) -> dict:
+        return await self.request(
+            "emit_signal",
+            {"path": path, "signal": signal, "args": args or []},
+        )
+
     async def get_text(self, path: str) -> str:
         result = await self.request("get_text", {"path": path})
         return result.get("text", "")

@@ -284,6 +284,10 @@ class GameBridge:
         """调用节点方法。"""
         return self._run(self._client.call_method(path, method, args))
 
+    def emit_signal(self, path: str, signal: str, args: list | None = None) -> dict:
+        """发射节点信号（需 daemon 带 --allow-emit-signal 启动；否则服务端 1015）。"""
+        return self._run(self._client.emit_signal(path, signal, args))
+
     def get_children(self, path: str, type_filter: str = "") -> list[dict]:
         """获取子节点列表。"""
         return self._run(self._client.get_children(path, type_filter=type_filter))

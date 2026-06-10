@@ -666,6 +666,13 @@ async def cmd_call(client: GameClient, ns: argparse.Namespace) -> Any:
     return await client.call_method(ns.node_path, ns.method, args)
 
 
+async def cmd_emit_signal(client: GameClient, ns: argparse.Namespace) -> Any:
+    """发射节点信号（需 daemon --allow-emit-signal；否则服务端返回 1015）。
+    每个 arg 同 call：JSON-or-string 解析（--text-value 强制字符串）。"""
+    args = _resolve_args_for_call(ns)
+    return await client.emit_signal(ns.node_path, ns.signal, args)
+
+
 async def cmd_text(client: GameClient, ns: argparse.Namespace) -> str:
     return await client.get_text(ns.node_path)
 
@@ -1177,6 +1184,21 @@ def _register_call_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _register_emit_signal_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("node_path", help="绝对节点路径，如 /root/Main")
+    p.add_argument("signal", help="信号名，如 item_selected")
+    p.add_argument(
+        "args",
+        nargs="*",
+        help="信号参数；每个先按 JSON 解析失败 fallback 字符串（同 call）",
+    )
+    p.add_argument(
+        "--text-value",
+        action="store_true",
+        help="把所有 args 当字面字符串，不走 JSON 解析",
+    )
+
+
 # ── RPC_SPECS 注册表 ──
 
 RPC_SPECS: tuple[RpcSpec, ...] = (
@@ -1432,6 +1454,20 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         example="call /root/Main start_game 1 \"easy\"",
         extra_args=_register_call_args,
         text_formatter=_fmt_get_text,
+    ),
+    RpcSpec(
+        name="emit-signal",
+        handler=cmd_emit_signal,
+        description=(
+            "发射节点信号（驱动测试接缝，如 ItemList 选择不发 item_selected）。"
+            "默认禁——需 daemon 以 --allow-emit-signal 启动（debug-build + "
+            "localhost 之上第三重门），否则服务端返回 1015。注意：call <node> "
+            "emit_signal 仍被方法黑名单拒，发信号只能走本子命令。"
+        ),
+        positionals=(),  # 由 extra_args 注册（args 是 nargs='*'）
+        example="emit-signal /root/Main/List item_selected 0",
+        extra_args=_register_emit_signal_args,
+        text_formatter=lambda r: "emitted" if r.get("emitted") else json.dumps(r, ensure_ascii=False),
     ),
     RpcSpec(
         name="text",
