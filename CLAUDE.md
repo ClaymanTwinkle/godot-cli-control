@@ -60,6 +60,7 @@
 8. **localhost-only / blacklist 安全网不能为了"方便"放掉**
    - GameBridge 永远 listen `127.0.0.1`；release build 必须自动 disable。
    - method/property blacklist 是防 RCE 的最后一道，不能让单条新功能的 PR 把它松开。第三方项目要扩需求请走 `godot_cli_control/method_blacklist_extra` ProjectSettings 走"增量"路径。
+   - `emit_signal` 的逃生门走 `daemon start --allow-emit-signal`（debug-build + localhost 之上的显式第三重门）+ 专用 `emit-signal` 子命令（服务端 1015 门控）：这是「单点白名单式放开」，emit_signal 仍在方法黑名单、`call` 面不动，整张黑名单不松。
 
 ## Repo layout 速查
 
