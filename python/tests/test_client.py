@@ -1472,3 +1472,117 @@ async def test_drag_invalid_button_raises() -> None:
     # 映射阶段就抛，不发请求
     with pytest.raises(ValueError, match="button"):
         await client.drag(0, 0, 1, 1, button="scroll")
+
+
+# ---- 辅助：最小化 fake websocket（供 quit 测试复用）----
+
+
+class _FakeWs:
+    """最小化 fake websocket：send 成功，__aiter__ 驱动传入的 async generator。"""
+
+    def __init__(self, aiter_gen) -> None:
+        self._gen = aiter_gen
+
+    async def send(self, s: str) -> None:
+        pass
+
+    def __aiter__(self):
+        return self._gen
+
+
+# ---- issue #156 sub-A：GameClient.quit() 断连即成功 ----
+
+
+@pytest.mark.asyncio
+async def test_quit_returns_on_response() -> None:
+    """quit() 收到对应 id 响应即成功返回。"""
+    client = GameClient(port=1)
+
+    async def hang_iter():
+        await asyncio.sleep(3600)
+        yield  # never
+
+    fake_ws = _FakeWs(hang_iter())
+    client._ws = fake_ws
+    client._listen_task = asyncio.create_task(client._listen())
+    try:
+        async def inject_ok_after_send():
+            await asyncio.sleep(0.01)
+            req_id = next(iter(client._pending))
+            client._pending[req_id].set_result({"id": req_id, "result": {"ok": True}})
+
+        asyncio.create_task(inject_ok_after_send())
+        await asyncio.wait_for(client.quit(timeout=2.0), timeout=2.0)  # 不抛即成功
+    finally:
+        client._listen_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_quit_returns_on_connection_closed() -> None:
+    """daemon 退出关连接：_listen set_exception(ConnectionError) → quit() 当成功返回。"""
+    client = GameClient(port=1)
+
+    async def hang_iter():
+        await asyncio.sleep(3600)
+        yield
+
+    fake_ws = _FakeWs(hang_iter())
+    client._ws = fake_ws
+    client._listen_task = asyncio.create_task(client._listen())
+    try:
+        async def close_after_send():
+            await asyncio.sleep(0.01)
+            # 模拟 _listen finally：断连时对 pending future set_exception(ConnectionError)
+            for fut in client._pending.values():
+                if not fut.done():
+                    fut.set_exception(ConnectionError("Connection closed by server"))
+
+        asyncio.create_task(close_after_send())
+        await asyncio.wait_for(client.quit(timeout=2.0), timeout=2.0)  # 不抛即成功
+    finally:
+        client._listen_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_quit_raises_on_timeout() -> None:
+    """既无响应也不断连 → quit() 超时抛 TimeoutError，且不在 _pending 留垃圾。"""
+    client = GameClient(port=1)
+
+    async def hang_iter():
+        await asyncio.sleep(3600)
+        yield
+
+    fake_ws = _FakeWs(hang_iter())
+    client._ws = fake_ws
+    client._listen_task = asyncio.create_task(client._listen())
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await client.quit(timeout=0.05)
+        assert len(client._pending) == 0
+    finally:
+        client._listen_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_quit_returns_when_send_raises_connection_closed() -> None:
+    """send() 抛 ConnectionClosed（发送时连接已关）→ quit() 当成功返回，不留 _pending 垃圾。"""
+    from websockets.exceptions import ConnectionClosedError
+    from websockets.frames import Close
+
+    client = GameClient(port=1)
+
+    class _FakeWsClosedOnSend(_FakeWs):
+        async def send(self, s: str) -> None:
+            raise ConnectionClosedError(Close(1001, "going away"), None)
+
+    async def hang_iter():
+        await asyncio.sleep(3600)
+        yield
+
+    client._ws = _FakeWsClosedOnSend(hang_iter())
+    client._listen_task = asyncio.create_task(client._listen())
+    try:
+        await asyncio.wait_for(client.quit(timeout=2.0), timeout=2.0)
+        assert len(client._pending) == 0
+    finally:
+        client._listen_task.cancel()
