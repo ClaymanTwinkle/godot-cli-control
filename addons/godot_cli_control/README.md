@@ -90,6 +90,7 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 | `get_properties(path, properties)` | `await client.get_properties("/root/Player", ["position", "health"])` — multi-property atomic read; returns `{prop: bare_value, ...}` dict |
 | `set_property(path, property, value)` | `await client.set_property("/root/Player", "visible", False)` |
 | `call_method(path, method, args)` | `await client.call_method("/root/Player", "take_damage", [10])` |
+| `emit_signal(path, signal, args)` | `await client.emit_signal("/root/Game", "level_complete", [])` — fire a node signal (test seam). **Disabled by default** (server returns `1015`); daemon must be started with `--allow-emit-signal` (debug-build + localhost + explicit opt-in). `call <node> emit_signal` is always blocked by the method blacklist — use this method. CLI: `emit-signal <path> <signal> [args...]` |
 | `get_text(path)` | `await client.get_text("/root/UI/Label")` |
 | `node_exists(path)` | `await client.node_exists("/root/MyScene/Button")` |
 | `is_visible(path)` | `await client.is_visible("/root/UI/Panel")` |
@@ -152,6 +153,7 @@ Three numeric ranges share `error.code`; they never overlap, so a single field i
 | `1012` | server | FEATURE_UNAVAILABLE: the hosting engine lacks an API this RPC needs (currently: `errors` requires Godot 4.5+ `Logger`). Permanent for that engine — upgrade Godot, don't retry. |
 | `1013` | server | WRITE_FAILED: the daemon process couldn't write the `screenshot` PNG to the requested path (parent dir missing / no permission). Distinct from `-1004` (CLI-side IO). Permanent — fix the path, don't retry. |
 | `1014` | server | DRAG_IN_PROGRESS: a `drag` was issued while another is still interpolating. One mouse drag in flight at a time — wait for it (or `release-all` to cancel) before the next. State-class (like `1004`). |
+| `1015` | server | EMIT_SIGNAL_DISABLED: `emit-signal` called but daemon was not started with `--allow-emit-signal`. Restart the daemon with that flag (debug-build + localhost + explicit opt-in). `emit_signal` remains in the method blacklist — `call <node> emit_signal` is always rejected regardless of this flag. |
 | `-32600` | server | Malformed JSON-RPC request |
 | `-32601` | server | Unknown method name |
 | `-32602` | server | Invalid params (incl. blocked methods/properties from the security blacklist, `set` value-type mismatch — e.g. `Vector2` property given an array of wrong length / non-numeric elements, or `hold` given `duration ≤ 0` — use `press` for an indefinite hold; also out-of-range values like a scene `timeout` outside `(0, 3600]` sent directly via `GameClient`, and `find_nodes` called with no filter at all or with both `text` and `text_contains`) |
@@ -171,7 +173,7 @@ The daemon is the long-lived Godot process the CLI talks to (one per project roo
 
 | Command | What it does |
 |---|---|
-| `daemon start [--headless\|--gui] [--record] [--time-scale N] [--name <inst>]` | Launch Godot with the bridge listening. `--name` sets the instance name (default `default`); use different names to run multiple Godot daemons for the same project in parallel. Headless vs GUI is auto-detected from the TTY; `--record` forces GUI (Movie Maker needs a real renderer) and is **rejected with `--headless`** (exit 2). `--time-scale N` sets `Engine.time_scale` from frame 0 (range `(0, 100]`). |
+| `daemon start [--headless\|--gui] [--record] [--time-scale N] [--name <inst>] [--allow-emit-signal]` | Launch Godot with the bridge listening. `--name` sets the instance name (default `default`); use different names to run multiple Godot daemons for the same project in parallel. Headless vs GUI is auto-detected from the TTY; `--record` forces GUI (Movie Maker needs a real renderer) and is **rejected with `--headless`** (exit 2). `--time-scale N` sets `Engine.time_scale` from frame 0 (range `(0, 100]`). `--allow-emit-signal` unlocks the `emit-signal` subcommand (debug-build + localhost + explicit opt-in three gates); without it any `emit-signal` call returns `1015`. |
 | `daemon stop [--name <inst>]` | Stop this project's daemon. With `--name`, stop the named instance. Exit 2 if it stopped cleanly but the `.avi`→`.mp4` ffmpeg transcode failed (raw `.avi` kept; see `.cli_control/ffmpeg.log`). |
 | `daemon stop --all` | Stop every registered daemon across all projects. **Exit 3** if at least one failed; per-record `rc` (and an `error` field on failures) is in `result.stopped[]`. |
 | `daemon stop --all --project <path>` | Stop all instances of one specific project. |

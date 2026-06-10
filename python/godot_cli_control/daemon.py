@@ -157,6 +157,7 @@ class Daemon:
         idle_timeout: int = 0,
         time_scale: float | None = None,
         always_on_top: bool = True,
+        allow_emit_signal: bool = False,
     ) -> int:
         """启动 Godot daemon，等端口就绪后返回 PID。"""
         # 项目根校验：拒绝在非 Godot 项目目录跑，避免 Godot 用 --path .
@@ -249,6 +250,8 @@ class Daemon:
             args.append(f"--game-bridge-idle-timeout={idle_timeout}")
         if time_scale is not None:
             args.append(f"--cli-time-scale={time_scale}")
+        if allow_emit_signal:
+            args.append("--game-bridge-allow-emit-signal")
 
         env = os.environ.copy()
         if record:

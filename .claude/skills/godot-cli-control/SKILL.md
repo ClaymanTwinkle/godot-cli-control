@@ -89,6 +89,7 @@ godot-cli-control daemon logs --name server --tail 50    # logs for a specific i
 - **`daemon stop --all` payload**: `{"stopped": [{"project_root","pid","port","instance","rc"[, "error"]}, ...], "rc": 0|3}`. Each entry's `rc` is the per-instance stop result; the top-level `rc` is the aggregate exit code. A per-instance transcode-only failure shows as that entry's `rc: 4` but does not bump the aggregate (`0|3`, `3` only on a hard stop failure).
 - **`daemon logs [--tail N]` payload**: `{"path": "<godot.log>", "lines": [...], "returned": N, "instance": "<name>"}` (default 50, max 1000). Reads the file client-side — **no RPC**, so it works post-mortem after the daemon crashed or stopped (the companion to `daemon status`'s `last_log` hint: status tells you where the log is, `logs` hands you the tail directly). No log file yet → `-1006`, exit 2.
 - **`daemon start --time-scale N`**: sets `Engine.time_scale = N` (range `(0, 100]`) from the very first frame of the Godot process. Useful to run an entire test suite at e.g. 5× speed. `run <script>` also accepts `--time-scale N` (passed through to the auto-started daemon, #157) — equivalent to `bridge.time_scale(N)` on the script's first line.
+- **`daemon start --allow-emit-signal`** (also accepted by `run`): unlocks the `emit-signal` subcommand on this daemon instance (three-gate model: debug-build + localhost binding + this explicit opt-in). Without this flag, any `emit-signal` call returns `1015`. This flag **only** enables the dedicated `emit-signal` subcommand — `call <node> emit_signal` remains blocked by the method blacklist unconditionally.
 
 ## Multi-instance (multiple daemons for one project)
 
@@ -230,6 +231,7 @@ Three numeric ranges cohabit in `error.code`. Knowing which is which lets you de
 | `1012` | FEATURE_UNAVAILABLE: the engine hosting the daemon lacks an API this RPC needs. Currently only `errors` (push_error capture requires Godot 4.5+'s `Logger`). Permanent for that engine — don't retry; upgrade Godot or drop the `errors` / `no_push_errors` usage. |
 | `1013` | WRITE_FAILED: the **daemon process** couldn't write the `screenshot` PNG to the requested path (parent dir missing, no write permission). The CLI creates parent dirs before asking, so via the CLI this usually means a permission problem; raw-RPC callers must create parent dirs themselves. Distinct from `-1004` (the *CLI* process couldn't write locally). Permanent — fix the path, don't retry. |
 | `1014` | DRAG_IN_PROGRESS: a `drag` was issued while another `drag` is still interpolating. Only one mouse drag may be in flight at a time. State-class error (like `1004` combo-in-progress) — wait for the running drag to finish (or `release-all` to cancel it) before issuing another. |
+| `1015` | EMIT_SIGNAL_DISABLED: `emit-signal` called but daemon was not started with `--allow-emit-signal`. Restart the daemon with that flag (explicit opt-in on top of debug-build + localhost). Note: `emit_signal` is still in the method blacklist — `call <node> emit_signal` is always rejected regardless of this flag. |
 
 **JSON-RPC standard — negative integers `-32xxx`:**
 
@@ -269,6 +271,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 **Write / call:**
 - `set <path> <prop> <json-value>` — write a property
 - `call <path> <method> [json-args...]` — call any method
+- `emit-signal <path> <signal> [args...]` — fire a node signal (test seam, e.g. `ItemList.select()` doesn't emit `item_selected`). **Disabled by default** (server returns `1015`); daemon must be started with `--allow-emit-signal` (debug-build + localhost + explicit opt-in, three gates). `call <node> emit_signal` is still blocked by the method blacklist — use this subcommand. args same as `call` (each token JSON-or-string; `--text-value` forces all to string).
 - `click <path>` — UI click
 
 **Input simulation:**
@@ -502,6 +505,10 @@ positional arguments:
                        value 强制把 value 当字符串，避开 null/true/false/数字 footgun。
     call               调节点方法。每个参数同 set：先 JSON 解析，失败退回字符串。返回值原样（同 ``get``
                        渲染规则）。
+    emit-signal        发射节点信号（驱动测试接缝，如 ItemList 选择不发 item_selected）。默认禁——需
+                       daemon 以 --allow-emit-signal 启动（debug-build + localhost
+                       之上第三重门），否则服务端返回 1015。注意：call <node> emit_signal
+                       仍被方法黑名单拒，发信号只能走本子命令。
     text               读 Label / Button 的 text（get_text 的便捷形式）。
     exists             节点是否存在。退出码：0=true, 1=false, 2=连接/超时错误。shell ``if godot-
                        cli-control exists /root/Foo; then …`` 可用。
@@ -601,7 +608,8 @@ $ godot-cli-control daemon start --help
 usage: godot-cli-control daemon start [-h] [--record]
                                       [--movie-path MOVIE_PATH]
                                       [--headless | --gui]
-                                      [--no-always-on-top] [--fps FPS]
+                                      [--no-always-on-top]
+                                      [--allow-emit-signal] [--fps FPS]
                                       [--port PORT]
                                       [--idle-timeout IDLE_TIMEOUT]
                                       [--name NAME] [--time-scale TIME_SCALE]
@@ -621,6 +629,9 @@ options:
   --gui                 强制开窗。覆盖 isatty 自动判（例如 stdout 是 pipe 仍想看到窗口）。
   --no-always-on-top    录制时不强制窗口置顶（默认 --record 置顶，防 macOS 遮挡窗口冻帧 / Movie Maker
                         写 stale 帧）。仅 --record 时有意义。
+  --allow-emit-signal   放开 emit-signal 子命令（默认禁）。emit_signal 默认在方法黑名单里禁止，本 flag
+                        是测试态显式 opt-in（debug-build + localhost 之上第三重门）；call
+                        <node> emit_signal 仍被拒，只放开专用 emit-signal 子命令。
   --fps FPS             录制帧率，默认 30
   --port PORT           GameBridge 监听端口（默认 0 = OS 自动分配；写入
                         .cli_control/instances/<name>/port）
@@ -700,7 +711,7 @@ options:
 $ godot-cli-control run --help
 usage: godot-cli-control run [-h] [--record] [--movie-path MOVIE_PATH]
                              [--headless | --gui] [--no-always-on-top]
-                             [--fps FPS] [--port PORT]
+                             [--allow-emit-signal] [--fps FPS] [--port PORT]
                              [--idle-timeout IDLE_TIMEOUT] [--name NAME]
                              [--time-scale TIME_SCALE] [--no-gui-auto]
                              [--json] [--text] [--no-json]
@@ -723,6 +734,9 @@ options:
   --gui                 强制开窗。覆盖 isatty 自动判（例如 stdout 是 pipe 仍想看到窗口）。
   --no-always-on-top    录制时不强制窗口置顶（默认 --record 置顶，防 macOS 遮挡窗口冻帧 / Movie Maker
                         写 stale 帧）。仅 --record 时有意义。
+  --allow-emit-signal   放开 emit-signal 子命令（默认禁）。emit_signal 默认在方法黑名单里禁止，本 flag
+                        是测试态显式 opt-in（debug-build + localhost 之上第三重门）；call
+                        <node> emit_signal 仍被拒，只放开专用 emit-signal 子命令。
   --fps FPS             录制帧率，默认 30
   --port PORT           GameBridge 监听端口（默认 0 = OS 自动分配；写入
                         .cli_control/instances/<name>/port）
@@ -1203,6 +1217,31 @@ options:
 
 示例:
   godot-cli-control call /root/Main start_game 1 "easy"
+
+$ godot-cli-control emit-signal --help
+usage: godot-cli-control emit-signal [-h] [--text-value] [--json] [--text]
+                                     [--no-json]
+                                     [--port PORT | --instance INSTANCE]
+                                     node_path signal [args ...]
+
+发射节点信号（驱动测试接缝，如 ItemList 选择不发 item_selected）。默认禁——需 daemon 以 --allow-emit-signal 启动（debug-build + localhost 之上第三重门），否则服务端返回 1015。注意：call <node> emit_signal 仍被方法黑名单拒，发信号只能走本子命令。
+
+positional arguments:
+  node_path            绝对节点路径，如 /root/Main
+  signal               信号名，如 item_selected
+  args                 信号参数；每个先按 JSON 解析失败 fallback 字符串（同 call）
+
+options:
+  -h, --help           show this help message and exit
+  --text-value         把所有 args 当字面字符串，不走 JSON 解析
+  --json               输出 JSON 信封（默认）
+  --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
+  --no-json            --text 别名
+  --port PORT          （亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥
+  --instance INSTANCE  （亦可后置）目标实例名（all=广播）；与 --port 互斥
+
+示例:
+  godot-cli-control emit-signal /root/Main/List item_selected 0
 
 $ godot-cli-control text --help
 usage: godot-cli-control text [-h] [--json] [--text] [--no-json]
@@ -1737,6 +1776,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ## Common pitfalls
 
+- **Want to fire a signal to drive UI (e.g. `ItemList.select()` doesn't emit `item_selected`)**: use `emit-signal <path> <signal> [args...]` with a daemon started with `--allow-emit-signal`. Don't try `call <node> emit_signal` — it's permanently blocked by the method blacklist.
 - **Multiple instances running and you forgot `--instance`** — exit 64 / code `-1003`, message lists all running instance names: `"multiple instances running: client1, server — pass --instance <name>"`. Read the message, pick the name you want, and re-run with `godot-cli-control --instance <name> <subcommand>`. The same applies to `daemon` subcommands (use `--name <instance>` instead of `--instance`).
 - **`-1003` with "port file is not readable yet … retry in a moment"** — the target instance is alive but mid-startup (its pid file exists, its port file doesn't yet). This is a transient race, not a config problem: re-run the command. You'll mostly see it when firing RPCs immediately after `daemon start` returns in a parallel script.
 - **`{"ok": false, "error": {"code": -1001, ...}}` on every RPC** — daemon isn't running. Run `godot-cli-control daemon status` to confirm, then `daemon start`.

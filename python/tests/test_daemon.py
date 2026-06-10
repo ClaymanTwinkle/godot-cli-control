@@ -2055,3 +2055,22 @@ def test_transcode_failed_exit_code_single_source() -> None:
     """cli.EXIT_TRANSCODE_FAILED 与 daemon.STOP_RC_TRANSCODE_FAILED 不许 drift。"""
     from godot_cli_control import cli, daemon
     assert cli.EXIT_TRANSCODE_FAILED == daemon.STOP_RC_TRANSCODE_FAILED == 4
+
+
+# ── --allow-emit-signal 透传测试（#157 item4）──
+
+
+def test_start_appends_allow_emit_signal_flag_when_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """allow_emit_signal=True → Popen args 含 --game-bridge-allow-emit-signal。"""
+    args = _capture_start_args(tmp_path, monkeypatch, port=29990, allow_emit_signal=True)
+    assert "--game-bridge-allow-emit-signal" in args
+
+
+def test_start_no_allow_emit_signal_flag_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不传 allow_emit_signal（默认 False）→ Popen args 不含 --game-bridge-allow-emit-signal。"""
+    args = _capture_start_args(tmp_path, monkeypatch, port=29989)
+    assert "--game-bridge-allow-emit-signal" not in args

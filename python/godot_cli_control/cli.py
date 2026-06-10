@@ -666,6 +666,13 @@ async def cmd_call(client: GameClient, ns: argparse.Namespace) -> Any:
     return await client.call_method(ns.node_path, ns.method, args)
 
 
+async def cmd_emit_signal(client: GameClient, ns: argparse.Namespace) -> Any:
+    """发射节点信号（需 daemon --allow-emit-signal；否则服务端返回 1015）。
+    每个 arg 同 call：JSON-or-string 解析（--text-value 强制字符串）。"""
+    args = _resolve_args_for_call(ns)
+    return await client.emit_signal(ns.node_path, ns.signal, args)
+
+
 async def cmd_text(client: GameClient, ns: argparse.Namespace) -> str:
     return await client.get_text(ns.node_path)
 
@@ -1177,6 +1184,21 @@ def _register_call_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _register_emit_signal_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("node_path", help="绝对节点路径，如 /root/Main")
+    p.add_argument("signal", help="信号名，如 item_selected")
+    p.add_argument(
+        "args",
+        nargs="*",
+        help="信号参数；每个先按 JSON 解析失败 fallback 字符串（同 call）",
+    )
+    p.add_argument(
+        "--text-value",
+        action="store_true",
+        help="把所有 args 当字面字符串，不走 JSON 解析",
+    )
+
+
 # ── RPC_SPECS 注册表 ──
 
 RPC_SPECS: tuple[RpcSpec, ...] = (
@@ -1432,6 +1454,20 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         example="call /root/Main start_game 1 \"easy\"",
         extra_args=_register_call_args,
         text_formatter=_fmt_get_text,
+    ),
+    RpcSpec(
+        name="emit-signal",
+        handler=cmd_emit_signal,
+        description=(
+            "发射节点信号（驱动测试接缝，如 ItemList 选择不发 item_selected）。"
+            "默认禁——需 daemon 以 --allow-emit-signal 启动（debug-build + "
+            "localhost 之上第三重门），否则服务端返回 1015。注意：call <node> "
+            "emit_signal 仍被方法黑名单拒，发信号只能走本子命令。"
+        ),
+        positionals=(),  # 由 extra_args 注册（args 是 nargs='*'）
+        example="emit-signal /root/Main/List item_selected 0",
+        extra_args=_register_emit_signal_args,
+        text_formatter=lambda r: "emitted" if r.get("emitted") else json.dumps(r, ensure_ascii=False),
     ),
     RpcSpec(
         name="text",
@@ -1732,6 +1768,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             idle_timeout=idle_seconds,
             time_scale=getattr(ns, "time_scale", None),
             always_on_top=ns.always_on_top,
+            allow_emit_signal=getattr(ns, "allow_emit_signal", False),
         )
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
@@ -2099,6 +2136,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
                     idle_timeout=idle_seconds,
                     time_scale=getattr(ns, "time_scale", None),
                     always_on_top=ns.always_on_top,
+                    allow_emit_signal=getattr(ns, "allow_emit_signal", False),
                 )
             except DaemonError as e:
                 # daemon 起不来是 infra 前置失败（端口冲突、godot bin 不可执行等），
@@ -2638,6 +2676,14 @@ def _add_daemon_flags(p: argparse.ArgumentParser) -> None:
         default=True,
         help="录制时不强制窗口置顶（默认 --record 置顶，防 macOS 遮挡窗口冻帧 / Movie "
         "Maker 写 stale 帧）。仅 --record 时有意义。",
+    )
+    p.add_argument(
+        "--allow-emit-signal",
+        action="store_true",
+        default=False,
+        help="放开 emit-signal 子命令（默认禁）。emit_signal 默认在方法黑名单里禁止，"
+        "本 flag 是测试态显式 opt-in（debug-build + localhost 之上第三重门）；"
+        "call <node> emit_signal 仍被拒，只放开专用 emit-signal 子命令。",
     )
     p.add_argument("--fps", type=int, default=30, help="录制帧率，默认 30")
     p.add_argument(
