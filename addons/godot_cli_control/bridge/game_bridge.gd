@@ -218,6 +218,8 @@ func _register_methods() -> void:
 	_methods["get_properties"] = {"callable": _low_level_api.handle_get_properties, "kind": "sync"}
 	_methods["set_property"] = {"callable": _low_level_api.handle_set_property, "kind": "sync"}
 	_methods["call_method"] = {"callable": _low_level_api.handle_call_method, "kind": "sync"}
+	# emit-signal 逃生门（#157 item4，sync）：默认禁，daemon --allow-emit-signal 放开。
+	_methods["emit_signal"] = {"callable": _low_level_api.handle_emit_signal, "kind": "sync"}
 	_methods["get_text"] = {"callable": _low_level_api.handle_get_text, "kind": "sync"}
 	_methods["node_exists"] = {"callable": _low_level_api.handle_node_exists, "kind": "sync"}
 	_methods["is_visible"] = {"callable": _low_level_api.handle_is_visible, "kind": "sync"}

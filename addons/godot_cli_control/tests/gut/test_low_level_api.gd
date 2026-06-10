@@ -22,6 +22,13 @@ class _CoerceFixture extends Node:
 	var test_object: Object = null
 
 
+class _EmitSignalFixture extends Node:
+	signal pinged(value)
+	var received: Array = []
+	func _on_pinged(v) -> void:
+		received.append(v)
+
+
 # issue #112：handler → codec 接缝测试 —— StringName 属性 fixture
 class _StringNameFixture extends Node:
 	var test_sn: StringName = &"hello"
@@ -1200,3 +1207,55 @@ func test_subpath_uncovered_compound_type_passes_through() -> void:
 	})
 	assert_does_not_have(result, "error")
 	assert_almost_eq(result.get("value"), 0.1, 0.0001)
+
+
+# ── emit-signal opt-in 逃生门（#157 item4）──────────────────────
+
+func test_emit_signal_disabled_by_default_returns_1015() -> void:
+	var node := Node.new()
+	node.name = "EmitTarget"
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_emit_signal({
+		"path": str(node.get_path()), "signal": "ready", "args": [],
+	})
+	assert_has(result, "error")
+	assert_eq(result["error"]["code"], CliControlErrorCodes.EMIT_SIGNAL_DISABLED)
+
+
+func test_emit_signal_allowed_emits_with_args() -> void:
+	var node := _EmitSignalFixture.new()
+	node.name = "EmitFixture"
+	node.pinged.connect(node._on_pinged)
+	add_child_autofree(node)
+	_api._emit_signal_allowed = true
+	var result: Dictionary = _api.handle_emit_signal({
+		"path": str(node.get_path()), "signal": "pinged", "args": [42],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(result.get("emitted"), true)
+	assert_eq(node.received, [42])
+
+
+func test_emit_signal_allowed_unknown_signal_returns_1007() -> void:
+	var node := Node.new()
+	node.name = "EmitTarget2"
+	add_child_autofree(node)
+	_api._emit_signal_allowed = true
+	var result: Dictionary = _api.handle_emit_signal({
+		"path": str(node.get_path()), "signal": "no_such_signal", "args": [],
+	})
+	assert_has(result, "error")
+	assert_eq(result["error"]["code"], CliControlErrorCodes.SIGNAL_NOT_FOUND)
+
+
+func test_call_emit_signal_still_blocked_when_opted_in() -> void:
+	# 回归守卫：opt-in 只放开 emit-signal 子命令；通用 call 面 emit_signal 仍黑。
+	var node := Node.new()
+	node.name = "EmitTarget3"
+	add_child_autofree(node)
+	_api._emit_signal_allowed = true
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(node.get_path()), "method": "emit_signal", "args": ["ready"],
+	})
+	assert_has(result, "error")
+	assert_eq(result["error"]["code"], CliControlErrorCodes.INVALID_PARAMS)

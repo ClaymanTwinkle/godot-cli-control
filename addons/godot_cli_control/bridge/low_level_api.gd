@@ -48,6 +48,8 @@ const _PROPERTY_BLACKLIST: PackedStringArray = [
 # 运行期合并 = 内置 ∪ ProjectSettings extras。_ready 里初始化一次。
 var _property_blacklist: PackedStringArray = _PROPERTY_BLACKLIST.duplicate()
 var _method_blacklist: PackedStringArray = _METHOD_BLACKLIST.duplicate()
+# emit-signal opt-in（#157 item4）：daemon 带 --game-bridge-allow-emit-signal 启动时置 true。
+var _emit_signal_allowed: bool = false
 # screenshot stale 检测（#156 子问题 B / B3）：本次 png 字节与上次相同 → stale_suspect。
 # _has_prev 哨兵：避免首张恰好 hash 命中 _last==0 误判。
 var _last_screenshot_hash: int = 0
@@ -86,6 +88,7 @@ const _ARRAY_PASSTHROUGH_SAFE_TYPES: Array[int] = [
 func _ready() -> void:
 	_property_blacklist = _merge_extra(_property_blacklist, SETTING_PROPERTY_BLACKLIST_EXTRA)
 	_method_blacklist = _merge_extra(_method_blacklist, SETTING_METHOD_BLACKLIST_EXTRA)
+	_emit_signal_allowed = OS.get_cmdline_args().has("--game-bridge-allow-emit-signal")
 
 
 func _merge_extra(base: PackedStringArray, setting_key: String) -> PackedStringArray:
@@ -414,6 +417,30 @@ func handle_call_method(params: Dictionary) -> Dictionary:
 	# 注意：GDScript 没有 try-catch，callv 参数不匹配会产生引擎错误而非可捕获异常
 	var result: Variant = node.callv(method, args)
 	return {"result": result}
+
+
+## emit-signal 逃生门（#157 item4）：默认禁（1015），daemon 带 --allow-emit-signal 才放行。
+## 门控最先短路（功能没开不解析节点/信号、不泄露存在性）。emit_signal 仍在方法黑名单里，
+## 本 handler 是唯一的、被门控的发信号入口；通用 call 面 emit_signal 始终被拒。
+func handle_emit_signal(params: Dictionary) -> Dictionary:
+	if not _emit_signal_allowed:
+		return _err(
+			CliControlErrorCodes.EMIT_SIGNAL_DISABLED,
+			"emit-signal disabled; restart daemon with --allow-emit-signal (debug-build + localhost gated)"
+		)
+	var node: Node = _get_node_or_error(params)
+	if node == null:
+		return _node_not_found(params.get("path", "") as String)
+	var signal_name: String = params.get("signal", "") as String
+	if signal_name.is_empty():
+		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'signal' parameter")
+	if not node.has_signal(signal_name):
+		return _err(CliControlErrorCodes.SIGNAL_NOT_FOUND, "Signal not found: %s" % signal_name)
+	var args: Array = params.get("args", []) as Array
+	var call_args: Array = [signal_name]
+	call_args.append_array(args)
+	node.callv("emit_signal", call_args)
+	return {"emitted": true}
 
 
 func handle_get_text(params: Dictionary) -> Dictionary:

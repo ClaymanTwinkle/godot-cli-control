@@ -52,6 +52,11 @@ const WRITE_FAILED: int = 1013
 # 状态类错（与 1004 COMBO_IN_PROGRESS 同族）——同一时刻只允许一个鼠标拖拽
 # 在途，agent 应等上一个完成（或 release-all 取消）再发。
 const DRAG_IN_PROGRESS: int = 1014
+# emit-signal 逃生门未开（issue #157 item4）：daemon 未带 --allow-emit-signal 启动时调
+# emit-signal 子命令。前置条件错（与 1009 NOT_PAUSED 同族）——agent 应重启 daemon 加该
+# flag（debug-build + localhost 之上第三重显式门）。emit_signal 默认仍在方法黑名单里，
+# call <node> emit_signal 始终被拒。
+const EMIT_SIGNAL_DISABLED: int = 1015
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600
