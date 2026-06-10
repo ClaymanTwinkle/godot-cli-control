@@ -951,7 +951,7 @@ def test_allocate_port_raises_when_occupied() -> None:
         sock.close()
 
 
-# ── stop 后录制转码失败 → 返回 2 ──
+# ── stop 后录制转码失败 → 返回 4（STOP_RC_TRANSCODE_FAILED）──
 
 
 def test_stop_returns_transcode_failed_rc_when_transcode_fails(

@@ -2161,7 +2161,7 @@ def test_daemon_stop_all_invokes_terminate(
 def test_daemon_stop_all_returns_partial_when_one_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """--all 中至少一条 stop 抛 DaemonError → rc=EXIT_PARTIAL（与 ffmpeg rc=2 区分）。"""
+    """--all 中至少一条 stop 抛 DaemonError → rc=EXIT_PARTIAL（与 ffmpeg 转码失败 rc=4 区分）。"""
     from godot_cli_control import registry
     from godot_cli_control.daemon import DaemonError
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
@@ -2181,18 +2181,20 @@ def test_daemon_stop_all_returns_partial_when_one_fails(
     import godot_cli_control.daemon as daemon_mod
     monkeypatch.setattr(daemon_mod.Daemon, "stop", fake_stop)
 
-    from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON, EXIT_PARTIAL
+    from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON, EXIT_PARTIAL, EXIT_INFRA_ERROR, EXIT_TRANSCODE_FAILED
     import argparse
     ns = argparse.Namespace(all=True, project=None, output_format=OUTPUT_JSON)
     rc = cmd_daemon_stop(ns)
     assert rc == EXIT_PARTIAL
-    assert EXIT_PARTIAL != 2, "EXIT_PARTIAL 必须与 EXIT_INFRA_ERROR 区分，避免与单项目 ffmpeg rc=2 撞码"
+    assert EXIT_PARTIAL not in (EXIT_INFRA_ERROR, EXIT_TRANSCODE_FAILED), (
+        "EXIT_PARTIAL 必须与 infra(2) / 单项目转码失败(4) 都区分，避免撞码"
+    )
 
 
-def test_daemon_stop_all_ffmpeg_rc2_does_not_promote_to_partial(
+def test_daemon_stop_all_transcode_failure_does_not_promote_to_partial(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """单条 stop 返回 2（ffmpeg 转码失败但 daemon 已停）不算 --all 失败 —— rc 应为 0。"""
+    """单条 stop 返回 4（ffmpeg 转码失败但 daemon 已停）不算 --all 失败 —— rc 应为 0。"""
     from godot_cli_control import registry
     monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path / "reg")
     proj = tmp_path / "p"
@@ -2201,7 +2203,8 @@ def test_daemon_stop_all_ffmpeg_rc2_does_not_promote_to_partial(
     registry.register(proj, pid=os.getpid(), port=1, godot_bin="x", log_path="y")
 
     import godot_cli_control.daemon as daemon_mod
-    monkeypatch.setattr(daemon_mod.Daemon, "stop", lambda self: 2)
+    from godot_cli_control.daemon import STOP_RC_TRANSCODE_FAILED
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", lambda self: STOP_RC_TRANSCODE_FAILED)
 
     from godot_cli_control.cli import cmd_daemon_stop, OUTPUT_JSON
     import argparse

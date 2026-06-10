@@ -176,7 +176,7 @@ def test_record_produces_valid_mp4(godot_project: Path) -> None:
     finally:
         stop = _run_cli(project, "daemon", "stop", timeout=60)
         stopped_cleanly = True
-        # rc 0 = 转码成功；rc 2 = daemon 已停但 ffmpeg 转码失败（保留 .avi）。
+        # rc 0 = 转码成功；rc 4 = daemon 已停但 ffmpeg 转码失败（保留 .avi）。
         assert stop["ok"] is True, stop
         assert stop["result"].get("rc") == 0, (
             f"daemon stop 报转码失败 rc={stop['result'].get('rc')}；"
