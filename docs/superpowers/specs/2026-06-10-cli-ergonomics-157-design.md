@@ -58,7 +58,7 @@
 2. daemon.py 层加自己的模块常量（如 `STOP_RC_TRANSCODE_FAILED = 4`，**不反向 import cli**，守住分层），`stop()` 转码失败处 `rc = 2 → STOP_RC_TRANSCODE_FAILED`。
 3. `daemon stop`（单实例）退出码直接透传 `stop()` 的 rc → 4。
 4. `run` finally 块现有 `if exit_code == 0 and stop_rc != 0: exit_code = stop_rc` 天然透传 4；`daemon_stop_warning` 文案改为点明转码失败（如 `"daemon stop rc=4 (mp4 transcode failed; raw recording preserved)"`）。信封仍 `ok:true`（录制原件在、脚本成功，仅转码这步软失败）。
-5. `daemon stop --all` / `--instance all` 广播聚合**仍优先 exit 3**：任一 child rc≠0（含 4）即聚合为 3，3 的「部分/全部失败」语义覆盖单 child 的 4。确认聚合逻辑按「任一非 0 → 3」，无需特判 4。
+5. `daemon stop --all` 聚合退出码**语义不变**：`_emit_stop_summary` 的聚合 rc 由 `had_failure`（仅 `DaemonError` 异常）驱动，**不看** child 的 stop rc——故某 child 转码失败今天聚合返回 0、改后仍聚合 0，只是 per-entry `rc` 由 2 变 4（细节落在 JSON entry 里）。这是**有意保持现状、不扩 scope**：把转码失败纳入聚合 3 会改变「`stop --all` rc==0」的既有契约，属另议。`--instance all` 是 RPC 广播、不涉转码，不受影响。
 
 **契约影响**：**退出码契约扩张**——4 此前空闲（在用 0/1/2/3/64，sysexits 64-78 不冲突）。必须同步三处退出码表：
 - 项目根 **CLAUDE.md**：原则 3 退出码表，把「daemon stop ffmpeg 转码失败也是 2」「`run` 脚本成功+转码失败回 2」移到新行 `4 = 进程已正常停止、仅 mp4 转码失败（录制原件保留；信封仍 ok:true + daemon_stop_warning）`；exit 2 描述删去转码分支。
@@ -82,9 +82,9 @@
 4. **leaf 合法则降级**：取该 leaf 的值作为下一段 walk 的起点，支持嵌套（如 `transform:origin:x`）；任一段落入开放/未知类型即停。
 
 **关键风险与对策——误杀比静默更坏**：硬编码 leaf 集若**漏列**合法 leaf，会把合法读取误判 1002（回归），比现状静默 null 更坏。对策：
-- **只对能 100% 枚举完整的类型 fail-loud**。第一批确定纳入：`TYPE_VECTOR2/2I` (x,y)、`TYPE_VECTOR3/3I` (x,y,z)、`TYPE_VECTOR4/4I` (x,y,z,w)——leaf 集铁稳。
-- leaf 集大/含派生访问器的类型（`Color` 的 r/g/b/a + r8/g8/b8/a8/h/s/v…、`Rect2/2i`、`Transform2D/3D`、`Basis`、`Plane`、`Quaternion`、`AABB`）：**逐个上 GUT 验证「该类型所有合法 leaf 全过 + 一个 typo 被拒」**，确认枚举完整后才纳入 map；验证不过的不纳入（保持现状）。
-- 不在 map 的类型一律走现状路径——保证「最坏退回到今天的行为」，永不引入新的误杀。
+- **只对能 100% 枚举完整的类型 fail-loud**。**PR A 仅纳入 vector 系**——`TYPE_VECTOR2/2I` (x,y)、`TYPE_VECTOR3/3I` (x,y,z)、`TYPE_VECTOR4/4I` (x,y,z,w)，leaf 集铁稳完整、零漏列风险。
+- **Color/Rect2/Rect2i/Transform2D/Transform3D/Basis/Plane/Quaternion/AABB 等暂不纳入**：其 get_indexed 合法 leaf 集大/含派生访问器（如 Color 的 r/g/b/a + r8/g8/b8/a8/h/s/v…），完整集需在 Godot 内实证枚举，无法此刻拍胸脯，纳入即冒误杀风险。作为 **follow-up**（PR A 收尾按分诊决定开 issue）：要求「先用 GUT 实证该类型所有合法 leaf 全过 + typo 被拒、确认枚举完整后才加进 map」。walk 机制设计成通用，未来加类型只是往 `_CLOSED_LEAVES` map 加一行 + 配套 GUT。
+- 不在 map 的类型（含上面暂缓的、以及 Dictionary/Array/Object 开放容器）一律走现状 `get_indexed` 路径——保证「最坏退回到今天的行为」，永不引入新的误杀。
 
 **契约影响**：无新错误码（复用 1002）、无新退出码；`exists`/`visible` 等布尔语义不变。是把一个静默 footgun 改 loud。
 
