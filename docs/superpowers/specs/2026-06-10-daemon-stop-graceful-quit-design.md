@@ -47,7 +47,7 @@ daemon stop
   转码 movie_path → mp4                       ← 不变
 ```
 
-最坏耗时 `graceful_timeout(5s)` + `_terminate(10s)` = 15s（仅当 daemon 半死、优雅退出超时再被 SIGTERM 兜）。常态优雅退出亚秒级完成。
+最坏耗时：RPC 段（connect total_timeout 2s + quit _GRACEFUL_RPC_TIMEOUT 2s ≈ 4s）+ poll 段（graceful_timeout 5s）+ 降级 `_terminate`（10s）≈ 19s（仅当 daemon 半死且进程拒退这两个最坏条件同时成立时）。常态优雅退出亚秒级完成。
 
 ## 组件设计
 

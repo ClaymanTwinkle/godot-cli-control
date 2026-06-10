@@ -1848,3 +1848,114 @@ def test_list_live_instances_skips_stale_all_dir(tmp_path: Path) -> None:
     (base / "all").mkdir(parents=True)
     (base / "all" / "godot.pid").write_text("999999999", encoding="utf-8")
     assert list_live_instances(tmp_path) == []
+
+
+# ── _graceful_quit + stop 优雅退出（#156） ──
+
+
+async def _noop_coro() -> None:
+    return None
+
+
+def _close_coro(coro: object) -> None:
+    """asyncio.run monkeypatch 用：关闭协程以防 ResourceWarning，不真正执行。
+
+    两个测试（graceful_quit_true / graceful_quit_false_when_process_survives）
+    共用同一个 asyncio.run 替换模式，抽成模块级函数消除重复。
+    """
+    import inspect
+    if inspect.iscoroutine(coro):
+        coro.close()
+
+
+def _make_daemon(tmp_path: Path) -> Daemon:
+    """构造一个 control_dir 指向 tmp 的 Daemon（与现有 stop 测试一致）。"""
+    return Daemon(tmp_path)
+
+
+def test_graceful_quit_returns_false_when_port_missing(tmp_path: Path) -> None:
+    """无 port 文件 → 不尝试 RPC，直接降级（返回 False）。"""
+    d = _make_daemon(tmp_path)
+    assert d._graceful_quit(pid=4321) is False
+
+
+def test_graceful_quit_true_when_process_dies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RPC 成功 + 进程在窗口内退出 → True。"""
+    d = _make_daemon(tmp_path)
+    d.control_dir.mkdir(parents=True, exist_ok=True)
+    d.port_file.write_text("9999")
+
+    monkeypatch.setattr("godot_cli_control.daemon.asyncio.run", _close_coro)
+    monkeypatch.setattr("godot_cli_control.daemon._send_quit", lambda *a, **k: _noop_coro())
+    monkeypatch.setattr("godot_cli_control.daemon._reap_if_dead", lambda pid: True)
+    assert d._graceful_quit(pid=4321, graceful_timeout=0.5) is True
+
+
+def test_graceful_quit_false_on_rpc_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """连不上 / RPC 抛错 → False（降级），不向上抛。"""
+    d = _make_daemon(tmp_path)
+    d.control_dir.mkdir(parents=True, exist_ok=True)
+    d.port_file.write_text("9999")
+    # _send_quit 的 monkeypatch 仅为避免真实 GameClient lazy-import 副作用；
+    # asyncio.run 被替换成 boom，_send_quit 的函数体根本不会执行到。
+    monkeypatch.setattr("godot_cli_control.daemon._send_quit", lambda *a, **k: _noop_coro())
+
+    def boom(coro: object) -> None:
+        _close_coro(coro)  # 复用模块级 _close_coro 关闭协程，防 ResourceWarning
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr("godot_cli_control.daemon.asyncio.run", boom)
+    assert d._graceful_quit(pid=4321, graceful_timeout=0.5) is False
+
+
+def test_graceful_quit_false_when_process_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RPC 成功但进程没在窗口内退出 → 超时 False。"""
+    d = _make_daemon(tmp_path)
+    d.control_dir.mkdir(parents=True, exist_ok=True)
+    d.port_file.write_text("9999")
+
+    monkeypatch.setattr("godot_cli_control.daemon.asyncio.run", _close_coro)
+    monkeypatch.setattr("godot_cli_control.daemon._send_quit", lambda *a, **k: _noop_coro())
+    monkeypatch.setattr("godot_cli_control.daemon._reap_if_dead", lambda pid: False)
+    assert d._graceful_quit(pid=4321, graceful_timeout=0.2) is False
+
+
+def test_stop_graceful_success_skips_terminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """优雅退出成功时不调 _terminate。"""
+    d = _make_daemon(tmp_path)
+    d.control_dir.mkdir(parents=True, exist_ok=True)
+    d.pid_file.write_text("4321")
+    monkeypatch.setattr("godot_cli_control.daemon._process_alive", lambda pid: True)
+    monkeypatch.setattr("godot_cli_control.daemon._process_is_godot", lambda pid: True)
+    monkeypatch.setattr(d, "_graceful_quit", lambda pid: True)
+    called = {"terminate": 0}
+    monkeypatch.setattr(d, "_terminate", lambda pid: called.__setitem__("terminate", 1))
+    rc = d.stop()
+    assert called["terminate"] == 0
+    assert rc == 0
+    assert not d.pid_file.exists(), "stop() 必须清理 pid_file"
+
+
+def test_stop_falls_back_to_terminate_on_graceful_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """优雅退出失败时降级调 _terminate。"""
+    d = _make_daemon(tmp_path)
+    d.control_dir.mkdir(parents=True, exist_ok=True)
+    d.pid_file.write_text("4321")
+    monkeypatch.setattr("godot_cli_control.daemon._process_alive", lambda pid: True)
+    monkeypatch.setattr("godot_cli_control.daemon._process_is_godot", lambda pid: True)
+    monkeypatch.setattr(d, "_graceful_quit", lambda pid: False)
+    called = {"terminate": 0}
+    monkeypatch.setattr(d, "_terminate", lambda pid: called.__setitem__("terminate", 1))
+    d.stop()
+    assert called["terminate"] == 1
+    assert not d.pid_file.exists(), "stop() 必须清理 pid_file"

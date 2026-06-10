@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -39,6 +40,10 @@ class InstanceAmbiguityError(RuntimeError):
 
 # 实例名校验正则：要落进文件路径与注册表文件名，必须文件系统安全（spec 2026-06-07）。
 _INSTANCE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+# quit() 通常瞬间返回；给半死 daemon 的 RPC 段一个短上限快速放弃，
+# 不与 poll 窗口（graceful_timeout）叠加吃满 2×graceful_timeout。
+_GRACEFUL_RPC_TIMEOUT = 2.0
 
 
 def _rmdir_if_empty(path: Path) -> None:
@@ -327,7 +332,9 @@ class Daemon:
             )
 
         print(f"关闭 Godot (PID {pid})...", file=sys.stderr)
-        self._terminate(pid)
+        # 先尝试 RPC 优雅退出（flush AVI 尾帧，#156）；不通则降级 SIGTERM。
+        if not self._graceful_quit(pid):
+            self._terminate(pid)
         self._cleanup_state_files()
         print("Godot 已停止", file=sys.stderr)
 
@@ -481,6 +488,37 @@ class Daemon:
         except (ProcessLookupError, OSError):
             pass
         _reap_if_dead(pid)  # 回收被 SIGKILL 的 zombie 子进程（若它是本进程的孩子）
+
+    def _graceful_quit(self, pid: int, graceful_timeout: float = 5.0) -> bool:
+        """SIGTERM 之前先 RPC quit 优雅退出（让 Movie Maker flush AVI 尾帧），
+        再轮询进程真正退出。
+
+        任何失败——port 缺失 / 连不上 / RPC 超时 / 进程未在窗口内退出——一律返回
+        False，由 stop() 降级 _terminate。绝不抛异常阻断 stop。
+
+        最坏耗时分析：
+          RPC 段  ≤ connect(2s, total_timeout) + quit(_GRACEFUL_RPC_TIMEOUT 2s) ≈ 4s
+                  （仅半死 daemon 才吃满；正常路径亚秒级）
+          poll 段 ≤ graceful_timeout（5s，进程退出 / AVI flush 需要时间）
+          优雅段合计最坏 ≈ 9s；失败后降级 _terminate ≤ 10s；
+          总最坏 ≈ 19s（仅半死 daemon + 进程拒退这两个最坏条件同时成立时）。
+          常态优雅退出亚秒级完成。
+        """
+        port = self._read_int(self.port_file)
+        if port is None:
+            return False
+        try:
+            asyncio.run(_send_quit(port, _GRACEFUL_RPC_TIMEOUT))
+        except Exception as e:  # noqa: BLE001 — 连不上/超时/协议错一律降级
+            print(f"优雅退出失败，降级 SIGTERM：{e}", file=sys.stderr)
+            return False
+        # RPC 已请求退出，轮询进程消失（_reap_if_dead 正确回收 zombie 子进程，#67）
+        deadline = time.time() + graceful_timeout
+        while time.time() < deadline:
+            if _reap_if_dead(pid):
+                return True
+            time.sleep(0.2)
+        return False
 
 
 # ── 项目级配置 ──
@@ -888,6 +926,20 @@ def _ensure_imported(project_root: Path, godot_bin: str) -> None:
     if cache.exists() and _REQUIRED_CLASS_MARKER in cache.read_bytes():
         return
     reimport_project(project_root, godot_bin)
+
+
+async def _send_quit(port: int, timeout: float) -> None:
+    """连 GameBridge 发 quit RPC。短连接超时——daemon 半死时快速失败降级。"""
+    from .client import GameClient
+
+    client = GameClient(port=port)
+    try:
+        await client.connect(
+            retries=5, backoff=0.2, max_wait=0.5, open_timeout=1.0, total_timeout=2.0
+        )
+        await client.quit(timeout=timeout)
+    finally:
+        await client.disconnect()
 
 
 def _transcode_movie(movie_path: Path, control_dir: Path) -> bool:
