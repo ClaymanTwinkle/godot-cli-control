@@ -1144,3 +1144,59 @@ func test_stale_check_same_bytes_is_stale() -> void:
 func test_stale_check_different_bytes_not_stale() -> void:
 	_api._mark_screenshot_stale_check(PackedByteArray([1, 2, 3]))
 	assert_false(_api._mark_screenshot_stale_check(PackedByteArray([4, 5, 6])), "不同字节 → 非 stale")
+
+
+# ── sub-path leaf fail-loud（#157，仅 vector 系）─────────────────
+
+func test_subpath_valid_vector2_leaf_reads_scalar() -> void:
+	var node := Node2D.new()
+	node.name = "SubPathV2"
+	node.position = Vector2(3, 7)
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(node.get_path()),
+		"property": "position:y",
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(result.get("value"), 7.0)
+
+
+func test_subpath_typo_vector2_leaf_returns_1002_with_valid_list() -> void:
+	var node := Node2D.new()
+	node.name = "SubPathV2Typo"
+	node.position = Vector2(3, 7)
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(node.get_path()),
+		"property": "position:z",  # Vector2 无 z
+	})
+	assert_has(result, "error")
+	assert_eq(result["error"]["code"], CliControlErrorCodes.PROPERTY_NOT_FOUND)
+	assert_string_contains(result["error"]["message"], "valid leaves: x, y")
+
+
+func test_subpath_typo_vector3_leaf_returns_1002() -> void:
+	var node := Node3D.new()
+	node.name = "SubPathV3Typo"
+	node.position = Vector3(1, 2, 3)
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(node.get_path()),
+		"property": "position:w",  # Vector3 无 w
+	})
+	assert_has(result, "error")
+	assert_eq(result["error"]["code"], CliControlErrorCodes.PROPERTY_NOT_FOUND)
+
+
+func test_subpath_uncovered_compound_type_passes_through() -> void:
+	# Color 未纳入白名单 → 退回 get_indexed 现状：合法 leaf 仍读到值，不误杀。
+	var node := Node2D.new()
+	node.name = "SubPathColor"
+	node.modulate = Color(0.1, 0.2, 0.3, 0.4)
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_get_property({
+		"path": str(node.get_path()),
+		"property": "modulate:r",
+	})
+	assert_does_not_have(result, "error")
+	assert_almost_eq(result.get("value"), 0.1, 0.0001)

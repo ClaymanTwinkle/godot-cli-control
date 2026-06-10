@@ -53,6 +53,18 @@ var _method_blacklist: PackedStringArray = _METHOD_BLACKLIST.duplicate()
 var _last_screenshot_hash: int = 0
 var _has_prev_screenshot: bool = false
 
+# #157：内置复合 Variant 的封闭 leaf 集——sub-path typo fail-loud 用。只收录能
+# 100% 枚举完整的类型（vector 系，x/y/z/w 铁稳零漏列）；Color/Rect2/Transform 等
+# leaf 集大、需实证完整后再加（follow-up）。键为 typeof()，值为合法 leaf 名。
+const _SUBPATH_CLOSED_LEAVES := {
+	TYPE_VECTOR2: ["x", "y"],
+	TYPE_VECTOR2I: ["x", "y"],
+	TYPE_VECTOR3: ["x", "y", "z"],
+	TYPE_VECTOR3I: ["x", "y", "z"],
+	TYPE_VECTOR4: ["x", "y", "z", "w"],
+	TYPE_VECTOR4I: ["x", "y", "z", "w"],
+}
+
 # 防御性白名单：声明类型在这里 = Object.set(prop, Array) 不会 silent-corrupt，原 Array
 # 可以直接透传。除此之外的「未在 _coerce_array_to_declared_type 实现 coerce」的复合
 # Variant 必须 fail-loud，避免未来 Godot 新增 Variant 时重蹈 #52 silent-corruption。
@@ -131,9 +143,8 @@ func handle_get_property(params: Dictionary) -> Dictionary:
 
 ## 读单个属性，支持 sub-path（"position:x"，与 set 侧对称走 get_indexed）。
 ## 返回 {"value": Variant} 或 {"error": ...}。
-## sub-path 的 leaf 非法时 get_indexed 返回 null——与「真 null 值」无法区分，
-## SKILL.md 已声明该边界（pitfalls 中「Sub-path reading a non-existent leaf」一条）；
-## 这里只校验 ":" 前的 top-level 名存在（1002 兜底 typo）。
+## 先逐段 walk 校验 leaf（封闭复合类型 typo → 1002，#157）；
+## 遇开放/未收录类型即停、退回 get_indexed 现状（零回归，误杀比静默更坏）。
 func _read_property(node: Node, property: String) -> Dictionary:
 	if property.is_empty():
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'property' parameter")
@@ -142,8 +153,35 @@ func _read_property(node: Node, property: String) -> Dictionary:
 	if not _has_property(node, top_level):
 		return _err(CliControlErrorCodes.PROPERTY_NOT_FOUND, "Property not found: %s" % top_level)
 	if is_sub_path:
+		var leaf_err: Dictionary = _validate_sub_path_leaves(node, property)
+		if leaf_err.has("error"):
+			return leaf_err
 		return {"value": node.get_indexed(NodePath(property))}
 	return {"value": node.get(property)}
+
+
+## sub-path leaf fail-loud（#157）：逐段 walk。当前段值是封闭复合类型且 leaf 不在
+## 其合法集 → 1002（message 带合法 leaf 列表）；遇开放/未收录类型即停、放行（退回
+## get_indexed 现状，零回归）。leaf 合法则用已校验前缀走 get_indexed 取下一段值续 walk
+## （前缀合法故非 null-from-typo）。返回 {} 放行 / {"error": ...} 命中 typo。
+func _validate_sub_path_leaves(node: Node, property: String) -> Dictionary:
+	var segments: PackedStringArray = property.split(":", false)
+	# segments[0] = top_level（调用方已 _has_property 校验存在）
+	var current: Variant = node.get(segments[0])
+	for i in range(1, segments.size()):
+		var t: int = typeof(current)
+		if not _SUBPATH_CLOSED_LEAVES.has(t):
+			return {}  # 开放/未收录类型：停止校验，放行
+		var valid: Array = _SUBPATH_CLOSED_LEAVES[t]
+		var leaf: String = segments[i]
+		if not (leaf in valid):
+			var valid_psa: PackedStringArray = PackedStringArray(valid)
+			return _err(
+				CliControlErrorCodes.PROPERTY_NOT_FOUND,
+				"Sub-path leaf not found: %s (valid leaves: %s)" % [property, ", ".join(valid_psa)]
+			)
+		current = node.get_indexed(NodePath(":".join(segments.slice(0, i + 1))))
+	return {}
 
 
 ## issue #100：多属性同帧原子读。sync handler 无 await——所有读取天然同一帧。
