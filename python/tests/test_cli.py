@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -4607,3 +4608,38 @@ async def test_cmd_drag_mixed_from_node_to_literal() -> None:
         "x1": 0.0, "y1": 0.0, "x2": 30.0, "y2": 40.0,
         "from_node": "/root/A", "to_node": None,
     }
+
+
+# ── #157 item2：RPC 子命令后置 --port / --instance ──
+
+def test_rpc_subcommand_accepts_trailing_port():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["exists", "/root/Foo", "--port", "9999"])
+    assert ns.port == 9999
+
+
+def test_rpc_subcommand_leading_port_still_works():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["--port", "9999", "exists", "/root/Foo"])
+    assert ns.port == 9999
+
+
+def test_rpc_subcommand_trailing_instance_all():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["exists", "/root/Foo", "--instance", "all"])
+    assert ns.instance == "all"
+
+
+def test_cross_position_port_and_instance_conflict(monkeypatch, capsys):
+    """--instance 前置 + --port 后置：两个 mutex 都照不到，guard 兜成 usage 错。"""
+    from godot_cli_control import cli
+    monkeypatch.setattr(
+        sys, "argv",
+        ["godot-cli-control", "--instance", "client1", "exists", "/root/Foo", "--port", "5"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 64
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False
+    assert out["error"]["code"] == -1003

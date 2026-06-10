@@ -2687,6 +2687,31 @@ def _add_output_format_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_connection_flags(p: argparse.ArgumentParser) -> None:
+    """RPC 子命令的后置 ``--port`` / ``--instance``（#157）。
+
+    与 ``_add_output_format_flags`` 同款：``default=argparse.SUPPRESS`` 使这两个
+    flag 只在显式后置传入时才写 namespace，不覆盖顶层 ``conn_grp`` 的
+    ``default=None``。这样 RPC 子命令既能写 ``--port N <cmd>``（顶层），也能写
+    ``<cmd> ... --port N``（本处），消灭「--port 必须前置」pitfall。per-subparser
+    mutex 守同位置同给；跨位置同给（一前一后）由 ``main()`` 的 guard 兜——顶层
+    mutex 与本处 mutex 都照不到跨位置。
+    """
+    grp = p.add_mutually_exclusive_group()
+    grp.add_argument(
+        "--port",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="（亦可后置）RPC 连接的 GameBridge 端口；与 --instance 互斥",
+    )
+    grp.add_argument(
+        "--instance",
+        type=_instance_arg_allow_all,
+        default=argparse.SUPPRESS,
+        help="（亦可后置）目标实例名（all=广播）；与 --port 互斥",
+    )
+
+
 class _QuietPeekParser(argparse.ArgumentParser):
     """peek-parse 专用：error() 不往 stderr 打 usage/error，直接抛 SystemExit。
 
@@ -3021,6 +3046,7 @@ def build_parser() -> argparse.ArgumentParser:
         if spec.extra_args is not None:
             spec.extra_args(sp)
         _add_output_format_flags(sp)
+        _add_connection_flags(sp)
     return parser
 
 
@@ -3250,6 +3276,17 @@ def main() -> None:
                 else:
                     print(f"错误：{e}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
+
+        # #157：跨位置 --port + --instance 同给——顶层 mutex 只管前置同给、
+        # subparser mutex 只管后置同给，二者跨位置（一前一后）都照不到。两者
+        # default 均 None，非 None 即「显式给过」→ 用法错（与 argparse mutex 同级）。
+        if ns.port is not None and ns.instance is not None:
+            msg = "--port 与 --instance 互斥：二选一（指定端口或实例名）"
+            if fmt == OUTPUT_JSON:
+                _emit_error_payload(CLIENT_CODE_USAGE, msg)
+            else:
+                print(f"错误：{msg}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
 
         # --instance all：广播路径（#145）——逐实例并发 + 聚合信封，
         # 不走单实例端口发现（preflight 已在上面跑过，screenshot 守卫等生效）。
