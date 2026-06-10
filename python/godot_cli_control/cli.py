@@ -2094,6 +2094,7 @@ def cmd_run(ns: argparse.Namespace) -> int:
                     fps=ns.fps,
                     port=ns.port,
                     idle_timeout=idle_seconds,
+                    time_scale=getattr(ns, "time_scale", None),
                     always_on_top=ns.always_on_top,
                 )
             except DaemonError as e:
@@ -2907,6 +2908,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("script", help="用户脚本路径，需定义 run(bridge)")
     _add_daemon_flags(run_p)
     _add_instance_name_flag(run_p)
+    run_p.add_argument(
+        "--time-scale",
+        type=_time_scale_arg,
+        default=None,
+        help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 提速用（同 daemon start）",
+    )
     run_p.add_argument(
         "--no-gui-auto",
         action="store_true",

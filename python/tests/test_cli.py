@@ -4120,6 +4120,48 @@ def test_name_and_instance_conflict_is_usage_error(
     assert not stop_called, "不应调用 stop"
 
 
+def test_run_parses_time_scale():
+    from godot_cli_control import cli
+    ns = cli.build_parser().parse_args(["run", "script.py", "--time-scale", "5"])
+    assert ns.time_scale == 5.0
+
+
+def test_run_passes_time_scale_to_daemon_start(tmp_path, monkeypatch, capsys):
+    """cmd_run 必须把 --time-scale 透传进 daemon.start（与 daemon start 对称）。"""
+    from godot_cli_control import cli
+
+    script = tmp_path / "s.py"
+    script.write_text("def run(bridge):\n    pass\n")
+
+    captured = {}
+
+    class _FakeDaemon:
+        def __init__(self, *a, **k):
+            pass
+
+        def is_running(self):
+            return False
+
+        def start(self, **kwargs):
+            captured.update(kwargs)
+            return 1
+
+        def current_port(self):
+            return 12345
+
+        def stop(self):
+            return 0
+
+    import godot_cli_control.daemon as daemon_mod
+    monkeypatch.setattr(daemon_mod, "Daemon", _FakeDaemon)
+    monkeypatch.setattr(cli, "_exec_user_script", lambda *a, **k: 0)
+
+    ns = cli.build_parser().parse_args(["run", str(script), "--time-scale", "5"])
+    rc = cli.cmd_run(ns)
+    assert rc == 0
+    assert captured.get("time_scale") == 5.0
+
+
 def test_name_and_instance_same_value_ok(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
