@@ -48,6 +48,10 @@ const _PROPERTY_BLACKLIST: PackedStringArray = [
 # 运行期合并 = 内置 ∪ ProjectSettings extras。_ready 里初始化一次。
 var _property_blacklist: PackedStringArray = _PROPERTY_BLACKLIST.duplicate()
 var _method_blacklist: PackedStringArray = _METHOD_BLACKLIST.duplicate()
+# screenshot stale 检测（#156 子问题 B / B3）：本次 png 字节与上次相同 → stale_suspect。
+# _has_prev 哨兵：避免首张恰好 hash 命中 _last==0 误判。
+var _last_screenshot_hash: int = 0
+var _has_prev_screenshot: bool = false
 
 # 防御性白名单：声明类型在这里 = Object.set(prop, Array) 不会 silent-corrupt，原 Array
 # 可以直接透传。除此之外的「未在 _coerce_array_to_declared_type 实现 coerce」的复合
@@ -558,6 +562,16 @@ func _matches_type(node: Node, type_filter: String) -> bool:
 	return false
 
 
+# 比对本次 png 字节与上张：相同则可疑 stale（风险提示，非确定断言——游戏真静止时
+# 也相同）。更新 state 并返回是否 stale。抽成纯方法便于 GUT 单测（#156 子问题 B / B3）。
+func _mark_screenshot_stale_check(png_buffer: PackedByteArray) -> bool:
+	var h: int = hash(png_buffer)
+	var stale: bool = _has_prev_screenshot and h == _last_screenshot_hash
+	_last_screenshot_hash = h
+	_has_prev_screenshot = true
+	return stale
+
+
 func take_screenshot_async(params: Dictionary = {}) -> Dictionary:
 	# 可选 node 裁剪（issue #101）：node 解析 / 边界计算放在取图 *之前*，
 	# schema 错（1001/1010）不必白等帧循环；交集判定（1011）只能在拿到
@@ -583,6 +597,10 @@ func take_screenshot_async(params: Dictionary = {}) -> Dictionary:
 	# 循环 N 次只会让 Godot 内部 "Parameter t is null" push_error 噪音放大 N 倍。
 	var dummy: bool = RenderingServer.get_rendering_device() == null
 	var max_iters: int = 1 if dummy else SCREENSHOT_MAX_FRAMES
+	# macOS 遮挡窗口会冻帧、get_image() 拿旧画面（#156 子问题 B / B2）；抓帧前主动
+	# 强制渲染一帧绕过节流。dummy/headless 无 GPU，不调。
+	if not dummy:
+		RenderingServer.force_draw()
 	var image: Image = null
 	for _i in max_iters:
 		if dummy:
@@ -615,6 +633,10 @@ func take_screenshot_async(params: Dictionary = {}) -> Dictionary:
 		image = image.get_region(region)
 		response["region"] = [region.position.x, region.position.y, region.size.x, region.size.y]
 	var png_buffer: PackedByteArray = image.save_png_to_buffer()
+	# stale 风险信号（#156 子问题 B / B3）：与上张字节相同 → 标 stale_suspect。
+	# path 直写与 base64 两路 return 的 response 都会带上。
+	if _mark_screenshot_stale_check(png_buffer):
+		response["stale_suspect"] = true
 	# 服务端直写落盘（issue #149）：daemon 与 CLI 必然同机（localhost-only
 	# 是本工具的安全前提），PNG 不必过 WS——大图曾把 client 默认 1MB
 	# max_size 撞出 close 1009，误报成连接错误。path 必须是绝对路径
