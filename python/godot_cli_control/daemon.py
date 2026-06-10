@@ -45,6 +45,10 @@ _INSTANCE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 # 不与 poll 窗口（graceful_timeout）叠加吃满 2×graceful_timeout。
 _GRACEFUL_RPC_TIMEOUT = 2.0
 
+# #157：录制 daemon 已正常停止、原始 AVI 保留、仅 ffmpeg 转 mp4 失败时 stop() 的返回码。
+# 专用 4（不复用 infra 的 2）——脚本可用 rc==4 直接判「只差转码」，2 留给真 infra 故障。
+STOP_RC_TRANSCODE_FAILED = 4
+
 
 def _rmdir_if_empty(path: Path) -> None:
     """目录已空则删除（实例目录卫生回收，#144）；非空 / 不存在 / IO 错静默保留。"""
@@ -321,7 +325,7 @@ class Daemon:
     # ── 停止 ──
 
     def stop(self) -> int:
-        """停止 daemon。返回 exit code（0 成功；2 转码失败但进程已停）。"""
+        """停止 daemon。返回 exit code（0 成功；STOP_RC_TRANSCODE_FAILED=4 转码失败但进程已停）。"""
         pid = self.read_pid()
         if pid is None:
             print("没有 PID 文件，无需停止", file=sys.stderr)
@@ -356,7 +360,7 @@ class Daemon:
                 movie_path = Path(mp_file.read_text().strip())
                 mp_file.unlink(missing_ok=True)
                 if not _transcode_movie(movie_path, self.control_dir):
-                    rc = 2
+                    rc = STOP_RC_TRANSCODE_FAILED
         return rc
 
     # ── 内部 ──
