@@ -367,6 +367,34 @@ func _send_error(id: String, code: int, message: String) -> void:
 	_send_json(response)
 
 
+# 纯函数（issue #160）：给定一条发送失败的出站帧 data，决定补发什么。
+# 返回 {} = 不补发。抽成纯函数以便单测三条分支（递归守卫 / 空 id / 正常响应），
+# 无副作用、不碰 peer。
+func _oversize_fallback_for(data: Dictionary) -> Dictionary:
+	if data.has("error"):
+		# 失败的本就是 error 信封 → 不补发（递归终止根因：补发的也是 error 信封，
+		# 若它再失败会带 error，再次落到这里返回 {}）。
+		return {}
+	var id_raw: Variant = data.get("id", "")
+	if not (id_raw is String):
+		return {}
+	var id: String = id_raw
+	if id.is_empty():
+		# fire-and-forget：client 不 await，补发没人收。
+		return {}
+	return {
+		"id": id,
+		"error": {
+			"code": CliControlErrorCodes.RESPONSE_TOO_LARGE,
+			"message": (
+				"response too large for outbound buffer; "
+				+ "for screenshot pass a file path (daemon writes directly), "
+				+ "or raise godot_cli_control/outbound_buffer_mb"
+			),
+		},
+	}
+
+
 func _send_json(data: Dictionary) -> void:
 	if _active_peer == null or _active_peer.get_ready_state() != WebSocketPeer.STATE_OPEN:
 		return

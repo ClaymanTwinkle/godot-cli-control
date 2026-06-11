@@ -565,3 +565,28 @@ func test_registry_has_errors() -> void:
 func test_response_too_large_code_is_1016() -> void:
 	# 防回归：码值锁死 1016，三段制内不撞 1001-1015
 	assert_eq(CliControlErrorCodes.RESPONSE_TOO_LARGE, 1016)
+
+
+func test_oversize_fallback_skips_error_envelope() -> void:
+	# 递归守卫：失败的本就是 error 信封 → 不补发
+	var fb: Dictionary = _bridge._oversize_fallback_for(
+		{"id": "x", "error": {"code": 1001, "message": "n"}}
+	)
+	assert_true(fb.is_empty(), "error 信封发送失败不应补发（防递归）")
+
+
+func test_oversize_fallback_skips_empty_or_missing_id() -> void:
+	# fire-and-forget：client 不 await，补也没人收
+	var fb_empty: Dictionary = _bridge._oversize_fallback_for({"id": "", "result": {"big": "x"}})
+	assert_true(fb_empty.is_empty(), "空 id 响应不应补发")
+	var fb_missing: Dictionary = _bridge._oversize_fallback_for({"result": {"big": "x"}})
+	assert_true(fb_missing.is_empty(), "无 id 响应不应补发")
+
+
+func test_oversize_fallback_builds_1016_for_response() -> void:
+	var fb: Dictionary = _bridge._oversize_fallback_for({"id": "abc", "result": {"big": "x"}})
+	assert_false(fb.is_empty(), "带 id 的正常响应失败应补发")
+	assert_eq(str(fb.get("id")), "abc", "补发信封须沿用原 id")
+	assert_has(fb, "error")
+	assert_eq(int(fb.error.code), CliControlErrorCodes.RESPONSE_TOO_LARGE, "补发码须为 1016")
+	assert_string_contains(str(fb.error.message), "outbound buffer")
