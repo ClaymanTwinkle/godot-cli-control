@@ -558,3 +558,10 @@ func test_registry_has_sprite_info() -> void:
 func test_registry_has_errors() -> void:
 	assert_true(_bridge._methods.has("errors"), "errors 应已注册（issue #103）")
 	assert_eq(str(_bridge._methods["errors"]["kind"]), "sync")
+
+
+# ── #160: _send_json 发送失败 fail-loud ──────────────────────────────
+
+func test_response_too_large_code_is_1016() -> void:
+	# 防回归：码值锁死 1016，三段制内不撞 1001-1015
+	assert_eq(CliControlErrorCodes.RESPONSE_TOO_LARGE, 1016)

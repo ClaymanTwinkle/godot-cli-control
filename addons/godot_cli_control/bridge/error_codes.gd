@@ -57,6 +57,11 @@ const DRAG_IN_PROGRESS: int = 1014
 # flag（debug-build + localhost 之上第三重显式门）。emit_signal 默认仍在方法黑名单里，
 # call <node> emit_signal 始终被拒。
 const EMIT_SIGNAL_DISABLED: int = 1015
+# 响应超出站 WebSocket 缓冲（issue #160）：单条响应 JSON 超过 outbound_buffer_size
+# （默认 10MB，godot_cli_control/outbound_buffer_mb 可调）时 send_text 失败。
+# 容量/资源类永久错——同一响应重试必再超；agent 应改用 path 落盘（screenshot）
+# 或调大 buffer。daemon 用它替换发不出去的大响应，避免 client 干等到 -1002 假超时。
+const RESPONSE_TOO_LARGE: int = 1016
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600
