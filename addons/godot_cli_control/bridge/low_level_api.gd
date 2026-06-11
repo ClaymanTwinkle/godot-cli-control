@@ -185,7 +185,9 @@ func _read_property(node: Node, property: String) -> Dictionary:
 ## （前缀合法故非 null-from-typo）。返回 {} 放行 / {"error": ...} 命中 typo。
 func _validate_sub_path_leaves(node: Node, property: String) -> Dictionary:
 	var segments: PackedStringArray = property.split(":", false)
-	# segments[0] = top_level（调用方已 _has_property 校验存在）
+	# segments[0] = top_level。get 侧调用方已 _has_property 校验其存在；set 侧（#174）不预
+	# 校验 → 不存在时 node.get() 返 null（TYPE_NIL 不在封闭集）→ 首段即放行，沿用 set_indexed
+	# 对未知 top-level 的现状（不误报，top-level typo 是另一个 footgun，超出 #174 范围）。
 	var current: Variant = node.get(segments[0])
 	for i in range(1, segments.size()):
 		var t: int = typeof(current)
@@ -248,6 +250,15 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	var top_level: String = _top_level_of(property)
 	if property in _property_blacklist or top_level in _property_blacklist:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Blocked property: %s" % property)
+	# #174：sub-path leaf typo fail-loud（与 get 侧 _read_property 对称，复用 #169 机制）。
+	# set_indexed 找不到 named leaf 时静默丢值（不写、不报错），handler 仍返回 success →
+	# 假成功 footgun。封闭复合类型 typo → 1002 + 合法 leaf 列表；开放/未收录类型放行退回
+	# set_indexed 现状（误杀比静默更坏）。top_level 不存在时 walk 起点为 null → 放行（与 get
+	# 侧不同：set 侧不预先 _has_property 校验，沿用 set_indexed 对未知 top-level 的现状）。
+	if is_sub_path:
+		var leaf_err: Dictionary = _validate_sub_path_leaves(node, property)
+		if leaf_err.has("error"):
+			return leaf_err
 	var value: Variant = params.get("value", null)
 	# #52：JSON 只能产 Array/Number/String/Bool/null。Godot Object.set("zoom", [1.8,1.8])
 	# 不会隐式构造 Vector2，会走 zero-init / clamp 到 0.00001 → silent corruption。

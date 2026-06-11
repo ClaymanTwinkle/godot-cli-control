@@ -1367,6 +1367,105 @@ func test_subpath_uncovered_compound_type_passes_through() -> void:
 	assert_eq(result.get("value"), 7)
 
 
+# ── set 侧 sub-path leaf fail-loud（#174：与 get 侧 #169 对称）──────
+# set_indexed 对不存在的 leaf 静默丢值（不写、不报错），handler 仍返回 success → 假成功
+# footgun。复用 get 侧 _validate_sub_path_leaves（封闭复合 typo → 1002），与 get 行为对称。
+
+func test_set_subpath_typo_does_not_write_value() -> void:
+	# #174 headline：set position:zz 5 此前静默 no-op + ok:true（假成功）。
+	# 现在 typo leaf → 1002 + 合法 leaf 列表，且原值丝毫不动。
+	var node := Node2D.new()
+	node.name = "SetSubPathTypo"
+	node.position = Vector2(3, 7)
+	add_child_autofree(node)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(node.get_path()),
+		"property": "position:zz",  # Vector2 无 zz
+		"value": 5.0,
+	})
+	assert_has(result, "error", "set typo leaf 必须 fail-loud，不能假成功")
+	assert_eq(int(result["error"]["code"]), CliControlErrorCodes.PROPERTY_NOT_FOUND)
+	assert_string_contains(str(result["error"]["message"]), "valid leaves: x, y")
+	assert_eq(node.position, Vector2(3, 7), "typo 被拒后原值不能被改动")
+
+
+func test_set_subpath_typo_rejected_for_each_closed_compound() -> void:
+	# 对每个意图封闭复合类型，绝不合法的 leaf（"zzz_nope"）走生产路径 set 必须 → 1002，
+	# message 带合法 leaf 列表。遍历 _leaf_probes()（与 get 侧 typo 测试同源意图集）。
+	var fixture := _SubPathLeafFixture.new()
+	fixture.name = "SetLeafTypo"
+	add_child_autofree(fixture)
+	var probes: Dictionary = _leaf_probes()
+	for t: int in probes:
+		var var_name: String = probes[t][0]
+		var result: Dictionary = _api.handle_set_property({
+			"path": str(fixture.get_path()),
+			"property": "%s:zzz_nope" % var_name,
+			"value": 1.0,
+		})
+		assert_has(result, "error", "typeof=%d set typo leaf 必须 fail-loud" % t)
+		if result.has("error"):
+			assert_eq(int(result["error"]["code"]), CliControlErrorCodes.PROPERTY_NOT_FOUND,
+				"typeof=%d set typo 必须报 1002" % t)
+			assert_string_contains(str(result["error"]["message"]), "valid leaves:")
+
+
+func test_set_subpath_valid_scalar_leaf_roundtrips() -> void:
+	# 无误杀守卫 + 真写入：合法标量 leaf set-then-get round-trip 必须读回写入值。
+	# 覆盖 Vector(2/2i/3/4)、Color(modulate)、Quaternion、Plane 的可写标量 leaf。
+	var node2d := Node2D.new()
+	node2d.name = "SetRoundTrip2D"
+	node2d.modulate = Color(0.1, 0.2, 0.3, 0.4)
+	add_child_autofree(node2d)
+	var node3d := Node3D.new()
+	node3d.name = "SetRoundTrip3D"
+	add_child_autofree(node3d)
+	var fixture := _SubPathLeafFixture.new()
+	fixture.name = "SetRoundTripFixture"
+	add_child_autofree(fixture)
+	# [node, "property:leaf", 写入值]
+	var cases: Array = [
+		[node2d, "position:x", 12.5],
+		[node2d, "position:y", -3.0],
+		[node2d, "modulate:r", 0.75],
+		[node2d, "modulate:a", 0.5],
+		[node3d, "position:z", 9.0],
+		[fixture, "vec4:w", 4.25],
+		[fixture, "vec2i:y", 6],
+		[fixture, "quat:z", 0.25],
+		[fixture, "plane:d", 8.0],
+	]
+	for case: Array in cases:
+		var n: Node = case[0]
+		var prop: String = case[1]
+		var want: Variant = case[2]
+		var set_res: Dictionary = _api.handle_set_property({
+			"path": str(n.get_path()), "property": prop, "value": want,
+		})
+		assert_does_not_have(set_res, "error", "合法 leaf '%s' 被误杀" % prop)
+		var get_res: Dictionary = _api.handle_get_property({
+			"path": str(n.get_path()), "property": prop,
+		})
+		assert_does_not_have(get_res, "error", "round-trip get '%s' 失败" % prop)
+		assert_almost_eq(float(get_res.get("value")), float(want), 0.0001,
+			"round-trip '%s' 读回值不符" % prop)
+
+
+func test_set_subpath_open_type_passes_through() -> void:
+	# 开放/动态类型（Dictionary 永不入封闭集）→ 退回 set_indexed 现状，不误杀。
+	# set open_dict:foo 99 必须写入 + 无 error，守住「误杀比静默更坏」放行契约。
+	var fixture := _SubPathLeafFixture.new()
+	fixture.name = "SetSubPathOpenDict"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_set_property({
+		"path": str(fixture.get_path()),
+		"property": "open_dict:foo",
+		"value": 99,
+	})
+	assert_does_not_have(result, "error", "开放类型 sub-path 不能 fail-loud")
+	assert_eq(fixture.open_dict.get("foo"), 99, "开放类型 sub-path 应正常写入")
+
+
 # ── emit-signal opt-in 逃生门（#157 item4）──────────────────────
 
 func test_emit_signal_disabled_by_default_returns_1015() -> void:
