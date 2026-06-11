@@ -25,11 +25,18 @@ const _CONTAINER_TYPES: PackedInt32Array = [
 
 # 注入的 _read_property Callable（由 setup() 传入）
 var _read_property_fn: Callable = Callable()
+# 注入：发终帧 Callable（async_with_id 用，issue #155）
+var _send_response_callback: Callable = Callable()
+# 注入：发 armed 中间帧 Callable（async_with_id 用，issue #155）
+var _send_armed_callback: Callable = Callable()
 
 
-## 必须在任何 wait_property_async 调用之前执行；不调用则 _read_property_fn 无效。
-func setup(read_property: Callable) -> void:
+## 必须在任何 wait_property_async / wait_signal_async 调用之前执行；
+## send_response / send_armed 用于 async_with_id 路径（issue #155）。
+func setup(read_property: Callable, send_response := Callable(), send_armed := Callable()) -> void:
 	_read_property_fn = read_property
+	_send_response_callback = send_response
+	_send_armed_callback = send_armed
 
 
 ## wait_signal 的参数捕获器（issue #96）。GDScript 无变参 Callable，
@@ -342,37 +349,47 @@ func wait_frames_async(params: Dictionary) -> Dictionary:
 	return {"success": true, "frames": frames}
 
 
-## issue #96：等信号发射（带超时）。竞态注意（SKILL.md pitfall）：必须先挂
-## 等待再触发动作——信号在 connect 之前发射不会被捕获。
-func wait_signal_async(params: Dictionary) -> Dictionary:
+## issue #96 / #155：等信号发射（带超时）。async_with_id 路径：不返回值，
+## 通过 _send_response_callback 回终帧，通过 _send_armed_callback 回 armed 中间帧。
+## arm_ack=true（issue #155）：connect 完成后先发 {id, armed:true} 进度帧，
+## client 据此在同连接发 trigger 子命令，再等终帧——竞态从协议层根除。
+func wait_signal_async(params: Dictionary, id: String) -> void:
 	var path: String = params.get("path", "") as String
 	var node: Node = get_tree().root.get_node_or_null(path)
 	if node == null:
-		return _node_not_found(path)
+		_send_response_callback.call(id, _node_not_found(path))
+		return
 	var signal_name: String = params.get("signal", "") as String
 	if signal_name.is_empty():
-		return _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'signal' parameter")
+		_send_response_callback.call(id, _err(CliControlErrorCodes.INVALID_PARAMS, "Missing 'signal' parameter"))
+		return
 	if not node.has_signal(signal_name):
-		return _err(CliControlErrorCodes.SIGNAL_NOT_FOUND, "Signal not found: %s" % signal_name)
+		_send_response_callback.call(id, _err(CliControlErrorCodes.SIGNAL_NOT_FOUND, "Signal not found: %s" % signal_name))
+		return
 	var timeout_raw2: Variant = params.get("timeout", 5.0)
 	if not (timeout_raw2 is int or timeout_raw2 is float):
-		return _err(CliControlErrorCodes.INVALID_PARAMS, "'timeout' must be a number")
+		_send_response_callback.call(id, _err(CliControlErrorCodes.INVALID_PARAMS, "'timeout' must be a number"))
+		return
 	var timeout: float = float(timeout_raw2)
 	if timeout < 0.0 or timeout > _MAX_WAIT_SECONDS:
-		return _err(CliControlErrorCodes.INVALID_PARAMS, "timeout must be 0..%s" % _MAX_WAIT_SECONDS)
+		_send_response_callback.call(id, _err(CliControlErrorCodes.INVALID_PARAMS, "timeout must be 0..%s" % _MAX_WAIT_SECONDS))
+		return
 	var argc: int = 0
 	for sig: Dictionary in node.get_signal_list():
 		if sig["name"] == signal_name:
 			argc = (sig["args"] as Array).size()
 			break
 	if argc > _SignalCapture.MAX_ARGS:
-		return _err(
-			CliControlErrorCodes.INVALID_PARAMS,
-			"signal '%s' has %d args (max %d supported)" % [signal_name, argc, _SignalCapture.MAX_ARGS],
-		)
+		_send_response_callback.call(id, _err(CliControlErrorCodes.INVALID_PARAMS,
+			"signal '%s' has %d args (max %d supported)" % [signal_name, argc, _SignalCapture.MAX_ARGS]))
+		return
 	var capture: _SignalCapture = _SignalCapture.new()
 	var cb: Callable = capture.callable_for(argc)
 	node.connect(signal_name, cb, CONNECT_ONE_SHOT)
+	# arm 完成同步点（issue #155）：connect 后才发 armed 帧，client 收到后再触发动作，
+	# 保证「先挂再触发」——竞态从协议层根除。
+	if bool(params.get("arm_ack", false)) and _send_armed_callback.is_valid():
+		_send_armed_callback.call(id)
 	var start_ms: int = Time.get_ticks_msec()
 	var reason: String = "timeout"
 	while not capture.fired:
@@ -386,11 +403,12 @@ func wait_signal_async(params: Dictionary) -> Dictionary:
 		# one-shot 未触发时连接仍挂着，必须显式清理（防悬挂 Callable 泄漏）
 		if is_instance_valid(node) and node.is_connected(signal_name, cb):
 			node.disconnect(signal_name, cb)
-		return {"emitted": false, "reason": reason}
+		_send_response_callback.call(id, {"emitted": false, "reason": reason})
+		return
 	var encoded_args: Array = []
 	for arg: Variant in capture.args:
 		encoded_args.append(CliControlVariantCodec.encode(arg))
-	return {"emitted": true, "args": encoded_args}
+	_send_response_callback.call(id, {"emitted": true, "args": encoded_args})
 
 
 func _node_not_found(path: String) -> Dictionary:

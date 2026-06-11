@@ -12,6 +12,25 @@ const LowLevelApiScript := preload("res://addons/godot_cli_control/bridge/low_le
 var _api: Node
 var _low: Node
 
+# ── issue #155：async_with_id spy 基础设施 ──
+# 收集服务端发出的帧：armed 中间帧走 _armed_ids，终帧走 _final_by_id
+var _armed_ids: Array = []
+var _final_by_id: Dictionary = {}
+
+
+func _spy_send_armed(id: String) -> void:
+	_armed_ids.append(id)
+
+
+func _spy_send_response(id: String, result: Dictionary) -> void:
+	_final_by_id[id] = result
+
+
+func _wire_spies() -> void:
+	_armed_ids = []
+	_final_by_id = {}
+	_api.setup(_low._read_property, _spy_send_response, _spy_send_armed)
+
 
 func before_each() -> void:
 	_low = LowLevelApiScript.new()
@@ -20,7 +39,7 @@ func before_each() -> void:
 	_api = WaitApiScript.new()
 	_api.name = "WaitApi"
 	add_child_autofree(_api)
-	_api.setup(_low._read_property)
+	_wire_spies()
 
 
 # ── issue #96：wait_frames ──
@@ -132,9 +151,9 @@ func test_wait_signal_captures_emission_and_args() -> void:
 	emitter.add_user_signal("e2e_sig", [{"name": "v", "type": TYPE_INT}])
 	add_child_autofree(emitter)
 	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.emit_signal("e2e_sig", 42))
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": str(emitter.get_path()), "signal": "e2e_sig", "timeout": 2.0,
-	})
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "e2e_sig", "timeout": 2.0}, "WS1")
+	await get_tree().create_timer(0.5).timeout
+	var result: Dictionary = _final_by_id["WS1"]
 	assert_true(result["emitted"])
 	assert_eq(result["args"], [{"value": 42}])
 
@@ -143,9 +162,9 @@ func test_wait_signal_zero_arg_signal() -> void:
 	var emitter := Node.new()
 	add_child_autofree(emitter)
 	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.emit_signal("renamed"))
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": str(emitter.get_path()), "signal": "renamed", "timeout": 2.0,
-	})
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "renamed", "timeout": 2.0}, "WS2")
+	await get_tree().create_timer(0.5).timeout
+	var result: Dictionary = _final_by_id["WS2"]
 	assert_true(result["emitted"])
 	assert_eq(result["args"], [])
 
@@ -154,17 +173,17 @@ func test_wait_signal_timeout_cleans_up_connection() -> void:
 	var emitter := Node.new()
 	emitter.add_user_signal("never_fires")
 	add_child_autofree(emitter)
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": str(emitter.get_path()), "signal": "never_fires", "timeout": 0.1,
-	})
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "never_fires", "timeout": 0.1}, "WS3")
+	await get_tree().create_timer(0.5).timeout
+	var result: Dictionary = _final_by_id["WS3"]
 	assert_false(result["emitted"])
 	assert_eq(emitter.get_signal_connection_list("never_fires").size(), 0, "超时后连接必须清理")
 
 
 func test_wait_signal_node_missing_is_1001() -> void:
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": "/root/__nope__", "signal": "x", "timeout": 0.1,
-	})
+	_api.wait_signal_async({"path": "/root/__nope__", "signal": "x", "timeout": 0.1}, "WS4")
+	await get_tree().process_frame
+	var result: Dictionary = _final_by_id["WS4"]
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), 1001)
 
@@ -172,9 +191,9 @@ func test_wait_signal_node_missing_is_1001() -> void:
 func test_wait_signal_unknown_signal_is_1007() -> void:
 	var emitter := Node.new()
 	add_child_autofree(emitter)
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": str(emitter.get_path()), "signal": "__nope__", "timeout": 0.1,
-	})
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "__nope__", "timeout": 0.1}, "WS5")
+	await get_tree().process_frame
+	var result: Dictionary = _final_by_id["WS5"]
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), 1007)
 
@@ -196,10 +215,12 @@ func test_wait_signal_timeout_string_is_minus_32602() -> void:
 	var emitter := Node.new()
 	emitter.add_user_signal("test_sig_for_timeout_check")
 	add_child_autofree(emitter)
-	var result: Dictionary = await _api.wait_signal_async({
+	_api.wait_signal_async({
 		"path": str(emitter.get_path()), "signal": "test_sig_for_timeout_check",
 		"timeout": "abc",
-	})
+	}, "WS6")
+	await get_tree().process_frame
+	var result: Dictionary = _final_by_id["WS6"]
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), -32602,
 		"timeout='abc' 应报 -32602 INVALID_PARAMS，实际 code=%d" % [int(result.error.code)])
@@ -242,9 +263,9 @@ func test_wait_signal_timeout_has_reason_timeout() -> void:
 	var emitter := Node.new()
 	emitter.add_user_signal("never_fires_2")
 	add_child_autofree(emitter)
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": str(emitter.get_path()), "signal": "never_fires_2", "timeout": 0.1,
-	})
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "never_fires_2", "timeout": 0.1}, "WS7")
+	await get_tree().create_timer(0.5).timeout
+	var result: Dictionary = _final_by_id["WS7"]
 	assert_false(result["emitted"])
 	assert_has(result, "reason", "超时应有 reason 字段")
 	assert_eq(result["reason"], "timeout")
@@ -257,9 +278,9 @@ func test_wait_signal_node_freed_has_reason_node_freed() -> void:
 	add_child_autofree(emitter)
 	# 50ms 后释放节点，timeout 留足余量确保先 free 后 timeout
 	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.free())
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": str(emitter.get_path()), "signal": "fleeting_sig", "timeout": 2.0,
-	})
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "fleeting_sig", "timeout": 2.0}, "WS8")
+	await get_tree().create_timer(0.5).timeout
+	var result: Dictionary = _final_by_id["WS8"]
 	assert_false(result["emitted"])
 	assert_has(result, "reason", "节点释放应有 reason 字段")
 	assert_eq(result["reason"], "node_freed")
@@ -271,9 +292,9 @@ func test_wait_signal_emitted_has_no_reason() -> void:
 	emitter.add_user_signal("fires_soon", [{"name": "n", "type": TYPE_INT}])
 	add_child_autofree(emitter)
 	get_tree().create_timer(0.05).timeout.connect(func() -> void: emitter.emit_signal("fires_soon", 7))
-	var result: Dictionary = await _api.wait_signal_async({
-		"path": str(emitter.get_path()), "signal": "fires_soon", "timeout": 2.0,
-	})
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "fires_soon", "timeout": 2.0}, "WS9")
+	await get_tree().create_timer(0.5).timeout
+	var result: Dictionary = _final_by_id["WS9"]
 	assert_true(result["emitted"])
 	assert_does_not_have(result, "reason", "命中信号时不应有 reason 字段")
 
@@ -436,3 +457,52 @@ func test_wait_property_missing_property_reason() -> void:
 	assert_false(result["matched"])
 	assert_eq(result["reason"], "property_not_found")
 	assert_null(result["value"])
+
+
+# ── issue #155：wait_signal arm_ack armed 帧 ──
+
+func test_wait_signal_arm_ack_emits_armed_frame_then_final() -> void:
+	## arm_ack=true：connect 后先发 armed 中间帧，emit 后发终帧
+	var emitter := Node.new()
+	emitter.name = "PingEmitter155"
+	emitter.add_user_signal("ping")
+	add_child_autofree(emitter)
+	# async_with_id：不返回，回调发帧
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "ping",
+		"timeout": 2.0, "arm_ack": true}, "REQ1")
+	await get_tree().process_frame  # 让 connect + armed 帧发出
+	assert_eq(_armed_ids, ["REQ1"], "arm_ack 应先发一条 armed 帧")
+	assert_false(_final_by_id.has("REQ1"), "未 emit 时不应有终帧")
+	emitter.emit_signal("ping")
+	await get_tree().process_frame
+	assert_true(_final_by_id.has("REQ1"), "emit 后应发终帧")
+	assert_true(_final_by_id["REQ1"]["emitted"], "终帧 emitted=true")
+
+
+func test_wait_signal_without_arm_ack_emits_no_armed_frame() -> void:
+	## 不传 arm_ack：不发 armed 帧（零回归），信号命中时正常发终帧
+	var emitter := Node.new()
+	emitter.name = "PingEmitter155B"
+	emitter.add_user_signal("ping")
+	add_child_autofree(emitter)
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "ping",
+		"timeout": 2.0}, "REQ2")
+	await get_tree().process_frame
+	assert_eq(_armed_ids, [], "不传 arm_ack 不发 armed 帧（零回归）")
+	emitter.emit_signal("ping")
+	await get_tree().process_frame
+	assert_true(_final_by_id.has("REQ2"), "emit 后应发终帧")
+	assert_true(_final_by_id["REQ2"]["emitted"], "仍正常发终帧")
+
+
+func test_wait_signal_arm_ack_node_missing_no_armed_frame() -> void:
+	## arm_ack=true 但节点不存在：先发 error 终帧，不发 armed 帧
+	_api.wait_signal_async({"path": "/root/NoSuch155", "signal": "x",
+		"timeout": 1.0, "arm_ack": true}, "REQ3")
+	await get_tree().process_frame
+	assert_eq(_armed_ids, [], "节点不存在：armed 帧前就发 error，不发 armed")
+	if not _final_by_id.has("REQ3"):
+		fail_test("no final frame for REQ3")
+		return
+	assert_true(_final_by_id["REQ3"].has("error"), "终帧是 error")
+	assert_eq(_final_by_id["REQ3"]["error"]["code"], CliControlErrorCodes.NODE_NOT_FOUND)
