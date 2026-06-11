@@ -75,12 +75,18 @@ class StubWaitApi:
 	# async type-guard（返回非 dict）由测试通过外部 Callable 注入到 _methods。
 	var wait_for_node_return: Dictionary = {"found": true}
 	var wait_for_node_calls: Array = []
+	# #172 item1：spy notify_start_timer 转发的 req_id，验证 game_bridge 路由。
+	# 真实计时行为由 test_wait_api 测；这里只关心 bridge 把 req_id 转给了 WaitApi。
+	var notify_start_timer_calls: Array = []
 
 	func wait_for_node_async(params: Dictionary) -> Dictionary:
 		wait_for_node_calls.append(params)
 		# 推一帧让调用方真的走 await 路径
 		await get_tree().process_frame
 		return wait_for_node_return
+
+	func notify_start_timer(req_id: String) -> void:
+		notify_start_timer_calls.append(req_id)
 
 
 # ── 桩 InputSimulationApi：sync handler + async_with_id（combo） ──
@@ -579,6 +585,33 @@ func test_registry_has_sprite_info() -> void:
 func test_registry_has_errors() -> void:
 	assert_true(_bridge._methods.has("errors"), "errors 应已注册（issue #103）")
 	assert_eq(str(_bridge._methods["errors"]["kind"]), "sync")
+
+
+# ── issue #172 item2 / item1：armed 帧 kind + wait_signal_start_timer 路由 ──
+
+func test_send_armed_frame_carries_kind_and_keeps_armed_field() -> void:
+	## #172 item2：armed 中间帧带正向 kind:"armed"（client 据此识别），同时保留
+	## armed:true 字段给旧 client 前向兼容。
+	_bridge._send_armed("SA1")
+	var frame: Dictionary = _last_frame()
+	assert_eq(str(frame.get("id", "")), "SA1", "帧回带 id")
+	assert_eq(str(frame.get("kind", "")), "armed", "armed 帧应带 kind:armed（#172 item2）")
+	assert_true(bool(frame.get("armed", false)), "保留 armed:true 给旧 client 前向兼容")
+
+
+func test_wait_signal_start_timer_registered_and_routes_to_wait_api() -> void:
+	## #172 item1：wait_signal_start_timer 注册为 sync，路由到 WaitApi.notify_start_timer
+	## （转发 params.req_id），回 {ok} ack 供 client fire-and-forget 忽略。
+	assert_true(_bridge._methods.has("wait_signal_start_timer"),
+		"wait_signal_start_timer 应已注册")
+	assert_eq(str(_bridge._methods["wait_signal_start_timer"]["kind"]), "sync")
+	_send('{"id":"ST1","method":"wait_signal_start_timer","params":{"req_id":"WAIT1"}}')
+	var frame: Dictionary = _last_frame()
+	assert_eq(str(frame.get("id", "")), "ST1", "ack 回带请求 id")
+	assert_has(frame, "result")
+	assert_true(bool(frame.result.get("ok", false)), "回 {ok:true} ack")
+	assert_eq(_wait.notify_start_timer_calls, ["WAIT1"],
+		"应把 params.req_id 转发给 WaitApi.notify_start_timer")
 
 
 # ── #160: _send_json 发送失败 fail-loud ──────────────────────────────

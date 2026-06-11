@@ -224,8 +224,11 @@ class GameClient:
                 msg = json.loads(raw)
                 if "id" in msg:
                     req_id = msg["id"]
-                    # issue #155 armed 中间帧：有 id、有 armed、无 result/error → 不 resolve
-                    if msg.get("armed") and "result" not in msg and "error" not in msg:
+                    # issue #172 armed 中间帧：用 kind=="armed" 正向识别，
+                    # 兼容旧版服务端（armed 布尔字段 + 无 result/error）。
+                    if msg.get("kind") == "armed" or (
+                        msg.get("armed") and "result" not in msg and "error" not in msg
+                    ):
                         if req_id in self._armed_events:
                             self._armed_events[req_id].set()
                         else:
@@ -566,6 +569,13 @@ class GameClient:
             if armed.is_set():
                 await armed_task  # 零成本取回已完成任务，避免异常静默吞掉
                 await on_armed()
+                # issue #172 item1：trigger 完成后通知服务端此刻才开始计 timeout，
+                # 避免 trigger 执行时间占用信号等待预算（fire-and-forget，不等响应）。
+                await self._ws.send(json.dumps({
+                    "id": str(uuid.uuid4())[:8],
+                    "method": "wait_signal_start_timer",
+                    "params": {"req_id": req_id},
+                }))
                 response = await asyncio.wait_for(future, timeout=timeout + 5.0)
                 return self._unwrap_response(response)
             if future in done:

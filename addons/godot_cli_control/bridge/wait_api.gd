@@ -29,14 +29,41 @@ var _read_property_fn: Callable = Callable()
 var _send_response_callback: Callable = Callable()
 # 注入：发 armed 中间帧 Callable（async_with_id 用，issue #155）
 var _send_armed_callback: Callable = Callable()
+# arm_ack 在途计时状态（#172 item1）：req_id -> _ArmState。client 在 trigger
+# （on_armed）完成后发 wait_signal_start_timer，game_bridge 调 notify_start_timer
+# 把对应 _ArmState.started 置真——arming 阶段据此结束、等信号 timeout 才开始计。
+var _arm_states: Dictionary = {}
 
 
-## 必须在任何 wait_property_async / wait_signal_async 调用之前执行；
-## send_response / send_armed 用于 async_with_id 路径（issue #155）。
-func setup(read_property: Callable, send_response := Callable(), send_armed := Callable()) -> void:
-	_read_property_fn = read_property
-	_send_response_callback = send_response
-	_send_armed_callback = send_armed
+## 必须在任何 wait_property_async / wait_signal_async 调用之前执行。
+## callbacks 是回调字典（issue #172 item3：从定长 setup(a, b, c) 改字典注入，
+## 未来新增中间帧回调——如 wait_property / wait_node 也要 ack——只加 key、不改签名，
+## 第三方 addon 升级无需同步改所有 setup 调用）。约定的 key：
+##   "read_property" -> Callable(node, prop) -> Dictionary（wait_property 读属性）
+##   "send_response" -> Callable(id, result) -> void（async_with_id 终帧，#155）
+##   "send_armed"    -> Callable(id) -> void（armed 中间帧，#155）
+## 缺失的 key 留空 Callable；用到时各自的 is_valid() 守卫兜底。
+func setup(callbacks: Dictionary) -> void:
+	_read_property_fn = callbacks.get("read_property", Callable())
+	_send_response_callback = callbacks.get("send_response", Callable())
+	_send_armed_callback = callbacks.get("send_armed", Callable())
+
+
+## #172 item1：client 在 trigger（on_armed）完成后通过 wait_signal_start_timer 控制
+## 消息调到这里，标记对应在途 wait_signal「trigger 已完成，可以开始计 timeout」。
+## req_id 未知（已超时清理 / 非 arm_ack 路径）= no-op，不报错。
+func notify_start_timer(req_id: String) -> void:
+	if _arm_states.has(req_id):
+		(_arm_states[req_id] as _ArmState).started = true
+
+
+## #172 item1：arm_ack 在途计时状态。arming 阶段 started=false（不计 timeout）；
+## wait_signal_start_timer 到达后由 notify_start_timer 置真，wait_signal_async 据此
+## 结束 arming、开始计等信号 timeout。
+class _ArmState:
+	extends RefCounted
+
+	var started: bool = false
 
 
 ## wait_signal 的参数捕获器（issue #96）。GDScript 无变参 Callable，
@@ -386,13 +413,30 @@ func wait_signal_async(params: Dictionary, id: String) -> void:
 	var capture: _SignalCapture = _SignalCapture.new()
 	var cb: Callable = capture.callable_for(argc)
 	node.connect(signal_name, cb, CONNECT_ONE_SHOT)
+	var reason: String = "timeout"
 	# arm 完成同步点（issue #155）：connect 后才发 armed 帧，client 收到后再触发动作，
 	# 保证「先挂再触发」——竞态从协议层根除。
+	# #172 item1：发 armed 后进入 arming 阶段——在 client 发回 wait_signal_start_timer
+	# （trigger 完成）之前不计 timeout，避免 trigger 执行时间（往返 + 游戏内 duration）
+	# 吃掉等信号预算。arming 期间仍响应 capture.fired（trigger 中途已发信号）与节点释放。
+	# _MAX_WAIT_SECONDS 仅作防泄漏兜底——同版本 client 必在 trigger 后发 start_timer，
+	# arming 实际只持续 trigger 时长（秒级），兜底永不触及。
 	if bool(params.get("arm_ack", false)) and _send_armed_callback.is_valid():
+		var arm_state: _ArmState = _ArmState.new()
+		_arm_states[id] = arm_state
 		_send_armed_callback.call(id)
+		var arm_started_ms: int = Time.get_ticks_msec()
+		while not arm_state.started and not capture.fired:
+			if not is_instance_valid(node):
+				reason = "node_freed"
+				break
+			if float(Time.get_ticks_msec() - arm_started_ms) / 1000.0 >= _MAX_WAIT_SECONDS:
+				break
+			await get_tree().process_frame
+		_arm_states.erase(id)
+	# arming 结束后才开始计等信号 timeout（非 arm_ack 路径直接从这里起算，零回归）
 	var start_ms: int = Time.get_ticks_msec()
-	var reason: String = "timeout"
-	while not capture.fired:
+	while not capture.fired and reason != "node_freed":
 		if float(Time.get_ticks_msec() - start_ms) / 1000.0 >= timeout:
 			break
 		await get_tree().process_frame
