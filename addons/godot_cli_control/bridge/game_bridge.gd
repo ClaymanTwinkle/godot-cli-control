@@ -66,7 +66,11 @@ func _ready() -> void:
 	_wait_api = WaitApi.new()
 	_wait_api.name = "WaitApi"
 	add_child(_wait_api)
-	_wait_api.setup(_low_level_api._read_property, _on_async_response, _send_armed)
+	_wait_api.setup({
+		"read_property": _low_level_api._read_property,
+		"send_response": _on_async_response,
+		"send_armed": _send_armed,
+	})
 	_scene_api = SceneApi.new()
 	_scene_api.name = "SceneApi"
 	add_child(_scene_api)
@@ -232,6 +236,9 @@ func _register_methods() -> void:
 	_methods["wait_frames"] = {"callable": _wait_api.wait_frames_async, "kind": "async"}
 	_methods["wait_property"] = {"callable": _wait_api.wait_property_async, "kind": "async"}
 	_methods["wait_signal"] = {"callable": _wait_api.wait_signal_async, "kind": "async_with_id"}
+	# #172 item1：client 在 trigger（on_armed）完成后发来，通知 WaitApi 此刻才开始计
+	# 等信号 timeout（trigger 执行时间不占预算）。sync：回 {ok} ack，client fire-and-forget。
+	_methods["wait_signal_start_timer"] = {"callable": _handle_wait_signal_start_timer, "kind": "sync"}
 	_methods["screenshot"] = {"callable": _wrap_screenshot, "kind": "async"}
 	# 输入模拟（同步）
 	_methods["input_action_press"] = {
@@ -359,8 +366,20 @@ func _on_async_response(id: String, result: Dictionary) -> void:
 
 # armed 中间帧（issue #155）：arm 完成同步点。不动 _in_flight —— 它不是终态响应，
 # 终帧仍走 _on_async_response。client 据此在同连接发 trigger 子命令再等终帧。
+# kind:"armed" 是 client 识别中间帧的正向判据（#172 item2）；保留 armed:true 字段
+# 给旧 client 前向兼容（旧 client 靠「有 armed 且无 result/error」识别）。
 func _send_armed(id: String) -> void:
-	_send_json({"id": id, "armed": true})
+	_send_json({"id": id, "armed": true, "kind": "armed"})
+
+
+# #172 item1：wait_signal_start_timer 的 sync handler。client 在 trigger 完成后发来，
+# 通知 WaitApi 对应在途 wait_signal 此刻才开始计 timeout。req_id 缺失 / 未知（已超时
+# 清理 / 非 arm_ack 路径）= no-op（WaitApi.notify_start_timer 内部容错）。
+# 回 {ok} ack —— client fire-and-forget 发出后不等该响应（_listen 见 id 不在 pending 即丢弃）。
+func _handle_wait_signal_start_timer(params: Dictionary) -> Dictionary:
+	var req_id: String = params.get("req_id", "") as String
+	_wait_api.notify_start_timer(req_id)
+	return {"ok": true}
 
 
 func _send_response(id: String, result: Dictionary) -> void:

@@ -29,7 +29,11 @@ func _spy_send_response(id: String, result: Dictionary) -> void:
 func _wire_spies() -> void:
 	_armed_ids = []
 	_final_by_id = {}
-	_api.setup(_low._read_property, _spy_send_response, _spy_send_armed)
+	_api.setup({
+		"read_property": _low._read_property,
+		"send_response": _spy_send_response,
+		"send_armed": _spy_send_armed,
+	})
 
 
 func before_each() -> void:
@@ -506,3 +510,53 @@ func test_wait_signal_arm_ack_node_missing_no_armed_frame() -> void:
 		return
 	assert_true(_final_by_id["REQ3"].has("error"), "终帧是 error")
 	assert_eq(_final_by_id["REQ3"]["error"]["code"], CliControlErrorCodes.NODE_NOT_FOUND)
+
+
+# ── issue #172 item1：arming 阶段不计 timeout，start_timer 后才计 ──
+
+func test_wait_signal_arm_ack_does_not_time_out_until_start_timer() -> void:
+	## arm_ack 路径发 armed 帧后进入 arming：未收到 start_timer 前不计 timeout
+	## （即使墙钟远超 timeout 也不发超时终帧），让 trigger 执行时间不占等信号预算。
+	## notify_start_timer 到达后才开始计 timeout。
+	var emitter := Node.new()
+	emitter.name = "ArmTimerEmitter172"
+	emitter.add_user_signal("ping")
+	add_child_autofree(emitter)
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "ping",
+		"timeout": 0.1, "arm_ack": true}, "AT1")
+	await get_tree().process_frame  # connect + armed 帧
+	assert_eq(_armed_ids, ["AT1"], "应先发 armed 帧")
+	# 等远超 timeout(0.1) 的真实时间；arming 阶段不计时 → 不应超时发终帧
+	await get_tree().create_timer(0.5).timeout
+	assert_false(_final_by_id.has("AT1"),
+		"arming 阶段（未收 start_timer）远超 timeout 也不应发超时终帧")
+	# 通知 trigger 完成 → 此刻才计 timeout；不 emit，等超时返回
+	_api.notify_start_timer("AT1")
+	await get_tree().create_timer(0.5).timeout
+	assert_true(_final_by_id.has("AT1"), "start_timer 后应在 timeout 内发终帧")
+	assert_false(_final_by_id["AT1"]["emitted"], "未 emit：超时 emitted=false")
+	assert_eq(_final_by_id["AT1"]["reason"], "timeout")
+
+
+func test_wait_signal_arm_ack_captures_signal_emitted_during_arming() -> void:
+	## arming 阶段（trigger 执行中、start_timer 未到）若信号已发射，应被捕获并正常
+	## 发 emitted=true 终帧——arming 实现不得破坏「先挂再触发」的捕获语义。
+	var emitter := Node.new()
+	emitter.name = "ArmCaptureEmitter172"
+	emitter.add_user_signal("ping")
+	add_child_autofree(emitter)
+	_api.wait_signal_async({"path": str(emitter.get_path()), "signal": "ping",
+		"timeout": 2.0, "arm_ack": true}, "AC1")
+	await get_tree().process_frame  # connect + armed
+	# 尚未 notify_start_timer 就 emit（信号在 trigger 期间发射）
+	emitter.emit_signal("ping")
+	await get_tree().create_timer(0.2).timeout
+	assert_true(_final_by_id.has("AC1"), "arming 期间发射的信号应被捕获并发终帧")
+	assert_true(_final_by_id["AC1"]["emitted"], "emitted=true")
+
+
+func test_notify_start_timer_unknown_req_id_is_noop() -> void:
+	## notify_start_timer 收到未知 req_id（已超时清理 / 非 arm_ack 路径）= no-op，
+	## 不报错、不崩。
+	_api.notify_start_timer("__never_armed_172__")
+	pass_test("notify_start_timer 未知 req_id 静默忽略")

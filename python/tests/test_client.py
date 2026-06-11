@@ -1850,3 +1850,106 @@ async def test_listen_late_final_frame_does_not_raise_invalid_state() -> None:
         await client._listen_task
     except asyncio.CancelledError:
         pass
+
+
+# ---- issue #172 item2: armed 帧用正向 kind 判据识别 ----
+
+
+@pytest.mark.asyncio
+async def test_listen_identifies_armed_frame_by_kind_field() -> None:
+    """#172 item2：_listen 用正向 kind=="armed" 判据识别 armed 中间帧，不再靠
+    『有 armed 字段且无 result/error』的负向字段缺失推断。用一条只带 kind:"armed"
+    （无 armed 布尔字段）的帧验证：旧负向判据漏识别、正向 kind 判据命中。"""
+    client = GameClient(port=9999)
+    q: asyncio.Queue = asyncio.Queue()
+
+    class _FakeWS:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            return await q.get()
+
+        async def close(self) -> None:
+            return None
+
+    client._ws = _FakeWS()  # type: ignore[assignment]
+    armed_evt = asyncio.Event()
+    client._armed_events["REQ"] = armed_evt
+    client._listen_task = asyncio.create_task(client._listen())
+
+    # kind:"armed" 帧（无 "armed" 布尔字段）必须被识别为 armed 中间帧
+    await q.put(json.dumps({"id": "REQ", "kind": "armed"}))
+    await asyncio.wait_for(armed_evt.wait(), timeout=2.0)
+    assert armed_evt.is_set(), "kind:armed 帧应触发 armed 事件（#172 item2）"
+
+    client._listen_task.cancel()
+    try:
+        await client._listen_task
+    except asyncio.CancelledError:
+        pass
+
+
+# ---- issue #172 item1: trigger 完成后发 wait_signal_start_timer ----
+
+
+@pytest.mark.asyncio
+async def test_wait_signal_trigger_sends_start_timer_after_on_armed() -> None:
+    """#172 item1：trigger（on_armed）完成后 client 发 wait_signal_start_timer
+    控制消息（params.req_id = wait_signal 的 id），通知 server 此刻才开始计
+    timeout——trigger 执行时间不再占等信号预算。断言：该消息发出且在 trigger 之后。"""
+    client = GameClient(port=1)
+    sent: list[dict] = []
+    signal_id_holder: list[str] = []
+
+    class _FakeWS:
+        def __init__(self) -> None:
+            self._q: asyncio.Queue = asyncio.Queue()
+
+        async def send(self, raw: str) -> None:
+            msg = json.loads(raw)
+            sent.append(msg)
+            if msg["method"] == "wait_signal":
+                signal_id_holder.append(msg["id"])
+                await self._q.put(json.dumps(
+                    {"id": msg["id"], "armed": True, "kind": "armed"}))
+            elif msg["method"] == "noop_trigger":
+                await self._q.put(json.dumps({"id": msg["id"], "result": {}}))
+                await self._q.put(json.dumps({
+                    "id": signal_id_holder[0],
+                    "result": {"emitted": True, "args": []},
+                }))
+            # wait_signal_start_timer 是 fire-and-forget：FakeWS 不回响应
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            return await self._q.get()
+
+    fake = _FakeWS()
+    client._ws = fake  # type: ignore[assignment]
+    client._listen_task = asyncio.create_task(client._listen())
+
+    async def on_armed() -> None:
+        await client.request("noop_trigger", {})
+
+    result = await asyncio.wait_for(
+        client.wait_signal("/root/A", "ping", timeout=2.0, on_armed=on_armed),
+        timeout=5.0,
+    )
+    assert result == {"emitted": True, "args": []}, f"终帧内容不符: {result}"
+
+    start_msgs = [m for m in sent if m.get("method") == "wait_signal_start_timer"]
+    assert len(start_msgs) == 1, f"应发一条 wait_signal_start_timer，sent={sent}"
+    assert start_msgs[0]["params"]["req_id"] == signal_id_holder[0], \
+        "start_timer 的 req_id 必须指向 wait_signal 的 id"
+    methods = [m["method"] for m in sent]
+    assert methods.index("wait_signal_start_timer") > methods.index("noop_trigger"), \
+        "start_timer 必须在 trigger 完成之后发出"
+
+    client._listen_task.cancel()
+    try:
+        await client._listen_task
+    except asyncio.CancelledError:
+        pass
