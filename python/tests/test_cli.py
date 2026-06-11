@@ -2741,6 +2741,92 @@ class TestScriptLikelyUsesScreenshot:
 
         assert _script_likely_uses_screenshot(tmp_path / "missing.py") is False
 
+    def test_detects_screenshot_in_sibling_via_from_import(
+        self, tmp_path: Path
+    ) -> None:
+        """issue #151：主脚本不含 screenshot，但 from-import 的同目录 helper
+        含 bridge.screenshot(...) → 仍判 True（一层 import 闭包）。"""
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        (tmp_path / "helpers.py").write_text(
+            "def shoot(bridge):\n    bridge.screenshot('/tmp/x.png')\n", "utf-8"
+        )
+        script = tmp_path / "s.py"
+        script.write_text(
+            "from helpers import shoot\n\ndef run(bridge):\n    shoot(bridge)\n",
+            "utf-8",
+        )
+        assert _script_likely_uses_screenshot(script) is True
+
+    def test_detects_screenshot_in_sibling_via_plain_import(
+        self, tmp_path: Path
+    ) -> None:
+        """``import helpers`` 形式同样命中（取顶层模块名映射同目录 .py）。"""
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        (tmp_path / "helpers.py").write_text(
+            "def shoot(bridge):\n    bridge.screenshot('/tmp/x.png')\n", "utf-8"
+        )
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import helpers\n\ndef run(bridge):\n    helpers.shoot(bridge)\n",
+            "utf-8",
+        )
+        assert _script_likely_uses_screenshot(script) is True
+
+    def test_no_match_when_sibling_clean(self, tmp_path: Path) -> None:
+        """主脚本与被 import 的 helper 都不含 screenshot → False
+        （守护：闭包扫描不得退化成无脑 True）。"""
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        (tmp_path / "helpers.py").write_text(
+            "def helper(bridge):\n    bridge.click('/root/A')\n", "utf-8"
+        )
+        script = tmp_path / "s.py"
+        script.write_text(
+            "from helpers import helper\n\ndef run(bridge):\n    helper(bridge)\n",
+            "utf-8",
+        )
+        assert _script_likely_uses_screenshot(script) is False
+
+    def test_ignores_stdlib_import_without_sibling(self, tmp_path: Path) -> None:
+        """``import os`` 等无同目录 .py 的 import 被安全跳过，不读 stdlib、不崩。"""
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import os\nimport json\n\ndef run(bridge):\n    bridge.click('/root/A')\n",
+            "utf-8",
+        )
+        assert _script_likely_uses_screenshot(script) is False
+
+    def test_only_one_level_deep_no_recursion(self, tmp_path: Path) -> None:
+        """只扫一层：helper 再 import 的 grandchild 含 screenshot 不算
+        （issue #151 明确一层即可，避免递归扫描爆开）。"""
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        (tmp_path / "grandchild.py").write_text(
+            "def shoot(bridge):\n    bridge.screenshot('/tmp/x.png')\n", "utf-8"
+        )
+        (tmp_path / "helpers.py").write_text(
+            "from grandchild import shoot\n", "utf-8"
+        )
+        script = tmp_path / "s.py"
+        script.write_text(
+            "from helpers import shoot\n\ndef run(bridge):\n    shoot(bridge)\n",
+            "utf-8",
+        )
+        assert _script_likely_uses_screenshot(script) is False
+
+    def test_syntax_error_in_main_does_not_raise(self, tmp_path: Path) -> None:
+        """主脚本语法错时 ast 解析失败也不抛 —— 闭包扫描静默放弃，
+        子串检测仍在前面跑过（含 screenshot 子串仍能命中）。"""
+        from godot_cli_control.cli import _script_likely_uses_screenshot
+
+        script = tmp_path / "s.py"
+        script.write_text("def run(bridge:\n    oops(\n", "utf-8")
+        assert _script_likely_uses_screenshot(script) is False
+
 
 class TestCmdRunGuiAutoDetect:
     """issue #65：cli run 静态检测脚本含 screenshot 时，非 TTY 也强制开窗。"""
