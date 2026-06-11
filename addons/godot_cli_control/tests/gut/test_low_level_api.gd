@@ -40,6 +40,31 @@ class _ObjectFixture extends Node:
 	var test_obj: RefCounted = RefCounted.new()
 
 
+# issue #169：sub-path leaf fail-loud 扩展到封闭复合类型用的 fixture。
+# 各类型一条带类型声明的 var（部分无内置 Node 暴露，统一用 fixture var），
+# 赋非平凡值便于区分「合法 leaf 读到非 null」与「typo 静默 null」。
+# open_dict：开放/动态类型代表（typeof=TYPE_DICTIONARY 永不入封闭集），
+# 验证未收录类型仍退回 get_indexed 现状、不误杀。
+class _SubPathLeafFixture extends Node:
+	var col: Color = Color(0.1, 0.2, 0.3, 0.4)
+	var rect2: Rect2 = Rect2(1, 2, 3, 4)
+	var rect2i: Rect2i = Rect2i(1, 2, 3, 4)
+	var xform2d: Transform2D = Transform2D(Vector2(1, 2), Vector2(3, 4), Vector2(5, 6))
+	var xform3d: Transform3D = Transform3D(Basis(Vector3(1, 2, 3), Vector3(4, 5, 6), Vector3(7, 8, 9)), Vector3(10, 11, 12))
+	var basis3: Basis = Basis(Vector3(1, 2, 3), Vector3(4, 5, 6), Vector3(7, 8, 9))
+	var plane: Plane = Plane(1, 2, 3, 4)
+	var quat: Quaternion = Quaternion(0.1, 0.2, 0.3, 0.9)
+	var aabb: AABB = AABB(Vector3(1, 2, 3), Vector3(4, 5, 6))
+	var proj: Projection = Projection()
+	var vec2: Vector2 = Vector2(1, 2)
+	var vec2i: Vector2i = Vector2i(1, 2)
+	var vec3: Vector3 = Vector3(1, 2, 3)
+	var vec3i: Vector3i = Vector3i(1, 2, 3)
+	var vec4: Vector4 = Vector4(1, 2, 3, 4)
+	var vec4i: Vector4i = Vector4i(1, 2, 3, 4)
+	var open_dict: Dictionary = {"foo": 7}
+
+
 var _api: Node
 var _target: Node
 
@@ -1153,7 +1178,139 @@ func test_stale_check_different_bytes_not_stale() -> void:
 	assert_false(_api._mark_screenshot_stale_check(PackedByteArray([4, 5, 6])), "不同字节 → 非 stale")
 
 
-# ── sub-path leaf fail-loud（#157，仅 vector 系）─────────────────
+# ── sub-path leaf fail-loud（#157 vector 系 + #169 封闭复合类型）──────
+
+# #169 实证锚点：每个封闭复合 Variant 的「宽松候选超集」（文档成员 + 派生访问器 +
+# 常见 typo），keyed by typeof()，值 = [fixture var 名, 候选 leaf 列表]。parity 测试
+# 用它重跑 discovery：候选里 get_indexed 读到非 null 的子集 = 该类型真合法集，必须与
+# _SUBPATH_CLOSED_LEAVES 逐字相等（防漏列误杀、防多列漏 typo、防 Godot 升级后漂移）。
+func _leaf_probes() -> Dictionary:
+	return {
+		TYPE_VECTOR2: ["vec2", ["x", "y", "z", "w"]],
+		TYPE_VECTOR2I: ["vec2i", ["x", "y", "z", "w"]],
+		TYPE_VECTOR3: ["vec3", ["x", "y", "z", "w"]],
+		TYPE_VECTOR3I: ["vec3i", ["x", "y", "z", "w"]],
+		TYPE_VECTOR4: ["vec4", ["x", "y", "z", "w", "v"]],
+		TYPE_VECTOR4I: ["vec4i", ["x", "y", "z", "w", "v"]],
+		TYPE_COLOR: ["col", ["r", "g", "b", "a", "r8", "g8", "b8", "a8", "h", "s", "v",
+			"ok_hsl_h", "ok_hsl_s", "ok_hsl_l", "luminance", "r16", "alpha", "red",
+			"rr", "value", "hue", "saturation"]],
+		TYPE_RECT2: ["rect2", ["position", "size", "end", "x", "y", "origin", "start",
+			"p", "s", "center", "area", "w", "h", "width", "height"]],
+		TYPE_RECT2I: ["rect2i", ["position", "size", "end", "x", "y", "origin", "start",
+			"p", "s", "center", "area", "w", "h", "width", "height"]],
+		TYPE_TRANSFORM2D: ["xform2d", ["x", "y", "origin", "z", "w", "basis", "o",
+			"columns", "rows", "a", "b", "c", "d"]],
+		TYPE_TRANSFORM3D: ["xform3d", ["basis", "origin", "x", "y", "z", "w", "o", "b"]],
+		TYPE_BASIS: ["basis3", ["x", "y", "z", "w", "origin", "rows", "columns", "scale", "a"]],
+		TYPE_PLANE: ["plane", ["x", "y", "z", "d", "normal", "w", "origin", "distance", "n"]],
+		TYPE_QUATERNION: ["quat", ["x", "y", "z", "w", "d", "normal", "i", "j", "k"]],
+		TYPE_AABB: ["aabb", ["position", "size", "end", "x", "y", "z", "origin", "start",
+			"center", "volume", "p", "s"]],
+		TYPE_PROJECTION: ["proj", ["x", "y", "z", "w", "origin", "columns", "rows", "a"]],
+	}
+
+
+func _sorted_strings(src: Array) -> Array:
+	var out: Array = []
+	for item in src:
+		out.append(str(item))
+	out.sort()
+	return out
+
+
+func test_subpath_closed_leaves_match_godot_get_indexed_members() -> void:
+	# 实证 parity（双向）：
+	#   1. _leaf_probes() 里声明的每个「意图封闭」类型，必须真被登记进 _SUBPATH_CLOSED_LEAVES
+	#      （漏加即红——也是新增类型的 RED 驱动）。
+	#   2. 对每个登记类型，用 get_indexed 重跑 discovery，断言「Godot 实际接受的 leaf 集」==
+	#      「白名单登记集」。漏列 → 误杀合法读取；多列 → 漏掉 typo；Godot 升级改成员 → 先炸。
+	#   3. 白名单里的每个类型都必须有 parity 候选超集兜底，否则覆盖有盲区。
+	var fixture := _SubPathLeafFixture.new()
+	fixture.name = "LeafParity"
+	add_child_autofree(fixture)
+	var probes: Dictionary = _leaf_probes()
+	var closed: Dictionary = _api._SUBPATH_CLOSED_LEAVES
+	for t: int in probes:
+		assert_true(closed.has(t),
+			"typeof=%d 已在 _leaf_probes 声明为封闭类型，但未登记进 _SUBPATH_CLOSED_LEAVES" % t)
+		if not closed.has(t):
+			continue
+		var var_name: String = probes[t][0]
+		var candidates: Array = probes[t][1]
+		var empirical: Array = []
+		for leaf in candidates:
+			var v: Variant = fixture.get_indexed(NodePath("%s:%s" % [var_name, leaf]))
+			if v != null:
+				empirical.append(leaf)
+		assert_eq(_sorted_strings(empirical), _sorted_strings(closed[t]),
+			"typeof=%d 白名单 leaf 集与 Godot get_indexed 实际成员不一致" % t)
+	for t2: int in closed:
+		assert_true(probes.has(t2),
+			"typeof=%d 在 _SUBPATH_CLOSED_LEAVES 里但缺 parity 候选超集（_leaf_probes 补一行）" % t2)
+
+
+func test_subpath_closed_leaves_all_read_through_production_path() -> void:
+	# 无误杀守卫：白名单里登记的每个 leaf，走生产路径（handle_get_property）必须读到值、
+	# 不报 error。覆盖嵌套复合 leaf（rect2:position=Vector2 / xform3d:basis=Basis 等），
+	# 确认 codec 编码也不炸。
+	var fixture := _SubPathLeafFixture.new()
+	fixture.name = "LeafReadThrough"
+	add_child_autofree(fixture)
+	var probes: Dictionary = _leaf_probes()
+	var closed: Dictionary = _api._SUBPATH_CLOSED_LEAVES
+	for t: int in closed:
+		var var_name: String = probes[t][0]
+		for leaf: String in closed[t]:
+			var result: Dictionary = _api.handle_get_property({
+				"path": str(fixture.get_path()),
+				"property": "%s:%s" % [var_name, leaf],
+			})
+			assert_does_not_have(result, "error",
+				"合法 leaf '%s:%s' 被误杀（typeof=%d）" % [var_name, leaf, t])
+
+
+func test_subpath_typo_rejected_for_each_closed_compound() -> void:
+	# 对每个意图封闭的复合类型，一个绝不合法的 leaf（"zzz_nope"）走生产路径必须 → 1002，
+	# 且 message 带合法 leaf 列表（agent 据此自纠）。遍历 _leaf_probes()（意图集）→
+	# 类型未登记时 typo 会静默 null、本测试红，构成新增类型的 RED 驱动。
+	var fixture := _SubPathLeafFixture.new()
+	fixture.name = "LeafTypo"
+	add_child_autofree(fixture)
+	var probes: Dictionary = _leaf_probes()
+	for t: int in probes:
+		var var_name: String = probes[t][0]
+		var result: Dictionary = _api.handle_get_property({
+			"path": str(fixture.get_path()),
+			"property": "%s:zzz_nope" % var_name,
+		})
+		assert_has(result, "error", "typeof=%d typo leaf 必须 fail-loud" % t)
+		if result.has("error"):
+			assert_eq(int(result["error"]["code"]), CliControlErrorCodes.PROPERTY_NOT_FOUND,
+				"typeof=%d typo 必须报 1002" % t)
+			assert_string_contains(str(result["error"]["message"]), "valid leaves:")
+
+
+func test_subpath_color_modulate_valid_and_typo() -> void:
+	# #169 headline：Color 经真实内置属性 Node2D.modulate（不只 fixture var）。
+	# 合法 `modulate:a` 读到 alpha；typo `modulate:zzz` → 1002 且列出合法 leaf。
+	var node := Node2D.new()
+	node.name = "SubPathModulate"
+	node.modulate = Color(0.1, 0.2, 0.3, 0.4)
+	add_child_autofree(node)
+	var ok: Dictionary = _api.handle_get_property({
+		"path": str(node.get_path()), "property": "modulate:a",
+	})
+	assert_does_not_have(ok, "error")
+	assert_almost_eq(ok.get("value"), 0.4, 0.0001)
+	var typo: Dictionary = _api.handle_get_property({
+		"path": str(node.get_path()), "property": "modulate:zzz",
+	})
+	assert_has(typo, "error")
+	if typo.has("error"):
+		assert_eq(int(typo["error"]["code"]), CliControlErrorCodes.PROPERTY_NOT_FOUND)
+		assert_string_contains(str(typo["error"]["message"]), "valid leaves: r, g, b, a")
+
 
 func test_subpath_valid_vector2_leaf_reads_scalar() -> void:
 	var node := Node2D.new()
@@ -1196,17 +1353,18 @@ func test_subpath_typo_vector3_leaf_returns_1002() -> void:
 
 
 func test_subpath_uncovered_compound_type_passes_through() -> void:
-	# Color 未纳入白名单 → 退回 get_indexed 现状：合法 leaf 仍读到值，不误杀。
-	var node := Node2D.new()
-	node.name = "SubPathColor"
-	node.modulate = Color(0.1, 0.2, 0.3, 0.4)
-	add_child_autofree(node)
+	# 开放/动态类型（Dictionary 永不入封闭集，key 任意无法枚举）→ 退回 get_indexed
+	# 现状：合法 sub-path 仍读到值，不误杀。#169 后 Color 等已纳入，故改用 Dictionary
+	# 作「未收录类型」代表，守住「误杀比静默更坏」的放行契约。
+	var fixture := _SubPathLeafFixture.new()
+	fixture.name = "SubPathOpenDict"
+	add_child_autofree(fixture)
 	var result: Dictionary = _api.handle_get_property({
-		"path": str(node.get_path()),
-		"property": "modulate:r",
+		"path": str(fixture.get_path()),
+		"property": "open_dict:foo",
 	})
 	assert_does_not_have(result, "error")
-	assert_almost_eq(result.get("value"), 0.1, 0.0001)
+	assert_eq(result.get("value"), 7)
 
 
 # ── emit-signal opt-in 逃生门（#157 item4）──────────────────────

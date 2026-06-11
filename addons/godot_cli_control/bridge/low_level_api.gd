@@ -55,9 +55,12 @@ var _emit_signal_allowed: bool = false
 var _last_screenshot_hash: int = 0
 var _has_prev_screenshot: bool = false
 
-# #157：内置复合 Variant 的封闭 leaf 集——sub-path typo fail-loud 用。只收录能
-# 100% 枚举完整的类型（vector 系，x/y/z/w 铁稳零漏列）；Color/Rect2/Transform 等
-# leaf 集大、需实证完整后再加（follow-up）。键为 typeof()，值为合法 leaf 名。
+# #157 + #169：内置复合 Variant 的封闭 leaf 集——sub-path typo fail-loud 用。
+# 键为 typeof()，值为合法 leaf 名。只收录「能 100% 枚举完整」的类型：每个类型的
+# leaf 集都经 GUT 用 get_indexed 实证（test_subpath_closed_leaves_match_godot_get_indexed_members
+# 对宽松候选超集重跑 discovery，断言白名单 == Godot 实际成员，双向防漂移）。
+# 漏列即误杀合法读取（比静默 null 更坏），故新增类型前必须先实证完整、再加一行 + parity 候选。
+# #169 实证基线：Godot 4.6.2。Dictionary/Array/Object 等开放类型 key 任意、不可枚举，永不收录。
 const _SUBPATH_CLOSED_LEAVES := {
 	TYPE_VECTOR2: ["x", "y"],
 	TYPE_VECTOR2I: ["x", "y"],
@@ -65,6 +68,19 @@ const _SUBPATH_CLOSED_LEAVES := {
 	TYPE_VECTOR3I: ["x", "y", "z"],
 	TYPE_VECTOR4: ["x", "y", "z", "w"],
 	TYPE_VECTOR4I: ["x", "y", "z", "w"],
+	# #169：vector 系之外的封闭复合类型（leaf 集 = get_indexed 实测全集）。
+	TYPE_RECT2: ["position", "size", "end"],
+	TYPE_RECT2I: ["position", "size", "end"],
+	TYPE_PLANE: ["x", "y", "z", "d", "normal"],
+	TYPE_QUATERNION: ["x", "y", "z", "w"],
+	TYPE_AABB: ["position", "size", "end"],
+	TYPE_BASIS: ["x", "y", "z"],
+	TYPE_TRANSFORM2D: ["x", "y", "origin"],
+	TYPE_TRANSFORM3D: ["basis", "origin"],
+	TYPE_PROJECTION: ["x", "y", "z", "w"],
+	# Color 派生访问器多（r8/g8/b8/a8 整数系 + h/s/v + ok_hsl_*），全经实证。
+	TYPE_COLOR: ["r", "g", "b", "a", "r8", "g8", "b8", "a8", "h", "s", "v",
+		"ok_hsl_h", "ok_hsl_s", "ok_hsl_l"],
 }
 
 # 防御性白名单：声明类型在这里 = Object.set(prop, Array) 不会 silent-corrupt，原 Array
