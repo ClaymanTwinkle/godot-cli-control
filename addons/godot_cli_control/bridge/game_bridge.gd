@@ -395,11 +395,42 @@ func _oversize_fallback_for(data: Dictionary) -> Dictionary:
 	}
 
 
+# peer 状态门接缝（issue #160）：默认判活跃 OPEN peer；GUT 子类 override 成 true 绕真 socket。
+func _can_transmit() -> bool:
+	return _active_peer != null and _active_peer.get_ready_state() == WebSocketPeer.STATE_OPEN
+
+
+# 出站发送接缝（issue #160）：默认真发；GUT 子类 override 成「返回预置 err + 捕获」测失败分支。
+func _transmit(text: String) -> Error:
+	return _active_peer.send_text(text)
+
+
 func _send_json(data: Dictionary) -> void:
-	if _active_peer == null or _active_peer.get_ready_state() != WebSocketPeer.STATE_OPEN:
+	if not _can_transmit():
 		return
 	var json_str: String = JSON.stringify(data)
-	_active_peer.send_text(json_str)
+	var err: Error = _transmit(json_str)
+	if err == OK:
+		return
+	# 发送失败——最常见是单帧超 outbound_buffer；peer 在 _can_transmit 后、_transmit 前
+	# 断线（TOCTOU 窗口）也走这里，故 err=%d 自报码、文案不写死「超 buffer」。stderr 留痕
+	# （不污染 stdout 单行 JSON 契约），并对带 id 的响应补发小错误信封，避免 client 干等到 -1002。
+	var byte_len: int = json_str.to_utf8_buffer().size()
+	var detail: String = (
+		"[Godot CLI Control] _send_json failed (err=%d): payload %d bytes, outbound buffer %d bytes"
+		% [err, byte_len, _outbound_buffer_size]
+	)
+	push_error(detail)
+	printerr(detail)
+	var fallback: Dictionary = _oversize_fallback_for(data)
+	if fallback.is_empty():
+		return
+	# 补发走 _transmit 直发（不回 _send_json）→ 无递归路径；信封 ~百字节，buffer 下限 1MB 必能装下。
+	var fb_err: Error = _transmit(JSON.stringify(fallback))
+	if fb_err != OK:
+		printerr(
+			"[Godot CLI Control] oversize fallback envelope also failed (err=%d); dropping" % fb_err
+		)
 
 
 func _should_activate() -> bool:

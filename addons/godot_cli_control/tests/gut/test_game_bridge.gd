@@ -33,6 +33,24 @@ class TestableGameBridge:
 		captured_frames.append(data)
 
 
+# ── 子类：模拟「peer 在线 + 发送失败」以测 _send_json 失败分支（issue #160）──
+# 只 override 两个接缝，保留真 _send_json 编排逻辑（区别于 TestableGameBridge）。
+
+class FailingTransmitBridge:
+	extends GameBridge
+	var transmit_calls: Array = []   # 每次 _transmit 的入参文本
+	var fail_first: bool = true      # true: 第一发返回 ERR_OUT_OF_MEMORY，后续（补发）成功
+
+	func _can_transmit() -> bool:
+		return true                  # 绕过真 peer：GUT 无真 socket
+
+	func _transmit(text: String) -> Error:
+		transmit_calls.append(text)
+		if fail_first and transmit_calls.size() == 1:
+			return ERR_OUT_OF_MEMORY
+		return OK
+
+
 # ── 桩 LowLevelApi：sync handler 覆盖 1 个，返回值由测试预置 ──
 
 class StubLowLevelApi:
@@ -590,3 +608,34 @@ func test_oversize_fallback_builds_1016_for_response() -> void:
 	assert_has(fb, "error")
 	assert_eq(int(fb.error.code), CliControlErrorCodes.RESPONSE_TOO_LARGE, "补发码须为 1016")
 	assert_string_contains(str(fb.error.message), "outbound buffer")
+
+
+func test_send_failure_emits_1016_fallback() -> void:
+	# 集成：带 id 的大响应首发失败 → 补发 1016 信封（共 2 次 transmit）。
+	# 注：本测试会触发真实失败路径的 push_error（GUT 输出留 ERROR 噪音，不判失败）。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb._send_json({"id": "big1", "result": {"payload": "x"}})
+	assert_eq(fb.transmit_calls.size(), 2, "首发失败应触发补发（共 2 次 transmit）")
+	var parsed: Variant = JSON.parse_string(fb.transmit_calls[1])
+	assert_true(parsed is Dictionary, "补发帧应是合法 JSON 对象")
+	var frame: Dictionary = parsed
+	assert_eq(str(frame.get("id")), "big1", "补发信封须沿用原 id")
+	assert_eq(int((frame["error"] as Dictionary)["code"]), 1016)
+
+
+func test_send_failure_on_error_frame_does_not_refeed() -> void:
+	# 集成：失败的是 error 信封 → 不补发（只 1 次 transmit），杜绝递归。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb._send_json({"id": "x", "error": {"code": 1001, "message": "n"}})
+	assert_eq(fb.transmit_calls.size(), 1, "error 信封失败不补发")
+
+
+func test_send_success_does_not_fallback() -> void:
+	# 集成：发送成功不补发（只 1 次 transmit）。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb.fail_first = false
+	fb._send_json({"id": "ok1", "result": {"a": 1}})
+	assert_eq(fb.transmit_calls.size(), 1, "发送成功不应补发")
