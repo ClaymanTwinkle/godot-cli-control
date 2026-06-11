@@ -33,6 +33,27 @@ class TestableGameBridge:
 		captured_frames.append(data)
 
 
+# ── 子类：模拟「peer 在线 + 发送失败」以测 _send_json 失败分支（issue #160）──
+# 只 override 两个接缝，保留真 _send_json 编排逻辑（区别于 TestableGameBridge）。
+
+class FailingTransmitBridge:
+	extends GameBridge
+	var transmit_calls: Array = []   # 每次 _transmit 的入参文本
+	var fail_first: bool = true      # true: 第一发返回 ERR_OUT_OF_MEMORY，后续（补发）成功
+	var fail_all: bool = false       # true: 每一发都失败（测补发也失败的「只留痕不再补发」分支）
+
+	func _can_transmit() -> bool:
+		return true                  # 绕过真 peer：GUT 无真 socket
+
+	func _transmit(text: String) -> Error:
+		transmit_calls.append(text)
+		if fail_all:
+			return ERR_OUT_OF_MEMORY
+		if fail_first and transmit_calls.size() == 1:
+			return ERR_OUT_OF_MEMORY
+		return OK
+
+
 # ── 桩 LowLevelApi：sync handler 覆盖 1 个，返回值由测试预置 ──
 
 class StubLowLevelApi:
@@ -558,3 +579,77 @@ func test_registry_has_sprite_info() -> void:
 func test_registry_has_errors() -> void:
 	assert_true(_bridge._methods.has("errors"), "errors 应已注册（issue #103）")
 	assert_eq(str(_bridge._methods["errors"]["kind"]), "sync")
+
+
+# ── #160: _send_json 发送失败 fail-loud ──────────────────────────────
+
+func test_response_too_large_code_is_1016() -> void:
+	# 防回归：码值锁死 1016，三段制内不撞 1001-1015
+	assert_eq(CliControlErrorCodes.RESPONSE_TOO_LARGE, 1016)
+
+
+func test_oversize_fallback_skips_error_envelope() -> void:
+	# 递归守卫：失败的本就是 error 信封 → 不补发
+	var fb: Dictionary = _bridge._oversize_fallback_for(
+		{"id": "x", "error": {"code": 1001, "message": "n"}}
+	)
+	assert_true(fb.is_empty(), "error 信封发送失败不应补发（防递归）")
+
+
+func test_oversize_fallback_skips_empty_or_missing_id() -> void:
+	# fire-and-forget：client 不 await，补也没人收
+	var fb_empty: Dictionary = _bridge._oversize_fallback_for({"id": "", "result": {"big": "x"}})
+	assert_true(fb_empty.is_empty(), "空 id 响应不应补发")
+	var fb_missing: Dictionary = _bridge._oversize_fallback_for({"result": {"big": "x"}})
+	assert_true(fb_missing.is_empty(), "无 id 响应不应补发")
+
+
+func test_oversize_fallback_builds_1016_for_response() -> void:
+	var fb: Dictionary = _bridge._oversize_fallback_for({"id": "abc", "result": {"big": "x"}})
+	assert_false(fb.is_empty(), "带 id 的正常响应失败应补发")
+	assert_eq(str(fb.get("id")), "abc", "补发信封须沿用原 id")
+	assert_has(fb, "error")
+	assert_eq(int(fb.error.code), CliControlErrorCodes.RESPONSE_TOO_LARGE, "补发码须为 1016")
+	assert_string_contains(str(fb.error.message), "outbound buffer")
+
+
+func test_send_failure_emits_1016_fallback() -> void:
+	# 集成：带 id 的大响应首发失败 → 补发 1016 信封（共 2 次 transmit）。
+	# 注：本测试会触发真实失败路径的 push_error（GUT 输出留 ERROR 噪音，不判失败）。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb._send_json({"id": "big1", "result": {"payload": "x"}})
+	assert_eq(fb.transmit_calls.size(), 2, "首发失败应触发补发（共 2 次 transmit）")
+	var parsed: Variant = JSON.parse_string(fb.transmit_calls[1])
+	assert_true(parsed is Dictionary, "补发帧应是合法 JSON 对象")
+	var frame: Dictionary = parsed
+	assert_eq(str(frame.get("id")), "big1", "补发信封须沿用原 id")
+	assert_eq(int((frame["error"] as Dictionary)["code"]), 1016)
+
+
+func test_send_failure_on_error_frame_does_not_refeed() -> void:
+	# 集成：失败的是 error 信封 → 不补发（只 1 次 transmit），杜绝递归。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb._send_json({"id": "x", "error": {"code": 1001, "message": "n"}})
+	assert_eq(fb.transmit_calls.size(), 1, "error 信封失败不补发")
+
+
+func test_send_success_does_not_fallback() -> void:
+	# 集成：发送成功不补发（只 1 次 transmit）。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb.fail_first = false
+	fb._send_json({"id": "ok1", "result": {"a": 1}})
+	assert_eq(fb.transmit_calls.size(), 1, "发送成功不应补发")
+
+
+func test_send_failure_fallback_also_fails_does_not_resend() -> void:
+	# 集成：原响应 + 补发都失败 → 只留痕、不再补发（恰 2 次 transmit，不递归到第 3 次）。
+	# 钉死 spec「防递归：error 响应（补发信封）自身发送失败时只留痕不再补发」。
+	# 注：触发两条真实失败路径 push_error/printerr（GUT 输出留 ERROR 噪音，不判失败）。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb.fail_all = true
+	fb._send_json({"id": "big2", "result": {"payload": "x"}})
+	assert_eq(fb.transmit_calls.size(), 2, "原发 + 补发各一次失败，不应再有第 3 次 transmit")
