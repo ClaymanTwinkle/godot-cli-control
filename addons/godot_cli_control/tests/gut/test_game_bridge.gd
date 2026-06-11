@@ -40,12 +40,15 @@ class FailingTransmitBridge:
 	extends GameBridge
 	var transmit_calls: Array = []   # 每次 _transmit 的入参文本
 	var fail_first: bool = true      # true: 第一发返回 ERR_OUT_OF_MEMORY，后续（补发）成功
+	var fail_all: bool = false       # true: 每一发都失败（测补发也失败的「只留痕不再补发」分支）
 
 	func _can_transmit() -> bool:
 		return true                  # 绕过真 peer：GUT 无真 socket
 
 	func _transmit(text: String) -> Error:
 		transmit_calls.append(text)
+		if fail_all:
+			return ERR_OUT_OF_MEMORY
 		if fail_first and transmit_calls.size() == 1:
 			return ERR_OUT_OF_MEMORY
 		return OK
@@ -639,3 +642,14 @@ func test_send_success_does_not_fallback() -> void:
 	fb.fail_first = false
 	fb._send_json({"id": "ok1", "result": {"a": 1}})
 	assert_eq(fb.transmit_calls.size(), 1, "发送成功不应补发")
+
+
+func test_send_failure_fallback_also_fails_does_not_resend() -> void:
+	# 集成：原响应 + 补发都失败 → 只留痕、不再补发（恰 2 次 transmit，不递归到第 3 次）。
+	# 钉死 spec「防递归：error 响应（补发信封）自身发送失败时只留痕不再补发」。
+	# 注：触发两条真实失败路径 push_error/printerr（GUT 输出留 ERROR 噪音，不判失败）。
+	var fb := FailingTransmitBridge.new()
+	autofree(fb)
+	fb.fail_all = true
+	fb._send_json({"id": "big2", "result": {"payload": "x"}})
+	assert_eq(fb.transmit_calls.size(), 2, "原发 + 补发各一次失败，不应再有第 3 次 transmit")
