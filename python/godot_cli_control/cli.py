@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import base64
 import contextlib
@@ -100,13 +101,45 @@ def _resolve_headless(
         return True  # 安全默认
 
 
+def _sibling_module_names(text: str) -> set[str]:
+    """抽出脚本里 ``import`` 的"顶层模块名"，用于定位同目录 helper。
+
+    只取顶层段：``import pkg.sub`` → ``pkg``；``from helpers import foo`` →
+    ``helpers``。``run`` 模式把脚本所在目录插到 ``sys.path[0]``，故 sibling
+    import 走的是绝对形式（``from helpers import …``）；相对 import
+    （``from . import x``，``node.module`` 为 None）在 ``user_script`` 这种
+    非 package 加载下本就跑不起来，直接忽略。
+
+    语法错（``ast.parse`` 抛 SyntaxError）时返回空集 —— 调用方据此放弃闭包
+    扫描，不让"脚本语法错"从这个启发式里漏出来。
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
+    return names
+
+
 def _script_likely_uses_screenshot(script_path: Path) -> bool:
-    """启发式：脚本源码是否含 ``screenshot`` 子串。
+    """启发式：脚本（含同目录被 import 的一层 helper）是否触及 ``screenshot``。
 
     保守策略 —— 误报（多开一次窗）成本远低于漏报（截图静默 1006 fail）。
     简单子串足以覆盖 ``bridge.screenshot(...)`` / ``client.screenshot()`` /
     间接 ``getattr(bridge, "screenshot")``；comment / docstring 命中也无所谓，
     最坏只是 subagent 多看到一个窗口。
+
+    issue #151：``run`` 官方支持 sibling import（脚本同目录在 ``sys.path`` 上），
+    screenshot 调用可能写在 ``from helpers import shoot`` 的 ``helpers.py`` 里。
+    主脚本子串没命中时，再解析它的 import、对**同目录命中的 .py** 做同样的子串
+    检测。只扫一层 —— helper 再 import helper 的场景罕见，递归会把扫描面爆开；
+    stdlib / 第三方包不在同目录，``read_text`` OSError 自然跳过。
 
     读不到（OSError / decode 失败）时返回 False —— 让 cmd_run 走原来的 isatty
     默认，至少不会把"脚本不存在"的报错被本检测吞掉。
@@ -115,7 +148,19 @@ def _script_likely_uses_screenshot(script_path: Path) -> bool:
         text = script_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    return "screenshot" in text
+    if "screenshot" in text:
+        return True
+    parent = script_path.parent
+    for name in _sibling_module_names(text):
+        try:
+            sib_text = (parent / f"{name}.py").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            continue  # 非同目录文件（stdlib / 第三方）→ 跳过
+        if "screenshot" in sib_text:
+            return True
+    return False
 
 
 # ── RpcSpec：声明一个 RPC 子命令 ──
