@@ -55,9 +55,12 @@ var _emit_signal_allowed: bool = false
 var _last_screenshot_hash: int = 0
 var _has_prev_screenshot: bool = false
 
-# #157：内置复合 Variant 的封闭 leaf 集——sub-path typo fail-loud 用。只收录能
-# 100% 枚举完整的类型（vector 系，x/y/z/w 铁稳零漏列）；Color/Rect2/Transform 等
-# leaf 集大、需实证完整后再加（follow-up）。键为 typeof()，值为合法 leaf 名。
+# #157 + #169：内置复合 Variant 的封闭 leaf 集——sub-path typo fail-loud 用。
+# 键为 typeof()，值为合法 leaf 名。只收录「能 100% 枚举完整」的类型：每个类型的
+# leaf 集都经 GUT 用 get_indexed 实证（test_subpath_closed_leaves_match_godot_get_indexed_members
+# 对宽松候选超集重跑 discovery，断言白名单 == Godot 实际成员，双向防漂移）。
+# 漏列即误杀合法读取（比静默 null 更坏），故新增类型前必须先实证完整、再加一行 + parity 候选。
+# #169 实证基线：Godot 4.6.2。Dictionary/Array/Object 等开放类型 key 任意、不可枚举，永不收录。
 const _SUBPATH_CLOSED_LEAVES := {
 	TYPE_VECTOR2: ["x", "y"],
 	TYPE_VECTOR2I: ["x", "y"],
@@ -65,6 +68,19 @@ const _SUBPATH_CLOSED_LEAVES := {
 	TYPE_VECTOR3I: ["x", "y", "z"],
 	TYPE_VECTOR4: ["x", "y", "z", "w"],
 	TYPE_VECTOR4I: ["x", "y", "z", "w"],
+	# #169：vector 系之外的封闭复合类型（leaf 集 = get_indexed 实测全集）。
+	TYPE_RECT2: ["position", "size", "end"],
+	TYPE_RECT2I: ["position", "size", "end"],
+	TYPE_PLANE: ["x", "y", "z", "d", "normal"],
+	TYPE_QUATERNION: ["x", "y", "z", "w"],
+	TYPE_AABB: ["position", "size", "end"],
+	TYPE_BASIS: ["x", "y", "z"],
+	TYPE_TRANSFORM2D: ["x", "y", "origin"],
+	TYPE_TRANSFORM3D: ["basis", "origin"],
+	TYPE_PROJECTION: ["x", "y", "z", "w"],
+	# Color 派生访问器多（r8/g8/b8/a8 整数系 + h/s/v + ok_hsl_*），全经实证。
+	TYPE_COLOR: ["r", "g", "b", "a", "r8", "g8", "b8", "a8", "h", "s", "v",
+		"ok_hsl_h", "ok_hsl_s", "ok_hsl_l"],
 }
 
 # 防御性白名单：声明类型在这里 = Object.set(prop, Array) 不会 silent-corrupt，原 Array
@@ -169,7 +185,9 @@ func _read_property(node: Node, property: String) -> Dictionary:
 ## （前缀合法故非 null-from-typo）。返回 {} 放行 / {"error": ...} 命中 typo。
 func _validate_sub_path_leaves(node: Node, property: String) -> Dictionary:
 	var segments: PackedStringArray = property.split(":", false)
-	# segments[0] = top_level（调用方已 _has_property 校验存在）
+	# segments[0] = top_level。get 侧调用方已 _has_property 校验其存在；set 侧（#174）不预
+	# 校验 → 不存在时 node.get() 返 null（TYPE_NIL 不在封闭集）→ 首段即放行，沿用 set_indexed
+	# 对未知 top-level 的现状（不误报，top-level typo 是另一个 footgun，超出 #174 范围）。
 	var current: Variant = node.get(segments[0])
 	for i in range(1, segments.size()):
 		var t: int = typeof(current)
@@ -232,6 +250,15 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	var top_level: String = _top_level_of(property)
 	if property in _property_blacklist or top_level in _property_blacklist:
 		return _err(CliControlErrorCodes.INVALID_PARAMS, "Blocked property: %s" % property)
+	# #174：sub-path leaf typo fail-loud（与 get 侧 _read_property 对称，复用 #169 机制）。
+	# set_indexed 找不到 named leaf 时静默丢值（不写、不报错），handler 仍返回 success →
+	# 假成功 footgun。封闭复合类型 typo → 1002 + 合法 leaf 列表；开放/未收录类型放行退回
+	# set_indexed 现状（误杀比静默更坏）。top_level 不存在时 walk 起点为 null → 放行（与 get
+	# 侧不同：set 侧不预先 _has_property 校验，沿用 set_indexed 对未知 top-level 的现状）。
+	if is_sub_path:
+		var leaf_err: Dictionary = _validate_sub_path_leaves(node, property)
+		if leaf_err.has("error"):
+			return leaf_err
 	var value: Variant = params.get("value", null)
 	# #52：JSON 只能产 Array/Number/String/Bool/null。Godot Object.set("zoom", [1.8,1.8])
 	# 不会隐式构造 Vector2，会走 zero-init / clamp 到 0.00001 → silent corruption。
