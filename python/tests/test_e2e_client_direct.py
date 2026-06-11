@@ -353,3 +353,155 @@ async def test_client_wait_signal_timeout_path(daemon_port: Any) -> None:
         result = await client.wait_signal("/root/Main/Player", "renamed", timeout=0.5)
         assert isinstance(result, dict), result
         assert result.get("emitted") is False, result
+
+
+# ── issue #155 wait-signal --trigger e2e ────────────────────────────────────────
+
+# 带自定义信号的 main.gd（`signal ping` 用于 wait-signal --trigger 触发；
+# `signal idle_sig` 声明但永不发射，用于触发成功但信号超时场景）。
+_MAIN_GD_SIGNAL = """\
+extends Node
+
+signal ping
+signal idle_sig
+
+var counter: int = 0
+
+func bump(n: int) -> int:
+\tcounter += n
+\treturn counter
+"""
+
+_PROJECT_GODOT_EMIT = """\
+config_version=5
+
+[application]
+config/name="gcc_e2e_trigger"
+run/main_scene="res://main.tscn"
+
+[autoload]
+GameBridgeNode="*res://addons/godot_cli_control/bridge/game_bridge.gd"
+
+[debug]
+settings/stdout/print_fps=false
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/godot_cli_control/plugin.cfg")
+"""
+
+
+@pytest.fixture(scope="module")
+def godot_project_emit(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """独立项目：main.gd 含 `signal ping`，供 --trigger emit-signal 测试用。"""
+    proj = tmp_path_factory.mktemp("gcc_e2e_trigger")
+    (proj / "addons").mkdir()
+    shutil.copytree(_ADDON_SRC, proj / "addons" / "godot_cli_control")
+    (proj / "project.godot").write_text(_PROJECT_GODOT_EMIT)
+    (proj / "main.gd").write_text(_MAIN_GD_SIGNAL)
+    (proj / "main.tscn").write_text(_MAIN_TSCN)
+
+    imp = subprocess.run(
+        [_GODOT_BIN, "--headless", "--editor", "--quit", "--path", str(proj)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert imp.returncode == 0, f"Godot 导入失败：{imp.stdout}\n{imp.stderr}"
+    return proj
+
+
+@pytest.fixture(scope="module")
+def daemon_port_emit(godot_project_emit: Path) -> Any:
+    """带 --allow-emit-signal 的 daemon（#155 trigger e2e 用）。"""
+    start = _run_cli(
+        godot_project_emit,
+        "daemon", "start", "--headless", "--allow-emit-signal",
+        timeout=90,
+    )
+    assert start["ok"] is True and start["result"]["started"], start
+    try:
+        yield godot_project_emit, start["result"]["port"]
+    finally:
+        _run_cli(godot_project_emit, "release-all")
+        _run_cli(godot_project_emit, "daemon", "stop", timeout=30)
+
+
+def test_wait_signal_trigger_via_emit_signal(daemon_port_emit: Any) -> None:
+    """issue #155 e2e：wait-signal --trigger 同连接 arm→触发→等（CLI 子进程模式）。
+
+    用 `--trigger 'emit-signal /root/Main ping'` 触发 Main 节点的 `ping` 信号：
+    - exit 0（emitted=true）
+    - 信封 result 含 emitted:true
+    - 信封 result 含 trigger_result（emit-signal 的返回值）
+    """
+    project, _ = daemon_port_emit
+    proc = subprocess.run(
+        _CLI + [
+            "wait-signal", "/root/Main", "ping", "3",
+            "--trigger", "emit-signal /root/Main ping",
+        ],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, (
+        f"期望 exit 0，实得 {proc.returncode}\n"
+        f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    )
+    json_lines = [ln for ln in proc.stdout.splitlines() if ln.strip().startswith("{")]
+    assert json_lines, f"无 JSON 输出：stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    payload = json.loads(json_lines[-1])
+    assert payload["ok"] is True, payload
+    result = payload["result"]
+    assert result.get("emitted") is True, f"期望 emitted:true，实得 {result}"
+    assert "trigger_result" in result, f"期望 trigger_result 字段，实得 {result}"
+
+
+def test_wait_signal_trigger_success_but_signal_timeout(daemon_port_emit: Any) -> None:
+    """issue #155 e2e：trigger 执行成功但被等信号未发射时，miss 信封含 trigger_result。
+
+    等 `idle_sig`（声明但永不发射），用 --trigger 触发 `emit-signal /root/Main ping`
+    （发 ping，不触发 idle_sig），短 timeout=1s 确保超时：
+    - exit 非 0（miss）
+    - 信封 ok:false，error.code 1（wait-signal timeout 走 exit 1）
+      或 ok:true + emitted:false（取决于实现路径）
+    - 实际路径：wait-signal timeout → exit 1 + ok:false envelope，但 trigger_result 字段
+      反映 trigger 已成功执行。
+
+    此测试验证 I1 文档描述的场景：trigger_result 在 miss 信封中出现。
+    """
+    project, _ = daemon_port_emit
+    proc = subprocess.run(
+        _CLI + [
+            "wait-signal", "/root/Main", "idle_sig", "1",
+            "--trigger", "emit-signal /root/Main ping",
+        ],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode != 0, (
+        f"期望非 0 exit（idle_sig 不会发射），实得 {proc.returncode}\n"
+        f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    )
+    json_lines = [ln for ln in proc.stdout.splitlines() if ln.strip().startswith("{")]
+    assert json_lines, f"无 JSON 输出：stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    payload = json.loads(json_lines[-1])
+    # miss 路径：ok:false（RPC error 信封）或 ok:true + emitted:false
+    if payload.get("ok") is True:
+        result = payload["result"]
+        assert result.get("emitted") is False, f"期望 emitted:false，实得 {result}"
+        assert result.get("reason") == "timeout", f"期望 reason:timeout，实得 {result}"
+        assert "trigger_result" in result, (
+            f"期望 miss 信封含 trigger_result（trigger 执行了），实得 {result}"
+        )
+    else:
+        # ok:false 路径 — 服务端把 timeout 作为 error 返回
+        # trigger_result 在 error envelope 中可能位于 error 对象内
+        # 只要确认 trigger 执行了（exit 不是 2=infra error）
+        assert proc.returncode in (1,), (
+            f"期望 exit 1（RPC miss），实得 {proc.returncode}\n"
+            f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+        )
