@@ -485,7 +485,7 @@ def _preflight_wait_signal(ns: argparse.Namespace) -> None:
         if not 0 <= timeout <= 3600:
             raise ValueError(f"wait-signal: timeout 必须在 0..3600 秒，收到 {timeout}")
     trigger = getattr(ns, "trigger", None)
-    if trigger:
+    if trigger is not None:
         trigger = trigger.strip()
         if not trigger:
             raise ValueError("--trigger 不能为空（空白字符串）")
@@ -825,7 +825,8 @@ async def cmd_wait_signal(client: GameClient, ns: argparse.Namespace) -> dict:
 
     result = dict(await client.wait_signal(
         ns.node_path, ns.signal_name, timeout=timeout, on_armed=on_armed))
-    result["trigger_result"] = box.get("result")
+    if "result" in box:
+        result["trigger_result"] = box["result"]
     return result
 
 

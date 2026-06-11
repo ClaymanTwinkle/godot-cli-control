@@ -234,7 +234,9 @@ class GameClient:
                             )
                         continue
                     if req_id in self._pending:
-                        self._pending[req_id].set_result(msg)
+                        fut = self._pending[req_id]
+                        if not fut.done():
+                            fut.set_result(msg)
                         del self._pending[req_id]
         except websockets.ConnectionClosed as e:
             # 带上 close code/reason（issue #149 排查教训）：1009 (message too
@@ -559,21 +561,20 @@ class GameClient:
                 timeout=timeout + 5.0,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            # armed 优先：即使 armed 和终帧同帧到达（done 同时含两者），
+            # 也必须先执行 trigger，否则 on_armed 被静默跳过（C1）。
+            if armed.is_set():
+                await armed_task  # 零成本取回已完成任务，避免异常静默吞掉
+                await on_armed()
+                response = await asyncio.wait_for(future, timeout=timeout + 5.0)
+                return self._unwrap_response(response)
             if future in done:
-                # arm 阶段就出终帧（通常是 error）→ 不触发 on_armed
+                # armed 未发生但终帧已到（通常是 error：节点/信号不存在）→ 不触发
                 armed_task.cancel()
                 return self._unwrap_response(future.result())
-            if not armed.is_set():
-                # 整体超时，armed 和终帧都没到
-                armed_task.cancel()
-                raise asyncio.TimeoutError
-            # armed 到达：明确取回 armed_task（已完成、零成本），避免将来
-            # armed.wait() 换成会抛异常的协程时异常被静默吞掉。
-            await armed_task
-            # 同连接执行 trigger（失败抛 → 传播 → 停止等信号）
-            await on_armed()
-            response = await asyncio.wait_for(future, timeout=timeout + 5.0)
-            return self._unwrap_response(response)
+            # 既无 armed 又无终帧：arm 阶段超时（C3）→ 返回 dict 与普通超时一致
+            armed_task.cancel()
+            return {"emitted": False, "reason": "arm_timeout"}
         finally:
             self._pending.pop(req_id, None)
             self._armed_events.pop(req_id, None)

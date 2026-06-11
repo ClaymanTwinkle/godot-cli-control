@@ -4846,3 +4846,9 @@ class TestWaitSignalTriggerPreflight:
         with pytest.raises(ValueError):
             cli._preflight_wait_signal(self._ns(trigger="tap"))
         assert capsys.readouterr().out == ""
+
+    def test_empty_string_trigger_rejected(self) -> None:
+        """I2：--trigger ''（空字符串）必须被 preflight 拒绝（if trigger is not None 修复）。"""
+        from godot_cli_control import cli
+        with pytest.raises(ValueError, match="不能为空"):
+            cli._preflight_wait_signal(self._ns(trigger=""))
