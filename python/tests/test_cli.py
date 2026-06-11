@@ -4779,3 +4779,70 @@ def test_run_parses_allow_emit_signal():
     from godot_cli_control import cli
     ns = cli.build_parser().parse_args(["run", "s.py", "--allow-emit-signal"])
     assert ns.allow_emit_signal is True
+
+
+# ── wait-signal --trigger preflight（#155）──
+
+
+class TestWaitSignalTriggerPreflight:
+    def _ns(self, **kw):
+        base = {"timeout": None, "trigger": None, "node_path": "/root/A",
+                "signal_name": "ping"}
+        base.update(kw)
+        return type("NS", (), base)()
+
+    def test_valid_trigger_caches_spec_and_ns(self) -> None:
+        from godot_cli_control import cli
+        ns = self._ns(trigger="tap interact")
+        cli._preflight_wait_signal(ns)
+        assert ns._trigger_spec.name == "tap"
+        assert ns._trigger_ns.cmd == "tap"
+
+    def test_empty_trigger_rejected(self) -> None:
+        from godot_cli_control import cli
+        with pytest.raises(ValueError):
+            cli._preflight_wait_signal(self._ns(trigger="   "))
+
+    def test_non_rpc_trigger_rejected(self) -> None:
+        from godot_cli_control import cli
+        with pytest.raises(ValueError):
+            cli._preflight_wait_signal(self._ns(trigger="daemon start"))
+
+    def test_nested_wait_trigger_rejected(self) -> None:
+        from godot_cli_control import cli
+        with pytest.raises(ValueError):
+            cli._preflight_wait_signal(self._ns(trigger="wait-signal /root/B x"))
+
+    def test_trigger_subcommand_preflight_runs(self) -> None:
+        # combo 无 steps → 其自身 preflight 抛 → 包成 wait-signal 的 ValueError
+        from godot_cli_control import cli
+        with pytest.raises(ValueError):
+            cli._preflight_wait_signal(self._ns(trigger="combo"))
+
+    def test_trigger_none_no_error(self) -> None:
+        from godot_cli_control import cli
+        ns = self._ns(trigger=None)
+        cli._preflight_wait_signal(ns)  # 不抛即通过
+        assert not hasattr(ns, "_trigger_spec")
+
+    def test_wait_signal_trigger_flag_parsed_by_build_parser(self) -> None:
+        from godot_cli_control import cli
+        ns = cli.build_parser().parse_args(
+            ["wait-signal", "/root/A", "fired", "--trigger", "tap interact"]
+        )
+        assert ns.trigger == "tap interact"
+
+    # M1：守护 stdout 不被 argparse help/error 污染（C1 + C2 回归）
+    def test_trigger_help_does_not_pollute_stdout(self, capsys) -> None:
+        """--trigger 'tap -h' 应抛 ValueError，stdout 必须干净（C1 回归）。"""
+        from godot_cli_control import cli
+        with pytest.raises(ValueError):
+            cli._preflight_wait_signal(self._ns(trigger="tap -h"))
+        assert capsys.readouterr().out == ""
+
+    def test_trigger_missing_arg_no_stdout_pollution(self, capsys) -> None:
+        """--trigger 'tap'（缺必填 action）应抛 ValueError，stdout 不出现 JSON（C2 回归）。"""
+        from godot_cli_control import cli
+        with pytest.raises(ValueError):
+            cli._preflight_wait_signal(self._ns(trigger="tap"))
+        assert capsys.readouterr().out == ""

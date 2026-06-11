@@ -28,6 +28,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import shlex
 import sys
 import traceback
 from collections.abc import Callable, Coroutine
@@ -444,12 +445,52 @@ def _preflight_wait_prop(ns: argparse.Namespace) -> None:
         )
 
 
+def _parse_trigger(trigger: str) -> "tuple[RpcSpec, argparse.Namespace]":
+    """把 --trigger 字符串解析成 (RpcSpec, ns) 并跑其自身 preflight。
+
+    复用主 parser（契约 #4：trigger 是真正的 CLI 子命令，不是 shell 透传）。
+    非法 / 非 RPC / 嵌套 wait-* / 子命令 preflight 失败一律 raise ValueError
+    → 上层 EXIT_USAGE / -1003 / 64。
+    """
+    parts = shlex.split(trigger)
+    if not parts:
+        raise ValueError("--trigger 不能为空")
+    parser = build_parser()
+    try:
+        # C1/C2：把 argparse 的 help/error 输出重定向到 stderr（人看），
+        # 不污染 stdout 单行 JSON 信封契约。help → SystemExit(0)；
+        # 缺必填参数 → _EnvelopeArgumentParser.error() → SystemExit(2)，
+        # error() 内部的 _emit_error_payload 也走到 stderr，不写 stdout。
+        with contextlib.redirect_stdout(sys.stderr):
+            parsed = parser.parse_args(parts)
+    except SystemExit as e:
+        raise ValueError(f"--trigger 解析失败: {trigger!r}") from e
+    cmd = getattr(parsed, "cmd", None)
+    if cmd not in RPC_BY_NAME:
+        raise ValueError(f"--trigger 必须是 RPC 子命令，不支持 {cmd!r}（daemon/run/init 不可作触发）")
+    if cmd.startswith("wait"):
+        raise ValueError(f"--trigger 不能嵌套 wait-* 子命令（{cmd}）")
+    # I2：trigger 子命令不支持 --port / --instance（必须复用当前连接）
+    if getattr(parsed, "port", None) is not None or getattr(parsed, "instance", None) is not None:
+        raise ValueError("--trigger 子命令不支持 --port / --instance（复用当前连接）")
+    spec = RPC_BY_NAME[cmd]
+    if spec.preflight is not None:
+        spec.preflight(parsed)  # 抛 ValueError 直接上浮
+    return spec, parsed
+
+
 def _preflight_wait_signal(ns: argparse.Namespace) -> None:
-    if ns.timeout is None:
-        return
-    timeout = _require_float(ns.timeout, "wait-signal", "timeout")
-    if not 0 <= timeout <= 3600:
-        raise ValueError(f"wait-signal: timeout 必须在 0..3600 秒，收到 {timeout}")
+    if ns.timeout is not None:
+        timeout = _require_float(ns.timeout, "wait-signal", "timeout")
+        if not 0 <= timeout <= 3600:
+            raise ValueError(f"wait-signal: timeout 必须在 0..3600 秒，收到 {timeout}")
+    trigger = getattr(ns, "trigger", None)
+    if trigger:
+        trigger = trigger.strip()
+        if not trigger:
+            raise ValueError("--trigger 不能为空（空白字符串）")
+        # 预解析缓存（同 _preflight_combo 的 ns._combo_steps 模式），handler 直接用
+        ns._trigger_spec, ns._trigger_ns = _parse_trigger(trigger)
 
 
 def _preflight_wait_frames(ns: argparse.Namespace) -> None:
@@ -773,7 +814,19 @@ async def cmd_wait_prop(client: GameClient, ns: argparse.Namespace) -> dict:
 
 async def cmd_wait_signal(client: GameClient, ns: argparse.Namespace) -> dict:
     timeout = float(ns.timeout) if ns.timeout else 5.0
-    return await client.wait_signal(ns.node_path, ns.signal_name, timeout=timeout)
+    if not getattr(ns, "trigger", None):
+        return await client.wait_signal(ns.node_path, ns.signal_name, timeout=timeout)
+    trigger_spec: "RpcSpec" = ns._trigger_spec  # preflight 已解析缓存
+    trigger_ns: argparse.Namespace = ns._trigger_ns
+    box: dict = {}
+
+    async def on_armed() -> None:
+        box["result"] = await trigger_spec.handler(client, trigger_ns)
+
+    result = dict(await client.wait_signal(
+        ns.node_path, ns.signal_name, timeout=timeout, on_armed=on_armed))
+    result["trigger_result"] = box.get("result")
+    return result
 
 
 async def cmd_wait_frames(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -964,7 +1017,11 @@ def _fmt_wait_prop_text(r: dict) -> str:
 
 
 def _fmt_wait_signal_text(r: dict) -> str:
-    return "emitted" if r.get("emitted") else "timeout"
+    base = "emitted" if r.get("emitted") else "timeout"
+    # I1：trigger_result=None 表示 trigger 未执行，不误报 "trigger ok"
+    if r.get("trigger_result") is not None:
+        return f"{base} (trigger ok)"
+    return base
 
 
 def _exit_from_wait_prop(r: dict) -> int:
@@ -1176,6 +1233,15 @@ def _register_wait_prop_args(p: argparse.ArgumentParser) -> None:
 def _register_wait_frames_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("frames", help="等待帧数（1..3600）")
     p.add_argument("--physics", action="store_true", help="等 physics_frame（默认 process_frame）")
+
+
+def _register_wait_signal_args(p: argparse.ArgumentParser) -> None:
+    """wait-signal 的 --trigger：arm 完成后同连接执行的一条 RPC 子命令（issue #155）。"""
+    p.add_argument(
+        "--trigger", default=None,
+        help="arm 后在同一连接内执行的一条 RPC 子命令，如 --trigger 'tap interact'；"
+             "多步用 combo。消除『先后台挂再触发』的竞态。",
+    )
 
 
 def _register_scene_reload_args(p: argparse.ArgumentParser) -> None:
@@ -1624,6 +1690,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
         description=(
             "等信号发射（或 timeout），命中带回编码后的信号参数。退出码：0=命中, "
             "1=超时, 2=infra error。注意：必须先挂等待再触发动作（见 SKILL.md pitfall）。"
+            "带 --trigger 时同连接 arm→触发→等，无需 shell 后台。"
         ),
         positionals=(
             Positional("node_path", None, "绝对节点路径"),
@@ -1631,6 +1698,7 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
             Positional("timeout", "?", "超时秒（0..3600，默认 5）"),
         ),
         example="wait-signal /root/Area door_opened 3",
+        extra_args=_register_wait_signal_args,
         preflight=_preflight_wait_signal,
         text_formatter=_fmt_wait_signal_text,
         exit_code_from=_exit_from_wait_signal,
