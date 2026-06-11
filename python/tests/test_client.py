@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import websockets
 
-from godot_cli_control.client import LONG_OP_CLIENT_TIMEOUT, GameClient
+from godot_cli_control.client import LONG_OP_CLIENT_TIMEOUT, GameClient, RpcError
 
 
 # ---- Test 1: proxy=None 显式传给 websockets.connect ----
@@ -1586,3 +1587,108 @@ async def test_quit_returns_when_send_raises_connection_closed() -> None:
         assert len(client._pending) == 0
     finally:
         client._listen_task.cancel()
+
+
+# ---- issue #155 Task 2: wait_signal on_armed 编排 + _listen armed 帧识别 ----
+
+
+@pytest.mark.asyncio
+async def test_wait_signal_trigger_runs_on_armed_between_armed_and_final() -> None:
+    """arm_ack 路径：收 armed 帧 → 执行 on_armed → 收终帧才 resolve，
+    且终帧带回 emitted/args。"""
+    client = GameClient(port=1)
+
+    # 用可控双向通道模拟服务端：先回 armed 帧，待 trigger RPC 回应后再回终帧
+    sent: list[dict] = []
+    # 记录 wait_signal 的 id，供 FakeWS 关联 armed/终帧
+    signal_id_holder: list[str] = []
+
+    class _FakeWS155:
+        def __init__(self) -> None:
+            self._q: asyncio.Queue = asyncio.Queue()
+
+        async def send(self, raw: str) -> None:
+            msg = json.loads(raw)
+            sent.append(msg)
+            if msg["method"] == "wait_signal":
+                # 记录 id，立即回 armed 帧
+                signal_id_holder.append(msg["id"])
+                await self._q.put(json.dumps({"id": msg["id"], "armed": True}))
+            elif msg["method"] == "input_action_tap":
+                # trigger 成功响应，之后回 wait_signal 终帧
+                await self._q.put(json.dumps({"id": msg["id"], "result": {"tapped": True}}))
+                if signal_id_holder:
+                    await self._q.put(json.dumps({
+                        "id": signal_id_holder[0],
+                        "result": {"emitted": True, "args": [42]},
+                    }))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            return await self._q.get()
+
+    fake = _FakeWS155()
+    client._ws = fake  # type: ignore[assignment]
+    client._listen_task = asyncio.create_task(client._listen())
+
+    triggered: list[bool] = []
+
+    async def on_armed() -> None:
+        triggered.append(True)
+        await client.request("input_action_tap", {"action": "interact"})
+
+    result = await asyncio.wait_for(
+        client.wait_signal("/root/A", "ping", timeout=2.0, on_armed=on_armed),
+        timeout=5.0,
+    )
+    assert triggered == [True], "on_armed 应在 armed 帧到达后被执行一次"
+    assert result == {"emitted": True, "args": [42]}, f"终帧内容不符: {result}"
+    client._listen_task.cancel()
+    try:
+        await client._listen_task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_wait_signal_trigger_failure_propagates_and_stops_waiting() -> None:
+    """on_armed 抛 RpcError → wait_signal 传播该异常、不再等信号。"""
+    client = GameClient(port=1)
+
+    class _FakeWS155Err:
+        def __init__(self) -> None:
+            self._q: asyncio.Queue = asyncio.Queue()
+
+        async def send(self, raw: str) -> None:
+            msg = json.loads(raw)
+            if msg["method"] == "wait_signal":
+                # 只回 armed 帧，不回终帧（终帧永远不来）
+                await self._q.put(json.dumps({"id": msg["id"], "armed": True}))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            return await self._q.get()
+
+    fake = _FakeWS155Err()
+    client._ws = fake  # type: ignore[assignment]
+    client._listen_task = asyncio.create_task(client._listen())
+
+    async def on_armed_fail() -> None:
+        raise RpcError(1001, "boom")
+
+    with pytest.raises(RpcError) as exc_info:
+        await asyncio.wait_for(
+            client.wait_signal("/root/A", "ping", timeout=2.0, on_armed=on_armed_fail),
+            timeout=5.0,
+        )
+    assert exc_info.value.code == 1001
+    assert "boom" in exc_info.value.message
+    client._listen_task.cancel()
+    try:
+        await client._listen_task
+    except asyncio.CancelledError:
+        pass
