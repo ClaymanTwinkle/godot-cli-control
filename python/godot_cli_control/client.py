@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import websockets
@@ -95,6 +96,7 @@ class GameClient:
         self._port = port
         self._ws: ClientConnection | None = None
         self._pending: dict[str, asyncio.Future[dict]] = {}
+        self._armed_events: dict[str, asyncio.Event] = {}
         self._listen_task: asyncio.Task | None = None
 
     async def __aenter__(self) -> "GameClient":
@@ -222,8 +224,19 @@ class GameClient:
                 msg = json.loads(raw)
                 if "id" in msg:
                     req_id = msg["id"]
+                    # issue #155 armed 中间帧：有 id、有 armed、无 result/error → 不 resolve
+                    if msg.get("armed") and "result" not in msg and "error" not in msg:
+                        if req_id in self._armed_events:
+                            self._armed_events[req_id].set()
+                        else:
+                            logger.warning(
+                                "received armed frame for unknown req_id %s", req_id
+                            )
+                        continue
                     if req_id in self._pending:
-                        self._pending[req_id].set_result(msg)
+                        fut = self._pending[req_id]
+                        if not fut.done():
+                            fut.set_result(msg)
                         del self._pending[req_id]
         except websockets.ConnectionClosed as e:
             # 带上 close code/reason（issue #149 排查教训）：1009 (message too
@@ -238,6 +251,20 @@ class GameClient:
                 if not future.done():
                     future.set_exception(ConnectionError(reason))
             self._pending.clear()
+            # 防御性双保险：实际清理由 _wait_signal_with_trigger 的 finally 保证，
+            # 但连接异常退出时若 finally 未执行（如进程强杀），这里补清残留 Event。
+            self._armed_events.clear()
+
+    @staticmethod
+    def _unwrap_response(response: dict) -> dict:
+        """把服务端帧解包为 result dict，遇到 error 帧抛 RpcError。"""
+        if "error" in response:
+            err = response["error"]
+            raise RpcError(
+                int(err.get("code", -1)),
+                str(err.get("message", "")),
+            )
+        return response.get("result", {})
 
     async def request(
         self, method: str, params: dict | None = None, timeout: float = 30.0
@@ -254,13 +281,7 @@ class GameClient:
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
             raise
-        if "error" in response:
-            err = response["error"]
-            raise RpcError(
-                int(err.get("code", -1)),
-                str(err.get("message", "")),
-            )
-        return response.get("result", {})
+        return self._unwrap_response(response)
 
     async def quit(self, timeout: float = 5.0) -> None:
         """请 daemon 优雅退出（让 Movie Maker flush AVI 尾帧）。
@@ -486,13 +507,77 @@ class GameClient:
             timeout=timeout + 5.0,
         )
 
-    async def wait_signal(self, path: str, signal: str, timeout: float = 5.0) -> dict:
-        """等信号发射（issue #96）。返回 {"emitted": bool, "args": [...]}，超时不抛。"""
-        return await self.request(
-            "wait_signal",
-            {"path": path, "signal": signal, "timeout": timeout},
-            timeout=timeout + 5.0,
-        )
+    async def wait_signal(
+        self,
+        path: str,
+        signal: str,
+        timeout: float = 5.0,
+        on_armed: Callable[[], Awaitable[None]] | None = None,
+    ) -> dict:
+        """等信号发射（issue #96）。返回 {"emitted": bool, "args": [...]}，超时不抛。
+
+        on_armed（issue #155）：传入则走 arm_ack 路径——收到服务端 armed 帧后
+        await on_armed()（同连接执行 trigger），再等终帧。
+        on_armed 路径总超时约为 2 * (timeout + 5.0)：arm 阶段一次 wait，终帧一次 wait。
+        """
+        if on_armed is None:
+            return await self.request(
+                "wait_signal",
+                {"path": path, "signal": signal, "timeout": timeout},
+                timeout=timeout + 5.0,
+            )
+        return await self._wait_signal_with_trigger(path, signal, timeout, on_armed)
+
+    async def _wait_signal_with_trigger(
+        self,
+        path: str,
+        signal: str,
+        timeout: float,
+        on_armed: Callable[[], Awaitable[None]],
+    ) -> dict:
+        """arm_ack 路径编排（issue #155）：arm → trigger → 等终帧。
+
+        关键并发点：on_armed 在本协程里 await（不在 _listen 里），
+        这样 trigger RPC 的响应帧也能被 _listen 正常接收，避免死锁。
+        asyncio.wait({armed_task, future}, FIRST_COMPLETED) 确保 arm 阶段
+        若提前出终帧（如 error：节点/信号不存在）能立即跳过 trigger。
+        """
+        assert self._ws is not None, "Not connected"
+        req_id = str(uuid.uuid4())[:8]
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict] = loop.create_future()
+        armed = asyncio.Event()
+        self._pending[req_id] = future
+        self._armed_events[req_id] = armed
+        try:
+            await self._ws.send(json.dumps({
+                "id": req_id,
+                "method": "wait_signal",
+                "params": {"path": path, "signal": signal, "timeout": timeout, "arm_ack": True},
+            }))
+            armed_task = loop.create_task(armed.wait())
+            done, _ = await asyncio.wait(
+                {armed_task, future},
+                timeout=timeout + 5.0,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # armed 优先：即使 armed 和终帧同帧到达（done 同时含两者），
+            # 也必须先执行 trigger，否则 on_armed 被静默跳过（C1）。
+            if armed.is_set():
+                await armed_task  # 零成本取回已完成任务，避免异常静默吞掉
+                await on_armed()
+                response = await asyncio.wait_for(future, timeout=timeout + 5.0)
+                return self._unwrap_response(response)
+            if future in done:
+                # armed 未发生但终帧已到（通常是 error：节点/信号不存在）→ 不触发
+                armed_task.cancel()
+                return self._unwrap_response(future.result())
+            # 既无 armed 又无终帧：arm 阶段超时（C3）→ 返回 dict 与普通超时一致
+            armed_task.cancel()
+            return {"emitted": False, "reason": "arm_timeout"}
+        finally:
+            self._pending.pop(req_id, None)
+            self._armed_events.pop(req_id, None)
 
     async def wait_frames(self, frames: int, physics: bool = False) -> dict:
         """等 N 帧（issue #96）。client wall-time 按最低 10fps 估算 + 10s grace。"""

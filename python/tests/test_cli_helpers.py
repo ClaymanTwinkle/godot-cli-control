@@ -346,7 +346,7 @@ def test_cmd_wait_signal_matched_passes_timeout() -> None:
     client = AsyncMock()
     client.wait_signal = AsyncMock(return_value={"emitted": True, "args": []})
     result = _run(cli.cmd_wait_signal(client, _ns(
-        node_path="/root/Area", signal_name="door_opened", timeout="3",
+        node_path="/root/Area", signal_name="door_opened", timeout="3", trigger=None,
     )))
     client.wait_signal.assert_awaited_once_with("/root/Area", "door_opened", timeout=3.0)
     assert result["emitted"] is True
@@ -356,7 +356,7 @@ def test_cmd_wait_signal_default_timeout_5() -> None:
     client = AsyncMock()
     client.wait_signal = AsyncMock(return_value={"emitted": False})
     _run(cli.cmd_wait_signal(client, _ns(
-        node_path="/root/A", signal_name="sig", timeout=None,
+        node_path="/root/A", signal_name="sig", timeout=None, trigger=None,
     )))
     client.wait_signal.assert_awaited_once_with("/root/A", "sig", timeout=5.0)
 
@@ -365,6 +365,54 @@ def test_exit_from_wait_signal_emitted_is_0() -> None:
     assert cli._exit_from_wait_signal({"emitted": True}) == cli.EXIT_OK
     assert cli._exit_from_wait_signal({"emitted": False}) == cli.EXIT_RPC_ERROR
     assert cli._exit_from_wait_signal({}) == cli.EXIT_RPC_ERROR
+
+
+# ── wait-signal --trigger 编排（#155）──
+
+
+def test_cmd_wait_signal_trigger_invokes_handler_and_attaches_result() -> None:
+    """有 trigger：on_armed 调 trigger_spec.handler(client, trigger_ns)，
+    命中信封带 trigger_result。"""
+    from types import SimpleNamespace
+
+    trigger_spec = SimpleNamespace(
+        handler=AsyncMock(return_value={"tapped": True}))
+    trigger_ns = SimpleNamespace(cmd="tap")
+    ns = _ns(node_path="/root/A", signal_name="ping", timeout=None,
+             trigger="tap interact")
+    ns._trigger_spec = trigger_spec
+    ns._trigger_ns = trigger_ns
+
+    captured: dict = {}
+
+    async def fake_wait_signal(path, signal, timeout, on_armed=None):
+        captured["on_armed"] = on_armed
+        assert on_armed is not None
+        await on_armed()  # 模拟 armed 帧到达
+        return {"emitted": True, "args": [1]}
+
+    client_obj = SimpleNamespace(wait_signal=fake_wait_signal)
+
+    result = _run(cli.cmd_wait_signal(client_obj, ns))
+    trigger_spec.handler.assert_awaited_once_with(client_obj, trigger_ns)
+    assert result == {"emitted": True, "args": [1], "trigger_result": {"tapped": True}}
+
+
+def test_cmd_wait_signal_no_trigger_unchanged() -> None:
+    """无 trigger 时 wait_signal 调用方式不变（无 on_armed 参数）。"""
+    client_obj = AsyncMock()
+    client_obj.wait_signal = AsyncMock(return_value={"emitted": True, "args": []})
+    ns = _ns(node_path="/root/A", signal_name="ping", timeout=None, trigger=None)
+    result = _run(cli.cmd_wait_signal(client_obj, ns))
+    assert result == {"emitted": True, "args": []}
+    client_obj.wait_signal.assert_awaited_once_with("/root/A", "ping", timeout=5.0)
+
+
+def test_fmt_wait_signal_text_with_trigger() -> None:
+    assert cli._fmt_wait_signal_text({"emitted": True, "trigger_result": {"tapped": True}}) == "emitted (trigger ok)"
+    assert cli._fmt_wait_signal_text({"emitted": False, "trigger_result": {"tapped": True}}) == "timeout (trigger ok)"
+    assert cli._fmt_wait_signal_text({"emitted": True}) == "emitted"
+    assert cli._fmt_wait_signal_text({"emitted": False}) == "timeout"
 
 
 def test_cmd_wait_frames_passes_physics_flag() -> None:

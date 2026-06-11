@@ -66,7 +66,7 @@ func _ready() -> void:
 	_wait_api = WaitApi.new()
 	_wait_api.name = "WaitApi"
 	add_child(_wait_api)
-	_wait_api.setup(_low_level_api._read_property)
+	_wait_api.setup(_low_level_api._read_property, _on_async_response, _send_armed)
 	_scene_api = SceneApi.new()
 	_scene_api.name = "SceneApi"
 	add_child(_scene_api)
@@ -231,7 +231,7 @@ func _register_methods() -> void:
 	_methods["wait_game_time"] = {"callable": _wait_api.wait_game_time_async, "kind": "async"}
 	_methods["wait_frames"] = {"callable": _wait_api.wait_frames_async, "kind": "async"}
 	_methods["wait_property"] = {"callable": _wait_api.wait_property_async, "kind": "async"}
-	_methods["wait_signal"] = {"callable": _wait_api.wait_signal_async, "kind": "async"}
+	_methods["wait_signal"] = {"callable": _wait_api.wait_signal_async, "kind": "async_with_id"}
 	_methods["screenshot"] = {"callable": _wrap_screenshot, "kind": "async"}
 	# 输入模拟（同步）
 	_methods["input_action_press"] = {
@@ -355,6 +355,12 @@ func _dispatch_result(id: String, result: Dictionary) -> void:
 
 func _on_async_response(id: String, result: Dictionary) -> void:
 	_dispatch_result(id, result)
+
+
+# armed 中间帧（issue #155）：arm 完成同步点。不动 _in_flight —— 它不是终态响应，
+# 终帧仍走 _on_async_response。client 据此在同连接发 trigger 子命令再等终帧。
+func _send_armed(id: String) -> void:
+	_send_json({"id": id, "armed": true})
 
 
 func _send_response(id: String, result: Dictionary) -> void:

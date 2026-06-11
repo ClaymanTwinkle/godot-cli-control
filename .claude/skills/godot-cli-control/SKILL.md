@@ -294,7 +294,7 @@ Server vs client ranges never overlap, so a single `code` field is unambiguous.
 - `wait-node <path> [timeout]` — block until node appears (exit 0=found, 1=timeout)
 - `wait-time <seconds>` — wait N in-game seconds (matters for `--write-movie`). Server bounds: `0 ≤ seconds ≤ 3600`; passing out-of-range gets `-32602 "seconds must be ..."`. Client short-circuits `seconds <= 0` without an RPC.
 - `wait-prop <path> <prop> <json-value> [--op eq|ne|gt|lt|ge|le] [--timeout N] [--tolerance N]` — block until property satisfies condition (exit 0=matched, 1=timeout). Example: `wait-prop /root/Player position:x 500 --op gt`. Default `--op eq`, `--timeout 5.0`, `--tolerance 0.0`.
-- `wait-signal <path> <signal> [--timeout N]` — block until signal fires (exit 0=emitted, 1=timeout). Result on success: `{"emitted": true, "args": [...]}`. Result on miss: `{"emitted": false, "reason": "timeout"|"node_freed"}` — `"timeout"` means the signal never fired within the deadline; `"node_freed"` means the target node was freed during the wait (use this to distinguish a race from a stale path).
+- `wait-signal <path> <signal> [timeout] [--trigger '<subcommand>']` — block until signal fires (exit 0=emitted, 1=timeout). `timeout` is a positional argument (seconds, default 5). `--trigger` arms the wait then runs the given RPC subcommand on the same connection before waiting for the signal — eliminates the background-shell race (see *Common pitfalls*). Result on success: `{"emitted": true, "args": [...], "trigger_result": {...}}` (trigger_result only present when --trigger used). Result on miss: `{"emitted": false, "reason": "timeout"|"node_freed"}` — `"timeout"` means the signal never fired within the deadline; `"node_freed"` means the target node was freed during the wait (use this to distinguish a race from a stale path). When `--trigger` was used and the trigger executed before the deadline, the miss envelope also includes `trigger_result` — use it to confirm the trigger itself succeeded and distinguish "trigger failed" from "game logic never emitted the signal".
 - `wait-frames <N> [--physics]` — advance exactly N process frames (or physics frames with `--physics`). Result: `{"success": true, "frames": N}`.
 
 **Scene:**
@@ -529,7 +529,8 @@ positional arguments:
                        reason（timeout/node_not_found/property_not_found）+
                        最后读到的值，便于诊断 typo。
     wait-signal        等信号发射（或 timeout），命中带回编码后的信号参数。退出码：0=命中, 1=超时, 2=infra
-                       error。注意：必须先挂等待再触发动作（见 SKILL.md pitfall）。
+                       error。注意：必须先挂等待再触发动作（见 SKILL.md pitfall）。带 --trigger
+                       时同连接 arm→触发→等，无需 shell 后台。
     wait-frames        等 N 个 process 帧（--physics 等物理帧）。确定性帧推进，替代短 sleep。
     scene-reload       重载当前场景并阻塞到新场景 ready（per-test 隔离原语）。失败（无 current scene /
                        超时）报 1008，exit 1。注意：返回后此前缓存的所有节点路径/引用全部失效。
@@ -1429,11 +1430,12 @@ options:
   godot-cli-control wait-prop /root/Player position:x 500 --op gt --timeout 3
 
 $ godot-cli-control wait-signal --help
-usage: godot-cli-control wait-signal [-h] [--json] [--text] [--no-json]
+usage: godot-cli-control wait-signal [-h] [--trigger TRIGGER] [--json]
+                                     [--text] [--no-json]
                                      [--port PORT | --instance INSTANCE]
                                      node_path signal_name [timeout]
 
-等信号发射（或 timeout），命中带回编码后的信号参数。退出码：0=命中, 1=超时, 2=infra error。注意：必须先挂等待再触发动作（见 SKILL.md pitfall）。
+等信号发射（或 timeout），命中带回编码后的信号参数。退出码：0=命中, 1=超时, 2=infra error。注意：必须先挂等待再触发动作（见 SKILL.md pitfall）。带 --trigger 时同连接 arm→触发→等，无需 shell 后台。
 
 positional arguments:
   node_path            绝对节点路径
@@ -1442,6 +1444,8 @@ positional arguments:
 
 options:
   -h, --help           show this help message and exit
+  --trigger TRIGGER    arm 后在同一连接内执行的一条 RPC 子命令，如 --trigger 'tap interact'；多步用
+                       combo。消除『先后台挂再触发』的竞态。
   --json               输出 JSON 信封（默认）
   --text               输出旧的人类可读字符串（不再加信封；errors 走 stderr）
   --no-json            --text 别名
@@ -1677,7 +1681,7 @@ Errors raise `RpcError(code, message)` (a `RuntimeError` subclass) that preserve
 | `await client.wait_for_node(path, timeout)` | `wait-node <path> [timeout]` |
 | `await client.wait_game_time(seconds)` | `wait-time <seconds>` |
 | `await client.wait_property(path, prop, value, op, timeout, tolerance)` | `wait-prop <path> <prop> <json-value> [--op ...] [--timeout N] [--tolerance N]` |
-| `await client.wait_signal(path, signal, timeout)` | `wait-signal <path> <signal> [--timeout N]` |
+| `await client.wait_signal(path, signal, timeout, on_armed=...)` | `wait-signal <path> <signal> [timeout] [--trigger '<subcommand>']` |
 | `await client.wait_frames(frames, physics)` | `wait-frames <N> [--physics]` |
 | `await client.action_press(action)` | `press <action>` |
 | `await client.action_release(action)` | `release <action>` |
@@ -1799,7 +1803,7 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 - **`screenshot` used to fail with `1006` on the first call** — fixed. GameBridge now waits for the viewport's first frame before opening the port, so `connect succeeded` implies `viewport has rendered ≥ once`. The magic `bridge.wait(1.5)` before the first screenshot in older example scripts is no longer needed.
 - **`screenshot` of a large / hiDPI window used to fail with `-1001 "Connection closed by server"`** — fixed (#149). The base64 payload used to exceed the WebSocket client's 1 MB message limit (close code 1009), which surfaced as a *connection* error only on complex/large frames — looking like random flakiness. The daemon now writes the PNG to disk directly, so no image bytes cross the socket at any size. Workarounds like shrinking the window to 1280×720 before capturing are obsolete — remove them.
 - **Coordinate-level mouse: `click-at` / `mouse-move` / `drag` hit position-dependent widgets that `click` / `InputEventAction` can't.** `press`/`tap`/`hold`/`combo` inject `InputEventAction` (no screen position); `click <path>` emits straight to one already-known node. Controls that react to cursor position (a `TextureButton` with a custom shape, `TouchScreenButton`, world-space `Area2D` picking) need a real positioned mouse event — use `click-at <x> <y>` / `mouse-move <x> <y>` (or `--node <path>` for a node's screen center), or `drag <x1> <y1> <x2> <y2>` for a press→move→release sequence (slider thumbs, drag-and-drop, swipes; `--from-node` / `--to-node` for node centers). Coordinates are **viewport physical pixels** (same system as `screenshot --node`). These inject via `Viewport.push_input`, so `_input` / `_gui_input` / physics picking see correct `position` / `relative` / `button_mask` — **but the global `Input` singleton polling (`get_global_mouse_position`, `is_mouse_button_pressed`) is NOT updated; read mouse state from the event, not by polling.** `Area2D` picking additionally requires the project's *physics object picking* to be enabled. `drag` runs over game-time (scaled by `time_scale`) and only one may be in flight at once (`1014` otherwise); `release-all` cancels an in-flight drag and emits the pending mouse-up so nothing stays stuck "held".
-- **`wait-signal` must be armed before the action that fires it — each CLI call opens a new connection.** Every invocation of `godot-cli-control` is a fresh process that connects, makes the request, and disconnects. If you call `wait-signal` after the signal has already fired, you'll always timeout. Shell pattern: `godot-cli-control wait-signal /root/A my_signal & godot-cli-control tap jump; wait` — background the wait first, then trigger the action. If you need both on a single connection, use a `run` script (`def run(bridge): ...`) with `client.wait_signal(...)`.
+- **`wait-signal` must be armed before the action that fires it.** Every `godot-cli-control` invocation is a fresh process — if you fire the signal before `wait-signal` connects, you'll always timeout. **Preferred (issue #155):** use `--trigger` to arm and fire on the *same* connection: `godot-cli-control wait-signal /root/Area door_opened 3 --trigger 'tap interact'` — the server connects the signal handler first (armed), then your trigger runs, then the result returns. No race, no shell gymnastics. The result envelope includes `trigger_result` with the trigger subcommand's return value (only present when the trigger actually ran). **When using `--trigger`, `timeout` includes the trigger's execution time** — slow triggers like `combo` or `drag` eat into the budget; increase `timeout` accordingly. **Fallback (if you can't use --trigger):** `godot-cli-control wait-signal /root/A my_signal & godot-cli-control tap jump; wait` — background the wait *before* triggering. `--trigger` only accepts a single RPC subcommand; for multi-step triggers use `combo` as the `--trigger` subcommand (e.g. `--trigger 'combo --steps-json ...'`).
 - **Replace magic `wait-time` sleeps with `wait-prop` or `wait-frames`.** Fixed `wait-time 0.3` guesses are fragile — they're too long when the game is fast, too short under load. Prefer: `wait-prop /root/Player on_floor true` (wait for state) or `wait-frames 4` (wait for a specific number of frames to render). These are more reliable and often 2-10× faster.
 - **`get` on a compound Variant returns an array + type — you can round-trip it straight into `set`.** `get /root/Player position` returns `{"value": [-2480.0, 1400.0], "type": "Vector2"}`. That `value` array is the exact format `set` accepts: `set /root/Player position '[-2480.0, 1400.0]'`. No conversion needed.
 - **Arrays/Dicts nested inside compound Variants encode as arrays but carry no `type` field — use a sub-path to read a typed leaf.** For example, a `Dictionary` property that happens to contain a `Vector3` will give you an untyped array. If you need the type, use `get <node> mydict:somekey` to read the leaf directly and get its type.
@@ -1819,4 +1823,4 @@ pytest_plugins = ["godot_cli_control.pytest_plugin"]
 
 ---
 
-Generated from godot-cli-control v0.2.19.dev15+g28972ca1d.d20260607. Re-run `godot-cli-control init --skills-only` to refresh.
+Generated from godot-cli-control v0.3.1.dev68+gac26290b2.d20260611. Re-run `godot-cli-control init --skills-only` to refresh.
