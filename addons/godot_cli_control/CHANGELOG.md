@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-12
+
 ### Added
 - **`wait-signal --trigger`：同一连接 arm→触发→等信号，消灭 shell 后台三步模板与竞态（#155）**：`wait-signal <path> <signal> [timeout] --trigger '<subcommand>'` 在服务端 connect 信号处理器后先发 `armed` 中间帧，客户端收到后在同连接执行 trigger 子命令，再等信号终帧——arm 与触发之间零竞态窗口。命中信封新增 `trigger_result` 字段（trigger 子命令的返回值）。`--trigger` 接受任意 RPC 子命令（多步用 `combo`）；非 RPC 命令（`daemon`/`run`/`init`）及嵌套 `wait-*` 在 preflight 阶段（-1003/64）拒绝。需新 addon 能力（`arm_ack` / `armed` 帧协议）→ 老项目跑一次 `init` 同步。
 - **坐标级鼠标注入 `click-at` / `mouse-move`**（#154）：`godot-cli-control click-at <x> <y> [--button left|right|middle] [--double]` 注入 down→up 鼠标点击，`mouse-move <x> <y>` 注入带 `relative` 的移动事件；两者都支持 `--node <path>` 取节点屏幕中心点（复用 `screenshot --node` 的坐标变换，hiDPI / stretch 窗口自洽）。坐标用 **viewport 物理像素**。区别于 `click`（节点级 UI 点击、需预知目标）：经 `Viewport.push_input` 走真实事件管线，能命中依赖光标位置的 `_gui_input` 控件（自定义 shape 的 `TextureButton`、`TouchScreenButton`、世界坐标 `Area2D` 拾取）。坐标与 `--node` 二选一、连接前 preflight 校验（-1003/64）。配套 `GameClient.click_at()/mouse_move()` 与 `GameBridge.click_at()/mouse_move()`。注意：事件的 `position`/`relative`/`button_mask` 对事件回调有效，但**不**更新 `Input` 单例的全局鼠标轮询（`get_global_mouse_position` / `is_mouse_button_pressed`）——读鼠标态请从事件参数读。需要新 RPC `click_at`/`mouse_move`——老 addon 项目跑一次 `init` 同步。
