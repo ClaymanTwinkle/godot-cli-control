@@ -33,3 +33,6 @@ Thumbs.db
 
 # CLI control runtime
 .cli_control/
+
+# Claude Code 隔离 worktree（harness 创建的临时工作目录，不入库；.claude/skills 渲染版 SKILL.md 仍入库）
+.claude/worktrees/
