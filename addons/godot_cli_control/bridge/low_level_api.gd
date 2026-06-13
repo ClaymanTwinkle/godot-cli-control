@@ -100,6 +100,22 @@ const _ARRAY_PASSTHROUGH_SAFE_TYPES: Array[int] = [
 	TYPE_PACKED_VECTOR4_ARRAY,
 ]
 
+# #167：call 实参传 JSON Array 时，「callv 能正常透传、不会 Cannot-convert 静默失败」的
+# 声明参数类型白名单。命中 = 直接把原 Array 喂 callv；不命中且非可 coerce 的复合 Variant
+# = fail-loud（见 _coerce_call_arg）。入选：untyped(Variant) 形参、Array 形参、Packed*Array
+# （Godot 允许 Array→Packed* 的 call-arg 转换）。
+# **刻意不含** Dictionary / 标量 / Object —— JSON Array → 这些类型 callv 会 "Cannot convert
+# argument" 喷错并返回 null（旧版假 ok:true 的根因），必须拦。注意与 _ARRAY_PASSTHROUGH_SAFE_TYPES
+# 语义不同：那张表是 property set 侧「Object.set 不 silent-corrupt」，这张是 call 侧
+# 「callv 不静默失败」——两套失败模式不同，故不能共用同一张表。
+const _CALL_ARG_ARRAY_OK_TYPES: Array[int] = [
+	TYPE_NIL, TYPE_ARRAY,
+	TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY,
+	TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_STRING_ARRAY,
+	TYPE_PACKED_VECTOR2_ARRAY, TYPE_PACKED_VECTOR3_ARRAY, TYPE_PACKED_COLOR_ARRAY,
+	TYPE_PACKED_VECTOR4_ARRAY,
+]
+
 
 func _ready() -> void:
 	_property_blacklist = _merge_extra(_property_blacklist, SETTING_PROPERTY_BLACKLIST_EXTRA)
@@ -285,14 +301,39 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 	return {"success": true}
 
 
-## 把 JSON Array 按声明类型转成 Variant：Vector2/2i/3/3i/4/4i / Rect2/2i /
-## Color / Plane / Quaternion / AABB / Basis / Transform2D/3D / Projection。
+## 按属性声明类型把 JSON Array coerce 成对应 Variant（property set 侧入口）。
 ## 节点没声明该属性：返 {} 表示"沿用原 value"。
-## 声明类型在 match 之外且 ∉ _ARRAY_PASSTHROUGH_SAFE_TYPES：返 {"error": ...} fail-loud，
-##   防御未来 Godot 加新 compound Variant 时 silent-corrupt 回归（详见 fallback 注释）。
-## 声明类型在 _ARRAY_PASSTHROUGH_SAFE_TYPES（基本类型 / 集合 / Packed*）：返 {} 沿用原 value。
-## 转换失败（长度不对 / 元素非数字）：返 {"error": ...} 让调用方 fail-loud。
-## 转换成功：返 {"value": <coerced>}。
+## 声明类型是复合 Variant：委托 _coerce_compound_array（成功 {"value":...} / 长度·元素错 {"error":...}）。
+## 声明类型非复合：在 _ARRAY_PASSTHROUGH_SAFE_TYPES 内 → 返 {} 沿用原 value；否则 fail-loud
+##   （防御未来 Godot 加新 compound Variant 时 silent-corrupt 回归，详见下方 fallback 注释）。
+func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) -> Dictionary:
+	var declared_type: int = -1
+	for prop_info: Dictionary in node.get_property_list():
+		if prop_info["name"] == property:
+			declared_type = int(prop_info["type"])
+			break
+	if declared_type == -1:
+		return {}  # 动态 / 未声明属性，沿用原 value
+	var coerced: Dictionary = _coerce_compound_array(declared_type, arr, property)
+	if not coerced.is_empty():
+		return coerced  # 复合类型命中：{"value": ...} 或 {"error": ...}
+	# 防御性 fallback：声明类型不是复合 Variant 也不在已知 passthrough-safe 名单里时，主动
+	# fail-loud。目的是防止未来 Godot 加新 compound Variant（且 Object.set 同样 silent-corrupt-
+	# on-Array）时重蹈 #52。passthrough-safe = 基本类型 / Object / 集合 / Packed*Array —— 它们
+	# 要么 Godot Object.set 自己拒收 Array（写入失败但不 silent），要么本就接受 Array 输入。
+	if declared_type in _ARRAY_PASSTHROUGH_SAFE_TYPES:
+		return {}
+	return _err(CliControlErrorCodes.INVALID_PARAMS,
+		"value type mismatch for '%s': Array coercion not implemented for declared type %d. If this is a known-safe passthrough, add it to _ARRAY_PASSTHROUGH_SAFE_TYPES; otherwise add a coerce branch."
+			% [property, declared_type])
+
+
+## 把 JSON Array 按「复合 Variant 声明类型」转成对应 Variant：Vector2/2i/3/3i/4/4i /
+## Rect2/2i / Color / Plane / Quaternion / AABB / Basis / Transform2D/3D / Projection。
+## 命中复合类型 → {"value": <coerced>}（成功）或 {"error": ...}（长度/元素不对，fail-loud）；
+## 声明类型不是复合 Variant → 返 {}，由调用方决定 passthrough 还是 fail-loud
+##   （property set 侧 _ARRAY_PASSTHROUGH_SAFE_TYPES；call 实参侧 _CALL_ARG_ARRAY_OK_TYPES）。
+## `label` 仅用于错误信息（property set 传属性名，call 实参传 "arg N of <method>"）。
 ## *i 变体（Vector2i / Vector3i / Vector4i / Rect2i）允许 float 输入并截断到 int，
 ## 与 GDScript `Vector2i(1.7, 2.3) → (1, 2)` 构造器行为一致。
 ##
@@ -303,63 +344,56 @@ func handle_set_property(params: Dictionary) -> Dictionary:
 ##   - Transform3D : [basis 9 axis-vector, origin.xyz]                                   (12 floats)
 ##   - Projection  : [xaxis.xyzw, yaxis.xyzw, zaxis.xyzw, waxis.xyzw]                    (16 floats)
 ## Quaternion / Plane 的 normal 不会自动归一化 —— 调用方传非单位向量后果自负。
-func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) -> Dictionary:
-	var declared_type: int = -1
-	for prop_info: Dictionary in node.get_property_list():
-		if prop_info["name"] == property:
-			declared_type = int(prop_info["type"])
-			break
-	if declared_type == -1:
-		return {}  # 动态 / 未声明属性，沿用原 value
+func _coerce_compound_array(declared_type: int, arr: Array, label: String) -> Dictionary:
 	match declared_type:
 		TYPE_VECTOR2:
-			return _coerce_numeric_array(arr, [2], "Vector2", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [2], "Vector2", label, func(v: Array) -> Variant:
 				return Vector2(v[0], v[1]))
 		TYPE_VECTOR2I:
-			return _coerce_numeric_array(arr, [2], "Vector2i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [2], "Vector2i", label, func(v: Array) -> Variant:
 				return Vector2i(int(v[0]), int(v[1])))
 		TYPE_VECTOR3:
-			return _coerce_numeric_array(arr, [3], "Vector3", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [3], "Vector3", label, func(v: Array) -> Variant:
 				return Vector3(v[0], v[1], v[2]))
 		TYPE_VECTOR3I:
-			return _coerce_numeric_array(arr, [3], "Vector3i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [3], "Vector3i", label, func(v: Array) -> Variant:
 				return Vector3i(int(v[0]), int(v[1]), int(v[2])))
 		TYPE_VECTOR4:
-			return _coerce_numeric_array(arr, [4], "Vector4", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Vector4", label, func(v: Array) -> Variant:
 				return Vector4(v[0], v[1], v[2], v[3]))
 		TYPE_VECTOR4I:
-			return _coerce_numeric_array(arr, [4], "Vector4i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Vector4i", label, func(v: Array) -> Variant:
 				return Vector4i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
 		TYPE_RECT2:
-			return _coerce_numeric_array(arr, [4], "Rect2", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Rect2", label, func(v: Array) -> Variant:
 				return Rect2(v[0], v[1], v[2], v[3]))
 		TYPE_RECT2I:
-			return _coerce_numeric_array(arr, [4], "Rect2i", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Rect2i", label, func(v: Array) -> Variant:
 				return Rect2i(int(v[0]), int(v[1]), int(v[2]), int(v[3])))
 		TYPE_COLOR:
 			# Color 接受 RGB（3）或 RGBA（4）。3-element 时 a 默认 1。
-			return _coerce_numeric_array(arr, [3, 4], "Color", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [3, 4], "Color", label, func(v: Array) -> Variant:
 				if v.size() == 3:
 					return Color(v[0], v[1], v[2])
 				return Color(v[0], v[1], v[2], v[3]))
 		TYPE_PLANE:
 			# Plane(normal_x, normal_y, normal_z, d) —— 平面方程系数。
 			# 注意：normal 不会自动归一化；非单位 normal 会让距离 / 投影计算失真。
-			return _coerce_numeric_array(arr, [4], "Plane", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Plane", label, func(v: Array) -> Variant:
 				return Plane(v[0], v[1], v[2], v[3]))
 		TYPE_QUATERNION:
 			# Quaternion(x, y, z, w) —— 注意 w 在末位，与 Godot ctor 一致。
 			# 注意：不会自动归一化；非单位四元数会让旋转 / slerp 失真。
-			return _coerce_numeric_array(arr, [4], "Quaternion", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [4], "Quaternion", label, func(v: Array) -> Variant:
 				return Quaternion(v[0], v[1], v[2], v[3]))
 		TYPE_AABB:
 			# AABB(position, size) —— 6 floats: [pos.xyz, size.xyz]
-			return _coerce_numeric_array(arr, [6], "AABB", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [6], "AABB", label, func(v: Array) -> Variant:
 				return AABB(Vector3(v[0], v[1], v[2]), Vector3(v[3], v[4], v[5])))
 		TYPE_BASIS:
 			# Basis(x_axis, y_axis, z_axis) —— 9 floats axis-vector 顺序：
 			# v[0..2]=x_axis、v[3..5]=y_axis、v[6..8]=z_axis（每 3 个 = 一个 Basis 轴）。
-			return _coerce_numeric_array(arr, [9], "Basis", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [9], "Basis", label, func(v: Array) -> Variant:
 				return Basis(
 					Vector3(v[0], v[1], v[2]),
 					Vector3(v[3], v[4], v[5]),
@@ -367,14 +401,14 @@ func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) ->
 		TYPE_TRANSFORM2D:
 			# Transform2D(x_axis, y_axis, origin) —— 6 floats axis-vector 顺序：
 			# v[0..1]=x_axis、v[2..3]=y_axis、v[4..5]=origin。
-			return _coerce_numeric_array(arr, [6], "Transform2D", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [6], "Transform2D", label, func(v: Array) -> Variant:
 				return Transform2D(
 					Vector2(v[0], v[1]),
 					Vector2(v[2], v[3]),
 					Vector2(v[4], v[5])))
 		TYPE_TRANSFORM3D:
 			# Transform3D(basis, origin) —— 12 floats: [basis 9 axis-vector 顺序, origin 3]
-			return _coerce_numeric_array(arr, [12], "Transform3D", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [12], "Transform3D", label, func(v: Array) -> Variant:
 				return Transform3D(
 					Basis(
 						Vector3(v[0], v[1], v[2]),
@@ -383,35 +417,28 @@ func _coerce_array_to_declared_type(node: Node, property: String, arr: Array) ->
 					Vector3(v[9], v[10], v[11])))
 		TYPE_PROJECTION:
 			# Projection(x, y, z, w) —— 16 floats axis-vector 顺序：每 4 个 = 一个 Vector4 轴。
-			return _coerce_numeric_array(arr, [16], "Projection", property, func(v: Array) -> Variant:
+			return _coerce_numeric_array(arr, [16], "Projection", label, func(v: Array) -> Variant:
 				return Projection(
 					Vector4(v[0], v[1], v[2], v[3]),
 					Vector4(v[4], v[5], v[6], v[7]),
 					Vector4(v[8], v[9], v[10], v[11]),
 					Vector4(v[12], v[13], v[14], v[15])))
-	# 防御性 fallback：声明类型不是上面的"复合 Variant"也不在已知 passthrough-safe
-	# 名单里时，主动 fail-loud。目的是防止未来 Godot 加新 compound Variant（且
-	# Object.set 同样 silent-corrupt-on-Array）时重蹈 #52。
-	# passthrough-safe = 基本类型 / Object / 集合 / Packed*Array —— 它们要么 Godot
-	# Object.set 自己拒收 Array（写入失败但不 silent），要么本就接受 Array 输入。
-	if declared_type in _ARRAY_PASSTHROUGH_SAFE_TYPES:
-		return {}
-	return _err(CliControlErrorCodes.INVALID_PARAMS,
-		"value type mismatch for '%s': Array coercion not implemented for declared type %d. If this is a known-safe passthrough, add it to _ARRAY_PASSTHROUGH_SAFE_TYPES; otherwise add a coerce branch."
-			% [property, declared_type])
+	# 声明类型不是上面任一复合 Variant → 返 {}，由调用方决定 passthrough / fail-loud
+	# （property set 侧走 _ARRAY_PASSTHROUGH_SAFE_TYPES；call 实参侧走 _CALL_ARG_ARRAY_OK_TYPES）。
+	return {}
 
 
 ## 校验 Array 长度 / 元素全为数字，OK 则调 ctor 构造目标 Variant。
 ## `expected_lens` 是允许长度列表（Color 接 [3, 4]，其他类型固定一个长度）。
-func _coerce_numeric_array(arr: Array, expected_lens: Array[int], type_name: String, property: String, ctor: Callable) -> Dictionary:
+func _coerce_numeric_array(arr: Array, expected_lens: Array[int], type_name: String, label: String, ctor: Callable) -> Dictionary:
 	if not arr.size() in expected_lens:
 		return _err(CliControlErrorCodes.INVALID_PARAMS,
 			"value type mismatch for '%s': expected %s as numeric array of length %s, got length %d"
-				% [property, type_name, _format_length_list(expected_lens), arr.size()])
+				% [label, type_name, _format_length_list(expected_lens), arr.size()])
 	if not _is_all_numeric(arr):
 		return _err(CliControlErrorCodes.INVALID_PARAMS,
 			"value type mismatch for '%s': expected %s as numeric array, got non-numeric element"
-				% [property, type_name])
+				% [label, type_name])
 	return {"value": ctor.call(arr)}
 
 
@@ -441,9 +468,80 @@ func handle_call_method(params: Dictionary) -> Dictionary:
 	if not node.has_method(method):
 		return _err(CliControlErrorCodes.METHOD_NOT_FOUND, "Method not found: %s" % method)
 	var args: Array = params.get("args", []) as Array
-	# 注意：GDScript 没有 try-catch，callv 参数不匹配会产生引擎错误而非可捕获异常
-	var result: Variant = node.callv(method, args)
+	# #167：GDScript 没 try-catch，callv 参数不匹配只会喷引擎错误（"Cannot convert
+	# argument ..."）并返回 null，RPC 仍假 ok:true / result:null —— 调用方以为方法生效
+	# 实则没跑（#164 的 live WANDER 演示就栽在这）。连 daemon 前先按方法声明签名
+	# （get_method_list）做 arg 数量校验 + Array→复合 Variant coerce + 类型守卫，对不上
+	# 即 fail-loud，绝不放假阳性过去。
+	var prepared: Dictionary = _prepare_call_args(node, method, args)
+	if prepared.has("error"):
+		return prepared
+	var result: Variant = node.callv(method, prepared["args"] as Array)
 	return {"result": result}
+
+
+## 按方法声明签名校验 + coerce 实参（#167）。返回 {"args": <coerced Array>}（可直接喂 callv）
+## 或 {"error": ...}（fail-loud）。拿不到签名（has_method 真但 get_method_list 无此条目——
+## 极少数引擎内建）→ 原样透传保旧行为（无签名可校验，不强行拦）。
+func _prepare_call_args(node: Node, method: String, args: Array) -> Dictionary:
+	var method_info: Dictionary = _find_method_info(node, method)
+	if method_info.is_empty():
+		return {"args": args}
+	var declared_args: Array = method_info.get("args", []) as Array
+	var default_args: Array = method_info.get("default_args", []) as Array
+	var is_vararg: bool = (int(method_info.get("flags", 0)) & METHOD_FLAG_VARARG) != 0
+	# default_args 是尾部可选参数的默认值 → 必填数 = 声明数 − 默认值数。
+	var required: int = declared_args.size() - default_args.size()
+	if args.size() < required:
+		return _err(CliControlErrorCodes.INVALID_PARAMS,
+			"argument count mismatch for '%s': expected at least %d, got %d"
+				% [method, required, args.size()])
+	# vararg 方法（rpc / 内建变参）尾部可接任意多实参 → 只校验下界，不卡上界。
+	if not is_vararg and args.size() > declared_args.size():
+		return _err(CliControlErrorCodes.INVALID_PARAMS,
+			"argument count mismatch for '%s': expected at most %d, got %d"
+				% [method, declared_args.size(), args.size()])
+	var coerced_args: Array = []
+	for i in range(args.size()):
+		var arg: Variant = args[i]
+		# 超出声明参数个数的尾巴是 vararg 透传段，没有声明类型，原样喂 callv。
+		if i >= declared_args.size():
+			coerced_args.append(arg)
+			continue
+		var declared_type: int = int((declared_args[i] as Dictionary).get("type", TYPE_NIL))
+		var coerced: Dictionary = _coerce_call_arg(declared_type, arg, "arg %d of %s" % [i, method])
+		if coerced.has("error"):
+			return coerced
+		if coerced.has("value"):
+			coerced_args.append(coerced["value"])
+		else:
+			coerced_args.append(arg)
+	return {"args": coerced_args}
+
+
+func _find_method_info(node: Node, method: String) -> Dictionary:
+	for mi: Dictionary in node.get_method_list():
+		if str(mi.get("name", "")) == method:
+			return mi
+	return {}
+
+
+## 单个 call 实参的 Array→复合 Variant coerce + 类型守卫（#167）。
+## 非 Array 实参：返 {} 透传（callv 自行处理标量 / int↔float 宽化）。
+## Array 实参命中复合声明类型：返复合 coerce 结果（{"value":...} 或长度·元素错的 {"error":...}）。
+## Array 实参 + 声明类型接受 Array（untyped / Array / Packed*，见 _CALL_ARG_ARRAY_OK_TYPES）：返 {} 透传。
+## Array 实参 + 标量 / Object / Dictionary 等：callv 必 "Cannot convert" 静默失败 → fail-loud。
+func _coerce_call_arg(declared_type: int, arg: Variant, label: String) -> Dictionary:
+	if not (arg is Array):
+		return {}
+	var coerced: Dictionary = _coerce_compound_array(declared_type, arg, label)
+	if not coerced.is_empty():
+		return coerced
+	if declared_type in _CALL_ARG_ARRAY_OK_TYPES:
+		return {}
+	return _err(CliControlErrorCodes.INVALID_PARAMS,
+		"value type mismatch for '%s': cannot convert JSON Array to declared parameter type %d (a non-Array value is required)"
+			% [label, declared_type])
 
 
 ## emit-signal 逃生门（#157 item4）：默认禁（1015），daemon 带 --allow-emit-signal 才放行。

@@ -65,6 +65,27 @@ class _SubPathLeafFixture extends Node:
 	var open_dict: Dictionary = {"foo": 7}
 
 
+# issue #167：handle_call_method 的 typed-arg coerce / fail-loud 用 fixture。
+# 各方法的形参带类型声明，get_method_list() 会汇报对应 TYPE_*，从而走 _coerce_call_arg。
+class _CallFixture extends Node:
+	var last_rect: Rect2 = Rect2()
+	var rect_called: bool = false
+	# 复合 Variant 形参：Array → Rect2 应被 coerce。命名避开方法黑名单（≠ "set"）。
+	func set_wander_rect(rect: Rect2) -> String:
+		last_rect = rect
+		rect_called = true
+		return "ok"
+	# 标量形参：Array 实参无法转换 → fail-loud。
+	func takes_int(n: int) -> int:
+		return n * 2
+	# 带默认值的可选尾参：required=1，给 1 个实参应放行（b 取默认 5）。
+	func takes_two(a: int, b: int = 5) -> int:
+		return a + b
+	# untyped(Variant) 形参：Array 实参应原样透传，不被误拦。
+	func takes_any(v):
+		return v
+
+
 var _api: Node
 var _target: Node
 
@@ -688,6 +709,137 @@ func test_call_method_nonexistent_returns_1003() -> void:
 	})
 	assert_has(result, "error")
 	assert_eq(int(result.error.code), 1003)
+
+
+# ── handle_call_method typed-arg coerce / fail-loud（issue #167） ──────
+
+func test_call_method_coerces_array_to_rect2() -> void:
+	# 核心修复：typed Rect2 形参收到 JSON Array → coerce 成 Rect2 并真正调用，
+	# 不再静默 ok:true/result:null（#164 live WANDER 演示的假阳性）。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "WanderTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "set_wander_rect",
+		"args": [[1, 2, 3, 4]],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(str(result.get("result")), "ok")
+	assert_true(fixture.rect_called)
+	assert_eq(fixture.last_rect, Rect2(1, 2, 3, 4))
+
+
+func test_call_method_rect2_wrong_length_fails_loud() -> void:
+	# Rect2 期望 4 个元素，给 3 → -32602，且方法**没**被调用（不能假成功）。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "BadLenWanderTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "set_wander_rect",
+		"args": [[1, 2, 3]],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Rect2")
+	assert_false(fixture.rect_called)
+
+
+func test_call_method_rect2_non_numeric_element_fails_loud() -> void:
+	# Rect2 元素须全数字，含字符串 → -32602，方法不被调用。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "BadElemWanderTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "set_wander_rect",
+		"args": [[1, 2, "x", 4]],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "Rect2")
+	assert_false(fixture.rect_called)
+
+
+func test_call_method_too_few_args_fails_loud() -> void:
+	# takes_int 必填 1 个，给 0 → -32602（连 callv 都不发，避免引擎错误 + 假 ok:true）。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "TooFewTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_int",
+		"args": [],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "argument count")
+
+
+func test_call_method_too_many_args_fails_loud() -> void:
+	# takes_int 声明 1 个（非 vararg），给 2 → -32602。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "TooManyTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_int",
+		"args": [1, 2],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "argument count")
+
+
+func test_call_method_optional_arg_omitted_ok() -> void:
+	# takes_two(a, b=5)：只给 a=3 应放行，b 取默认 → 返 8。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "OptionalArgTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_two",
+		"args": [3],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(int(result.get("result")), 8)
+
+
+func test_call_method_array_to_scalar_param_fails_loud() -> void:
+	# 标量 int 形参收到 Array → callv 会 "Cannot convert" 静默失败，故 pre-empt 成 -32602。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "ArrayToScalarTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_int",
+		"args": [[1, 2]],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+
+
+func test_call_method_untyped_param_passes_array_through() -> void:
+	# 防过度拦截：untyped(Variant) 形参的 Array 实参应原样透传，方法收到该数组。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "UntypedArgTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_any",
+		"args": [[1, 2, 3]],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(result.get("result"), [1, 2, 3])
+
+
+func test_prepare_call_args_vararg_not_count_rejected() -> void:
+	# vararg 方法（Node.rpc 是变参）尾部可接任意多实参，数量校验不能误拦。
+	# 直接打 _prepare_call_args（不实际 callv，避免 rpc 副作用），断言无 error、实参保留。
+	var prepared: Dictionary = _api._prepare_call_args(_target, "rpc", ["some_method", 1, 2])
+	assert_does_not_have(prepared, "error")
+	assert_eq((prepared.get("args") as Array).size(), 3)
 
 
 # ── _build_tree 节点总数上限（防 outbound buffer 超限） ───────────────
