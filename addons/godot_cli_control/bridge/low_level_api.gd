@@ -116,6 +116,13 @@ const _CALL_ARG_ARRAY_OK_TYPES: Array[int] = [
 	TYPE_PACKED_VECTOR4_ARRAY,
 ]
 
+# #183：标量 call 实参「callv 能隐式转换、不静默失败」的互转组，镜像 Godot
+# Variant::can_convert_strict 的数值组 / 字符串组（见 _call_arg_convertible）。组内
+# 任意互转 callv 接受（数值宽化 / 字符串类互通）；跨组（如 String→int、数字→StringName）
+# callv 必 "Cannot convert" 喷错返 null —— 旧版假 ok:true 的标量侧根因，必须拦。
+const _NUMERIC_ARG_TYPES: Array[int] = [TYPE_BOOL, TYPE_INT, TYPE_FLOAT]
+const _STRINGY_ARG_TYPES: Array[int] = [TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH]
+
 
 func _ready() -> void:
 	_property_blacklist = _merge_extra(_property_blacklist, SETTING_PROPERTY_BLACKLIST_EXTRA)
@@ -526,14 +533,21 @@ func _find_method_info(node: Node, method: String) -> Dictionary:
 	return {}
 
 
-## 单个 call 实参的 Array→复合 Variant coerce + 类型守卫（#167）。
-## 非 Array 实参：返 {} 透传（callv 自行处理标量 / int↔float 宽化）。
+## 单个 call 实参的类型守卫 + Array→复合 Variant coerce（#167 / #183）。
+## 非 Array 实参（标量 / Dictionary / Object）：按 _call_arg_convertible 判定——可隐式转换
+## 则返 {} 透传，否则 fail-loud（#183，String→int / 数字→StringName 等标量错类型的补集）。
 ## Array 实参命中复合声明类型：返复合 coerce 结果（{"value":...} 或长度·元素错的 {"error":...}）。
 ## Array 实参 + 声明类型接受 Array（untyped / Array / Packed*，见 _CALL_ARG_ARRAY_OK_TYPES）：返 {} 透传。
 ## Array 实参 + 标量 / Object / Dictionary 等：callv 必 "Cannot convert" 静默失败 → fail-loud。
 func _coerce_call_arg(declared_type: int, arg: Variant, label: String) -> Dictionary:
 	if not (arg is Array):
-		return {}
+		# #183：callv 对类型不匹配的标量实参只喷 "Cannot convert argument" 并返回 null，
+		# RPC 仍假 ok:true / result:null（#167 只关了 Array 侧）。可隐式转换则透传，否则拦。
+		if _call_arg_convertible(typeof(arg), declared_type):
+			return {}
+		return _err(CliControlErrorCodes.INVALID_PARAMS,
+			"value type mismatch for '%s': cannot convert %s to declared parameter type %s"
+				% [label, type_string(typeof(arg)), type_string(declared_type)])
 	var coerced: Dictionary = _coerce_compound_array(declared_type, arg, label)
 	if not coerced.is_empty():
 		return coerced
@@ -542,6 +556,27 @@ func _coerce_call_arg(declared_type: int, arg: Variant, label: String) -> Dictio
 	return _err(CliControlErrorCodes.INVALID_PARAMS,
 		"value type mismatch for '%s': cannot convert JSON Array to declared parameter type %d (a non-Array value is required)"
 			% [label, declared_type])
+
+
+## 标量实参 → 声明形参类型的可转换性判定（#183），镜像 Godot Variant::can_convert_strict
+## 中与 JSON 标量实参相关的子集：true = callv 能隐式转换（透传安全），false = callv 必
+## "Cannot convert" 静默失败（须 fail-loud）。白名单刻意 ⊆ can_convert_strict（在 JSON 实参
+## 场景下），宁可漏拦不误杀合法调用。
+## 范围边界：JSON 实参只产 Nil / bool / 数字 / String / Array / Dictionary。null(TYPE_NIL)
+## 实参的可达性随形参 nullable 而异（Object 形参 / 有默认值时 callv 接受），精确判定需更多
+## 签名信息，故保守透传、不在本 issue 新增对 null 的拦截（与改动前一致，零回归）。
+func _call_arg_convertible(from_type: int, declared_type: int) -> bool:
+	if declared_type == TYPE_NIL:
+		return true  # untyped(Variant) 形参接受任何实参
+	if from_type == declared_type:
+		return true
+	if from_type == TYPE_NIL:
+		return true  # 见上：null 实参保守透传，不新增拦截
+	if from_type in _NUMERIC_ARG_TYPES and declared_type in _NUMERIC_ARG_TYPES:
+		return true  # 数值组 bool/int/float 互转（callv 宽化）
+	if from_type in _STRINGY_ARG_TYPES and declared_type in _STRINGY_ARG_TYPES:
+		return true  # 字符串组 String/StringName/NodePath 互转
+	return false
 
 
 ## emit-signal 逃生门（#157 item4）：默认禁（1015），daemon 带 --allow-emit-signal 才放行。
