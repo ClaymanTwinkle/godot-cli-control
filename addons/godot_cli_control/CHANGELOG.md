@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-14
+
 ### Fixed
 - **`call` 对错类型「标量」实参不再假成功（#167 的标量侧补集）**：#167 只关了 `call` 的 **JSON Array → 复合 Variant** 侧假成功；错类型的标量实参（`set_name 42` 数字→StringName、`set_z_index '"abc"'` String→int 等）此前仍直接喂 `callv`，引擎喷 `Cannot convert argument` 返回 `null`，RPC 却假 `ok:true`/`result:null`——调用方以为方法生效实则没跑（与 #164/#167 同级数据风险，且 README/SKILL 已宣称「typed 方法假成功不再可能」，文档与实现脱节）。现连 daemon 前按方法声明签名对非 Array 实参也做类型守卫：镜像 Godot `Variant::can_convert_strict`，命中安全互转组（数值组 `bool`/`int`/`float`、字符串组 `String`/`StringName`/`NodePath`）透传，跨组（必 `Cannot convert`）`-32602` fail-loud。数值宽化（`float`→`int`）、`bool`→`int`、`String`→`String` 等合法调用零回归；`null` 实参保守透传（不在本 issue 新增拦截）。纯 addon 服务端行为改动，老项目跑一次 `init` 同步。
 - **`plugin.cfg` 版本号不再僵在 `0.1.0`**：此前 addon 的 `plugin.cfg` 一直写死 `version="0.1.0"`，CI 仅在打包 AssetLib zip 时按 tag `sed` 修正，而 pip wheel 在那条 sed 之前就已构建——于是 `pip install godot-cli-control` + `init` 复制进下游项目的 addon、以及直接 clone addon 的用法，都拿到错误的 `0.1.0`（Godot 编辑器插件列表 / AssetLib 元数据里显示）。现把 committed 值对齐到上次发布版本，并让 `release.sh` 在打 tag 前自动同步 `plugin.cfg` 版本号并入库，三条取用路径（git-direct / pip+init / AssetLib）从此一致。纯元数据修正，不影响 CLI 行为（CLI 版本一直来自 hatch-vcs 的 `_version.py`）。
