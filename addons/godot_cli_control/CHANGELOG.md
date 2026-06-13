@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-14
+
 ### Fixed
 - **#167 `call` 对 typed 参数不再假成功，且复用 `set` 的 Array→复合 Variant coerce**：此前 `handle_call_method` 裸 `node.callv(method, args)`，当方法形参是强类型（`Rect2`/`Vector2`/`Color` 等）而 CLI 传 JSON Array 时，Godot 只喷 `Cannot convert argument ...` 引擎错误并返回 `null`，RPC 仍假 `ok:true`/`result:null`——调用方以为方法生效实则没跑（#164 的 live `WANDER` 演示就栽在这）。GDScript 无 try-catch 抓不到 callv 运行期错误，现改为连 daemon 前按方法声明签名（`get_method_list()`）预校验：① JSON Array 喂复合 Variant 形参时按声明类型 coerce（`call /root/Mob enable_wander '[0,0,640,480]'` → `enable_wander(rect: Rect2)`），复用 `set` 那套 `_coerce_compound_array`（长度/元素错同样 `-32602` fail-loud）；② Array 喂标量/Object 形参（callv 必转换失败）→ `-32602` fail-loud；③ arg 数量越界（认可选/默认参数与 vararg）→ `-32602` fail-loud。标量实参（数字/字符串/布尔）与拿不到签名的内建方法保持原样透传，零回归。纯 addon 服务端行为改动，老项目跑一次 `init` 同步。
 
