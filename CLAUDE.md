@@ -82,7 +82,8 @@ release.sh                  # 发版脚本
 
 ## 发版 / CI
 
-- 版本由 `hatch-vcs` 从 git tag 派生，写到 `python/godot_cli_control/_version.py`。
+- 版本由 `hatch-vcs` 从 git tag 派生，写到 `python/godot_cli_control/_version.py`（CLI 版本唯一来源）。
+- addon `plugin.cfg` 的 `version=` 是**独立的元数据字段**（Godot 编辑器 / AssetLib 展示用，运行期无人解析）；committed 值即「上次发布版本」，`release.sh` 打 tag 前自动同步并入库。别手动改成 `[Unreleased]` 的目标版本——下个 `release.sh` 会把它对齐到实际 tag。CI 的 `release.yml` 里那条 `sed` 只兜 AssetLib zip（wheel 在 sed 前已打包），pip+init 路径靠的是 committed 值。
 - 改 SKILL.md 模板后想验证 `init` 注入正确：跑 `pytest python/tests/test_skills_install.py`。
 - 用户可见变更记入 CHANGELOG 的 `[Unreleased]`；`release.sh` 发版门禁会在该段非空时拒绝打 tag，`--roll-changelog` 自动滚动归档为版本段。
 - 遗留 issue 只记在 GitHub issues，本文件不镜像；落地历史看 CHANGELOG / git log。

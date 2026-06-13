@@ -6,6 +6,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`plugin.cfg` 版本号不再僵在 `0.1.0`**：此前 addon 的 `plugin.cfg` 一直写死 `version="0.1.0"`，CI 仅在打包 AssetLib zip 时按 tag `sed` 修正，而 pip wheel 在那条 sed 之前就已构建——于是 `pip install godot-cli-control` + `init` 复制进下游项目的 addon、以及直接 clone addon 的用法，都拿到错误的 `0.1.0`（Godot 编辑器插件列表 / AssetLib 元数据里显示）。现把 committed 值对齐到上次发布版本，并让 `release.sh` 在打 tag 前自动同步 `plugin.cfg` 版本号并入库，三条取用路径（git-direct / pip+init / AssetLib）从此一致。纯元数据修正，不影响 CLI 行为（CLI 版本一直来自 hatch-vcs 的 `_version.py`）。
+
 ## [0.4.1] - 2026-06-14
 
 ### Fixed

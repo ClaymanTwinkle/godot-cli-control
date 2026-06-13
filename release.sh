@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Tag and push a release. The version comes from the git tag (hatch-vcs reads
-# it for the wheel; CI patches plugin.cfg from GITHUB_REF_NAME).
+# it for the wheel). Before tagging, this script also syncs the addon's
+# plugin.cfg version to match and commits it, so the tag points at a tree where
+# the bundled addon already reports the right version — that's what the pip
+# wheel force-includes and `init` copies downstream (CI's wheel build runs
+# BEFORE its plugin.cfg sed, so that sed only ever fixes the AssetLib zip, not
+# pip+init). CI still re-seds plugin.cfg from GITHUB_REF_NAME as a safety net.
 #
 # Usage:
 #   ./release.sh                  # bump patch from latest tag (default)
@@ -26,6 +31,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 CHANGELOG="addons/godot_cli_control/CHANGELOG.md"
+PLUGIN_CFG="addons/godot_cli_control/plugin.cfg"
 
 DRY_RUN=0
 ROLL_CHANGELOG=0
@@ -102,12 +108,19 @@ fi
 
 # --- plan ---------------------------------------------------------------------
 
+if grep -q "^version=\"$NEW\"\$" "$PLUGIN_CFG"; then
+  PLUGIN_CFG_PLAN="already $NEW — nothing to sync"
+else
+  PLUGIN_CFG_PLAN="sync $(awk -F'"' '/^version=/{print $2}' "$PLUGIN_CFG") → $NEW, commit & push"
+fi
+
 cat <<EOF
 HEAD:        $LOCAL
 latest tag:  ${LATEST_TAG:-<none>}
 bump:        $ARG
 new tag:     $TAG
 changelog:   $CHANGELOG_PLAN
+plugin.cfg:  $PLUGIN_CFG_PLAN
 will push:   git push origin $TAG  →  triggers release.yml
 EOF
 
@@ -125,9 +138,22 @@ if [[ -n "$UNRELEASED_BODY" ]] && (( ROLL_CHANGELOG )); then
   ' "$CHANGELOG" > "$CHANGELOG.tmp"
   mv "$CHANGELOG.tmp" "$CHANGELOG"
   git add "$CHANGELOG"
-  git commit -m "docs(changelog): roll [Unreleased] → v$NEW"
+fi
+
+# Sync the addon's plugin.cfg version to the tag (see header). Folds into the
+# changelog-roll commit above when both change; commits on its own otherwise.
+if ! grep -q "^version=\"$NEW\"\$" "$PLUGIN_CFG"; then
+  awk -v v="$NEW" '/^version=/{print "version=\"" v "\""; next} {print}' \
+    "$PLUGIN_CFG" > "$PLUGIN_CFG.tmp"
+  mv "$PLUGIN_CFG.tmp" "$PLUGIN_CFG"
+  git add "$PLUGIN_CFG"
+fi
+
+if ! git diff --cached --quiet; then
+  STAGED="$(git diff --cached --name-only | sed 's#.*/##' | paste -sd, -)"
+  git commit -m "chore(release): sync $STAGED → v$NEW"
   git push origin main
-  echo "rolled changelog: [Unreleased] → [$NEW]"
+  echo "synced & pushed: $STAGED → v$NEW"
 fi
 
 git tag "$TAG"
