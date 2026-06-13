@@ -78,6 +78,10 @@ class _CallFixture extends Node:
 	# 标量形参：Array 实参无法转换 → fail-loud。
 	func takes_int(n: int) -> int:
 		return n * 2
+	# String 形参（#183 标量侧）：数字 / bool 实参 callv "Cannot convert" → fail-loud；
+	# String 实参透传。
+	func takes_string(s: String) -> String:
+		return s + "!"
 	# 带默认值的可选尾参：required=1，给 1 个实参应放行（b 取默认 5）。
 	func takes_two(a: int, b: int = 5) -> int:
 		return a + b
@@ -832,6 +836,82 @@ func test_call_method_untyped_param_passes_array_through() -> void:
 	})
 	assert_does_not_have(result, "error")
 	assert_eq(result.get("result"), [1, 2, 3])
+
+
+# ── handle_call_method 标量实参 fail-loud / 宽化（issue #183） ──────
+
+func test_call_method_string_to_int_param_fails_loud() -> void:
+	# 复现 set_z_index '"abc"'：String 实参喂 int 形参 → callv "Cannot convert" 静默失败，
+	# pre-empt 成 -32602，方法不被调用（result 缺席，不假 ok:true）。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "StrToIntTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_int",
+		"args": ["abc"],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_string_contains(str(result.error.message), "value type mismatch")
+	assert_does_not_have(result, "result")
+
+
+func test_call_method_number_to_string_param_fails_loud() -> void:
+	# 复现 set_name 42：数字实参喂 String 形参 → fail-loud，不假 ok:true。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "NumToStrTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_string",
+		"args": [42],
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+	assert_does_not_have(result, "result")
+
+
+func test_call_method_float_to_int_param_widens_ok() -> void:
+	# 防误杀：数值组互转（float→int）是 callv 合法宽化，须透传并真正调用（3.0→3 → 返 6）。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "FloatToIntTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_int",
+		"args": [3.0],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(int(result.get("result")), 6)
+
+
+func test_call_method_bool_to_int_param_ok() -> void:
+	# 防误杀：bool→int 同属数值组，透传（true→1 → 返 2）。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "BoolToIntTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_int",
+		"args": [true],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(int(result.get("result")), 2)
+
+
+func test_call_method_string_to_string_param_ok() -> void:
+	# 防误杀：String→String 精确匹配，透传并调用（"hi"→"hi!"）。
+	var fixture: _CallFixture = _CallFixture.new()
+	fixture.name = "StrToStrTarget"
+	add_child_autofree(fixture)
+	var result: Dictionary = _api.handle_call_method({
+		"path": str(fixture.get_path()),
+		"method": "takes_string",
+		"args": ["hi"],
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(str(result.get("result")), "hi!")
 
 
 func test_prepare_call_args_vararg_not_count_rejected() -> void:
