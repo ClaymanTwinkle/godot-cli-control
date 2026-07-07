@@ -185,12 +185,12 @@ Each subdirectory has its own README:
 
 ## Agent integration
 
-When `godot-cli-control init` runs, two `SKILL.md` files are dropped under your Godot project root:
+When `godot-cli-control init` runs, two skill directories are dropped under your Godot project root:
 
-- `.claude/skills/godot-cli-control/SKILL.md` (Claude Code)
-- `.codex/skills/godot-cli-control/SKILL.md` (Codex)
+- `.claude/skills/godot-cli-control/` (Claude Code)
+- `.codex/skills/godot-cli-control/` (Codex)
 
-Both are rendered from the same template and pin the current CLI version + `--help` output, so an agent loaded into your project can immediately see the full command surface, the `GameClient` API, and the `def run(bridge)` script convention. After upgrading the CLI (`pipx upgrade godot-cli-control`), refresh both with:
+Each contains a lean `SKILL.md` core (quickstart, exit codes, command catalogue, top pitfalls — what an agent needs in-context on every session) plus `references/*.md` detail files (full command semantics, error-code tables, recording recipes, pytest fixtures) that agents read on demand — so triggering the skill costs a few hundred lines of context instead of the full manual. Both trees render from the same template and pin the current CLI version; for exact per-command flags agents run `godot-cli-control <cmd> -h` live. After upgrading the CLI (`pipx upgrade godot-cli-control`), refresh both with:
 
 ```bash
 godot-cli-control init --skills-only
@@ -205,7 +205,7 @@ If you've hand-edited a `SKILL.md` and want to keep your version:
 
 The two `--no-*` flags are mutually exclusive with each other; `--skills-no-clobber` is orthogonal and may be combined with `--skills-only`.
 
-> Optional: add `.claude/` and `.codex/` to your project's `.gitignore` if you don't want the SKILL.md files committed. They are reproducible at any time via `godot-cli-control init --skills-only`.
+> Optional: add `.claude/` and `.codex/` to your project's `.gitignore` if you don't want the skill files committed. They are reproducible at any time via `godot-cli-control init --skills-only`.
 
 ## Manual install (advanced)
 

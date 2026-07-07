@@ -189,20 +189,16 @@ def run_init(
         # lazy import：保持与 cli.cmd_init 那侧 `from .init_cmd import run_init`
         # 对称，两边都不在模块顶层 import，避免任一方将来改成顶层 import
         # 时形成循环 import。
-        from . import _version, cli, skills_install
+        from . import _version, skills_install
 
-        # 用 format_full_help() 而非 build_parser().format_help()：让 SKILL.md
-        # 内嵌完整 help 树（顶层 + 每个子命令、含 daemon 三动作），agent 不再需
-        # 要为了看 combo -h / daemon start -h 再 shell 出去。
-        cli_help = cli.format_full_help()
+        # CLI 帮助不再注入 SKILL.md（agent 现场跑 `<cmd> -h` 拿最新版），
+        # 所以这里不需要 cli.format_full_help() 了。
         version = getattr(_version, "__version__", "unknown")
         written = skills_install.install_skills(
             project_root,
             version=version,
-            cli_help=cli_help,
             # 默认 clobber_skills=True 即覆盖（spec §4 决定，让 SKILL.md 跟随
-            # 版本与 CLI 帮助自动同步）；用户加 --skills-no-clobber 时不动现
-            # 有文件，只补缺。
+            # 版本自动同步）；用户加 --skills-no-clobber 时不动现有文件，只补缺。
             force=clobber_skills,
         )
         for p in written:

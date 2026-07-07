@@ -28,15 +28,13 @@ jobs:
       - name: ruff check
         run: ruff check .
 
-  # 渲染版 SKILL.md 防漂移（issue #128）：.claude/skills/godot-cli-control/SKILL.md
-  # 是 skills_install.render_skill() 的渲染副本（供在本仓工作的 agent 加载），
-  # 「改模板/CLI 后手动重渲染」靠人记已被证明不可靠——v0.1.6 起漂移一个多月，
-  # PR #126 才追平 ~1300 行。这里重渲染后 diff，版本行归一化（hatch-vcs dev
-  # 版本号每个 commit 都变，不归一化永远红）。
-  # 规范渲染环境钉死两件事（本地重渲染必须同款，否则假红）：
-  #   1. COLUMNS=80 —— argparse help 宽度跟终端走，宽度不同 → 全文重排；
-  #   2. Python 3.12 —— argparse 的 usage 折行算法随小版本变（3.13+ 不在
-  #      [--a | --b] 互斥组括号内断行），3.14 渲染的副本在 3.12 下必 diff。
+  # 渲染版 skill 防漂移（issue #128）：.claude/skills/godot-cli-control/ 整目录
+  # 是 skills_install.skill_files() 的渲染副本（供在本仓工作的 agent 加载），
+  # 「改模板后手动重渲染」靠人记已被证明不可靠——v0.1.6 起漂移一个多月，
+  # PR #126 才追平 ~1300 行。这里重渲染后整目录 diff，SKILL.md 版本行归一化
+  # （hatch-vcs dev 版本号每个 commit 都变，不归一化永远红）。
+  # 旧版曾钉死 COLUMNS=80 + Python 3.12（argparse help 注入随折行漂移）；
+  # {{cli_help}} 注入已删，渲染结果与终端宽度 / Python 小版本无关。
   skill-render-drift:
     name: skill-render-drift
     runs-on: ubuntu-latest
@@ -55,28 +53,16 @@ jobs:
           pip install -e .
 
       - name: Re-render and diff (version line normalized)
-        env:
-          COLUMNS: '80'
         run: |
-          python - <<'EOF'
-          from pathlib import Path
-
-          from godot_cli_control import cli
-          from godot_cli_control._version import version
-          from godot_cli_control.skills_install import render_skill
-
-          Path("/tmp/rendered-skill.md").write_text(
-              render_skill(version, cli.format_full_help()), encoding="utf-8"
-          )
-          EOF
+          python -m godot_cli_control.skills_install /tmp/rendered-skill
           NORM='s/^Generated from godot-cli-control v.* Re-run/Generated from godot-cli-control vNORMALIZED. Re-run/'
-          if ! diff -u \
-              <(sed -E "$NORM" .claude/skills/godot-cli-control/SKILL.md) \
-              <(sed -E "$NORM" /tmp/rendered-skill.md); then
-            echo "::error::仓内渲染版 SKILL.md 与模板/CLI 不同步（上方 diff 中 - 为仓内、+ 为最新渲染）。修复：在仓库根用 Python 3.12（必须，argparse 折行随版本变）跑 COLUMNS=80 python3.12 -c \"from godot_cli_control import cli; from godot_cli_control.skills_install import render_skill; from godot_cli_control._version import version; open('.claude/skills/godot-cli-control/SKILL.md','w').write(render_skill(version, cli.format_full_help()))\" 后提交。"
+          cp -R .claude/skills/godot-cli-control /tmp/committed-skill
+          sed -E -i "$NORM" /tmp/rendered-skill/SKILL.md /tmp/committed-skill/SKILL.md
+          if ! diff -ru /tmp/committed-skill /tmp/rendered-skill; then
+            echo "::error::仓内渲染版 skill 与模板不同步（上方 diff 中 - 为仓内、+ 为最新渲染）。修复：在仓库根跑 python -m godot_cli_control.skills_install 后提交 .claude/skills/godot-cli-control/ 的变更。"
             exit 1
           fi
-          echo "rendered SKILL.md is in sync"
+          echo "rendered skill dir is in sync"
 
   python-unit:
     name: pytest (Python ${{ matrix.python-version }} / ${{ matrix.os }})

@@ -106,14 +106,15 @@ Follow this exact order so the shell surface, the Python API, and the agent docs
 `SKILL.md` is the only ground truth an AI agent sees. **If you change a CLI subcommand, an error
 code, or a default, you must update the same change in:**
 
-- `python/godot_cli_control/templates/skill/SKILL.md` (the template that `init` renders into a
-  project's `.claude/` and `.codex/` skill files)
+- `python/godot_cli_control/templates/skill/` (the multi-file skill — `SKILL.md` core +
+  `references/*.md` — that `init` renders into a project's `.claude/` and `.codex/` skill dirs;
+  put the detail in the matching reference file, keep the core lean)
 - `addons/godot_cli_control/README.md` (error-code table, exit-code table, command table)
 
-After editing the SKILL template, sanity-check that it still renders:
+After editing the SKILL template, sanity-check that it still renders and stays in sync:
 
 ```bash
-python -c "from godot_cli_control import cli; print(cli.format_full_help())"
+python -m pytest python/tests/test_skills_install.py -q
 ```
 
 ## Pull request workflow

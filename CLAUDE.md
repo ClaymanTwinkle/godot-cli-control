@@ -40,7 +40,7 @@
      2. `bridge.py` 加同步包装
      3. `cli.py` 加 `RpcSpec` + handler + 文本格式化（`text_formatter`）+ 必要时 `preflight` / `exit_code_from`
      4. `addons/.../low_level_api.gd` 或 `input_simulation_api.gd` 加 RPC handler
-     5. 更新 `SKILL.md`（模板在 `python/godot_cli_control/templates/skill/SKILL.md`）+ addon `README.md` 错误码 / 命令表
+     5. 更新 skill（模板目录 `python/godot_cli_control/templates/skill/`：核心 SKILL.md 只加一行目录项，细节进对应 `references/*.md`）+ addon `README.md` 错误码 / 命令表
 
 5. **preflight 优先于网络往返**
    - 用户 / agent 用法错（如 `combo` 没传 steps）必须在连 daemon **之前**报错，
@@ -53,9 +53,9 @@
    - 新加返回大数据的 RPC 要先想清楚 trim 策略。
 
 7. **SKILL.md 是 AI agent 的入口，必须随 CLI 同步**
-   - `init` 命令会把 `python/godot_cli_control/templates/skill/SKILL.md` 渲染（注入 `{{cli_help}}` + `{{version}}`）后写到目标 Godot 项目的 `.claude/skills/godot-cli-control/SKILL.md` 与 `.codex/skills/.../SKILL.md`。
-   - **改 CLI 子命令、改错误码、改默认行为时，SKILL.md 必须一起改**。错误码表、退出码表、JSON 信封示例、common pitfalls 是 agent 唯一能看到的 ground truth。
-   - 改完跑一次 `python -c "from godot_cli_control import cli; print(cli.format_full_help())"` 检查渲染没崩。
+   - skill 是多文件渐进披露结构：`python/godot_cli_control/templates/skill/SKILL.md`（核心契约，触发即整体进上下文，**保持 ≤400 行**，有测试锁）+ `references/*.md`（命令细节 / 错误码全表 / daemon 与多实例 / 录制 / Python & pytest / pitfalls 全集，agent 按需 Read）。`init` 渲染（注入 `{{version}}`）后**整目录**写到目标项目 `.claude/skills/godot-cli-control/` 与 `.codex/skills/...`。
+   - **改 CLI 子命令、改错误码、改默认行为时，skill 必须一起改**：细节写进对应 reference 文件，核心只留高频契约与路由表；新增/改名 reference 必须同步 SKILL.md 路由表（有测试锁）。CLI 帮助不再内嵌（旧 `{{cli_help}}` 注入已删）——agent 现场跑 `<cmd> -h` 拿 ground truth。
+   - 改完跑 `pytest python/tests/test_skills_install.py` 验契约，再 `python -m godot_cli_control.skills_install` 重渲染仓内副本。
 
 8. **localhost-only / blacklist 安全网不能为了"方便"放掉**
    - GameBridge 永远 listen `127.0.0.1`；release build 必须自动 disable。
@@ -92,7 +92,7 @@ release.sh                  # 发版脚本
 
 - **wait 比较语义**：改 `wait_property` 比较 / `encode_value` / `_deep_equal` 任意一处，必须重跑 `test_wait_api` 的 38k parity 矩阵。GDScript 跨类型 `==` 是**运行期脚本错误**（中止函数抛 Nil、非静默 false），一律走 `_safe_eq` 守卫；引擎内部深比较类型严格（dict 内 int/float 不互通、不吃 tolerance），别按标量 `==` 直觉想当然。
 - **screenshot --node 双坐标系**：`compute_node_screen_rect` 出的 rect 在画布（逻辑设计分辨率）坐标系，取图侧 `get_image()` 在窗口物理像素系，必须乘 viewport final transform 换算（#137）；平窗 scale=1 两系重合、错了也不暴露，改动后跑 SubViewport `size_2d_override`(+stretch) 构造 scale≠1 的 GUT 回归（headless 可测）。
-- **仓内 `.claude/skills` 渲染版 SKILL.md 不会自动刷新**：改模板 / CLI 后用 `skills_install.render_skill` 重渲染，必须 `COLUMNS=80` + Python 3.12（argparse usage 折行随 Python 小版本变，CI skill-render-drift 以 3.12 为准）。
+- **仓内 `.claude/skills` 渲染版 skill 不会自动刷新**：改模板后跑 `python -m godot_cli_control.skills_install`（整目录渲染到 `.claude/skills/godot-cli-control/`）再提交；CI skill-render-drift 整目录 diff。已**不再**依赖 COLUMNS=80 / Python 3.12（`{{cli_help}}` argparse 注入删了，折行漂移源不存在）。
 - **CI / 合并**：main required check 锚定 `ci-ok` 聚合 job，`gh pr merge --auto` 真等绿——**别改 ci-ok job 名**，挂完用 `autoMergeRequest` 非 null 自检。
 - **init**：`--force` 是兼容 no-op（与 `--keep-addon` 互斥），别在文档 / 脚本里教人用；重跑 `init` 即同步 addon + SKILL.md，`--keep-addon` 是逃生口。
 - **find_godot_binary 的 macOS 单测**：必须经 `_macos_app_dirs()` 注入 tmp 目录——开发机真 `/Applications/Godot.app` 会抢先命中，不注入则用户级（`~/Applications`）分支测不到。mono 包名（`Godot_mono.app`）内部可执行文件仍叫 `Godot`，两级 glob 天然覆盖。

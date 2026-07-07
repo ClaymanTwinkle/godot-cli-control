@@ -3164,8 +3164,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--skills-no-clobber",
         action="store_true",
         help=(
-            "写 skill 时跳过已存在的 .claude/.codex SKILL.md（默认会覆盖以"
-            "保证版本与 CLI 帮助同步）。与 --no-skills / --skills-only 都兼容。"
+            "写 skill 时逐文件跳过 .claude/.codex 下已存在的文件（默认会覆盖"
+            "以保证与 CLI 版本同步；缺失的文件仍会补上）。与 --no-skills / "
+            "--skills-only 都兼容。"
         ),
     )
     init_p.add_argument(
@@ -3219,8 +3220,8 @@ def build_parser() -> argparse.ArgumentParser:
 def format_full_help() -> str:
     """渲染顶层 + 所有子命令（含 daemon 三动作）的 help 文本。
 
-    给 SKILL.md 模板用：把单一信息源塞进 ``{{cli_help}}``，让 agent 不必为
-    了看 ``combo -h`` / ``daemon start -h`` 再 shell 出去。
+    人类一次性通览全部命令用（``SKILL.md`` 曾经内嵌这份输出，现已改成让
+    agent 现场跑 ``<cmd> -h`` 查 —— 本函数保留为渲染冒烟检查 + 通览入口）。
 
     实现注意：argparse 的 subparsers action 通过 ``_actions`` 暴露，``choices``
     是 name → ArgumentParser 的 dict。深度仅两层（顶层 → daemon → start/stop/status；

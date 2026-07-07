@@ -25,9 +25,9 @@ godot-cli-control tree 3
 godot-cli-control daemon stop
 ```
 
-Re-running `init` refreshes both `addons/godot_cli_control/` and the SKILL.md files to match the installed CLI version (the plugin directory is wiped and re-copied; `project.godot` patching stays idempotent). Pass `--keep-addon` to keep an existing `addons/godot_cli_control/` untouched.
+Re-running `init` refreshes both `addons/godot_cli_control/` and the skill files to match the installed CLI version (the plugin directory is wiped and re-copied; `project.godot` patching stays idempotent). Pass `--keep-addon` to keep an existing `addons/godot_cli_control/` untouched.
 
-`init` also writes `.claude/skills/godot-cli-control/SKILL.md` and `.codex/skills/godot-cli-control/SKILL.md` so AI agents working in your Godot project can pick up this CLI surface automatically. Use `--no-skills` to skip, or `--skills-only` to refresh just those files after a CLI upgrade. See the [top-level README](../README.md#agent-integration) for details.
+`init` also writes `.claude/skills/godot-cli-control/` and `.codex/skills/godot-cli-control/` (a lean `SKILL.md` core + `references/*.md` detail files) so AI agents working in your Godot project can pick up this CLI surface automatically without flooding their context. Use `--no-skills` to skip, or `--skills-only` to refresh just those files after a CLI upgrade. See the [top-level README](../README.md#agent-integration) for details.
 
 ## Async API
 
