@@ -6,7 +6,8 @@
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-06-14
+### Changed
+- **SKILL.md 拆成多文件渐进披露结构，触发时上下文占用从 ~1850 行降到 ~160 行**：旧版单文件 SKILL.md 渲染后 1854 行 / ~142KB（其中 1195 行是 `{{cli_help}}` argparse 全量帮助注入），agent 每次触发 skill 都整体灌进上下文——违背本项目「不让大 payload 撑爆 agent 上下文」的 AI 友好契约。现拆为：核心 `SKILL.md`（quickstart / 退出码 / 单行命令目录 / 高频 pitfalls / 路由表，≤400 行有测试锁）+ `references/*.md` 六个主题文件（commands / error-codes / daemon-multi-instance / recording / python-and-pytest / pitfalls，agent 按需 Read）。`{{cli_help}}` 注入删除——agent 现场跑 `godot-cli-control <cmd> -h` 拿永远最新的帮助，顺带消灭「重渲染必须 COLUMNS=80 + Python 3.12」的 argparse 折行漂移坑（CI skill-render-drift 改整目录 diff，新增 `python -m godot_cli_control.skills_install` 一键重渲染入口）。`init` / `init --skills-only` 现在写整个 skill 目录；`--skills-no-clobber` 逐文件跳过已存在的（老单文件安装升级时缺失的 references/ 仍会补上）。旧项目跑一次 `godot-cli-control init --skills-only` 即升级。API 变更：`skills_install.render_skill(version)` 不再收 `cli_help` 参数，新增 `skills_install.skill_files(version)`。
 
 ### Fixed
 - **`call` 对错类型「标量」实参不再假成功（#167 的标量侧补集）**：#167 只关了 `call` 的 **JSON Array → 复合 Variant** 侧假成功；错类型的标量实参（`set_name 42` 数字→StringName、`set_z_index '"abc"'` String→int 等）此前仍直接喂 `callv`，引擎喷 `Cannot convert argument` 返回 `null`，RPC 却假 `ok:true`/`result:null`——调用方以为方法生效实则没跑（与 #164/#167 同级数据风险，且 README/SKILL 已宣称「typed 方法假成功不再可能」，文档与实现脱节）。现连 daemon 前按方法声明签名对非 Array 实参也做类型守卫：镜像 Godot `Variant::can_convert_strict`，命中安全互转组（数值组 `bool`/`int`/`float`、字符串组 `String`/`StringName`/`NodePath`）透传，跨组（必 `Cannot convert`）`-32602` fail-loud。数值宽化（`float`→`int`）、`bool`→`int`、`String`→`String` 等合法调用零回归；`null` 实参保守透传（不在本 issue 新增拦截）。纯 addon 服务端行为改动，老项目跑一次 `init` 同步。

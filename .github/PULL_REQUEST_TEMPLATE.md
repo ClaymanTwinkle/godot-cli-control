@@ -10,7 +10,7 @@ Closes #
 - [ ] `ruff check` is clean
 - [ ] GUT tests pass if GDScript changed (`GODOT_BIN=... python addons/godot_cli_control/tests/run_gut.py`)
 - [ ] **Changed a CLI subcommand, an error code, or a default behavior?** Then I also updated:
-  - [ ] `python/godot_cli_control/templates/skill/SKILL.md`
+  - [ ] the skill template (`python/godot_cli_control/templates/skill/` — detail goes in the matching `references/*.md`, keep `SKILL.md` core lean) and re-rendered the repo copy (`python -m godot_cli_control.skills_install`)
   - [ ] the error-code / exit-code / command tables in `addons/godot_cli_control/README.md`
 - [ ] **New RPC?** I added the full chain: `GameClient` → `GameBridge` → `cli.py` (`RpcSpec` + handler + text formatter) → GDScript handler
 - [ ] No `--no-verify`, no skipped/`xfail`'d tests, no commented-out failing code

@@ -1,29 +1,34 @@
-"""skills_install 单元测试 —— 渲染 + 落盘行为，纯函数零 IO 副作用边界。"""
+"""skills_install 单元测试 —— 渲染 + 落盘行为，纯函数零 IO 副作用边界。
+
+skill 是多文件结构（SKILL.md 核心 + references/ 细节，渐进披露）：
+- 核心契约（信封 / 退出码 / shell canonical / 顶级 pitfalls / 路由表）锁在 SKILL.md；
+- 细节契约（录制管线 / pytest fixtures / combo schema …）锁在对应 reference 文件。
+测试按「内容住在哪个文件」断言，防止未来重构把契约改没或挪丢。
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 
+# ── render_skill（SKILL.md 核心） ──
 
-# ── render_skill ──
 
-
-def test_render_skill_substitutes_placeholders() -> None:
+def test_render_skill_substitutes_version() -> None:
     from godot_cli_control.skills_install import render_skill
 
-    out = render_skill(version="1.2.3", cli_help="USAGE: foo")
+    out = render_skill(version="1.2.3")
 
     assert "1.2.3" in out
-    assert "USAGE: foo" in out
     assert "{{version}}" not in out
+    # 旧 {{cli_help}} 注入已删——模板不该再有这个占位符
     assert "{{cli_help}}" not in out
 
 
 def test_render_skill_keeps_frontmatter_intact() -> None:
     from godot_cli_control.skills_install import render_skill
 
-    out = render_skill(version="0.0.0", cli_help="x")
+    out = render_skill(version="0.0.0")
 
     assert out.splitlines()[0] == "---"
     assert "name: godot-cli-control" in out
@@ -36,7 +41,7 @@ def test_skill_description_covers_recording_keywords() -> None:
     时不会把这些词改没。"""
     from godot_cli_control.skills_install import render_skill
 
-    out = render_skill(version="x", cli_help="x")
+    out = render_skill(version="x")
     desc_block = out.split("---", 2)[1]  # 第二段就是 frontmatter
 
     for kw in ("record", "video", "capture", "movie", "demo"):
@@ -45,80 +50,118 @@ def test_skill_description_covers_recording_keywords() -> None:
         )
 
 
-def test_render_skill_explains_recording_pipeline() -> None:
-    """SKILL.md 主体必须教 agent 如何录视频 —— 最少要点出
-    ``--record`` + ``--movie-path`` + ffmpeg 转 mp4 这条链条，
-    否则命中 skill 后还得 shell 出去翻 daemon start -h 才能下笔。"""
-    from godot_cli_control.skills_install import render_skill
+def test_render_skill_core_contract() -> None:
+    """SKILL.md 核心必须锁住的字面契约，防止后续改文案时回退：
 
-    out = render_skill(version="x", cli_help="x")
-
-    assert "--record" in out
-    assert "--movie-path" in out
-    assert "ffmpeg" in out
-    assert "mp4" in out
-
-
-def test_render_skill_documents_pytest_plugin() -> None:
-    """pytest 插件是项目的一等公民使用面（pyproject.toml 注册了 pytest11
-    entry-point + 可选依赖组）。SKILL.md 必须教 agent 用 ``godot_daemon`` /
-    ``bridge`` fixture，否则用户问"给这个 Godot 项目加 e2e 测试"时 agent 只
-    会复述 ``def run(bridge):`` 脚本路径，错过零样板的 fixture 路径。"""
-    from godot_cli_control.skills_install import render_skill
-
-    out = render_skill(version="x", cli_help="x")
-
-    assert "godot_daemon" in out
-    assert "godot-cli-control[pytest]" in out
-    # plugin 注册的三个 CLI 选项都要可被 agent 看到
-    assert "--godot-cli-port" in out
-    assert "--godot-cli-no-headless" in out
-    assert "--godot-cli-project-root" in out
-    # 兜底兼容路径（entry-point 不生效时的 conftest.py 写法）
-    assert "pytest_plugins" in out
-
-
-def test_render_skill_documents_module_entry_point() -> None:
-    """``python -m godot_cli_control`` 与 console script 等价；当 PATH 未激活
-    venv 时是唯一可用入口，文档必须留给 agent 这条退路。"""
-    from godot_cli_control.skills_install import render_skill
-
-    out = render_skill(version="x", cli_help="x")
-    assert "python -m godot_cli_control" in out
-
-
-def test_render_skill_documents_combo_schema_and_ai_contract() -> None:
-    """SKILL.md 模板必须给 agent 锁住几件事，否则它会写错代码：
-
-    1. combo step 的真实 schema（``action`` / ``wait`` keys，不是 press/release）。
-    2. 0.2.0 输出契约：默认 JSON 信封 + 退出码语义。
-    3. shell 是 canonical surface（agent 默认走 shell，不必动 Python）。
-    4. ``daemon status`` 在 Quickstart 出现，agent 第一次跑能确认 daemon 状态。
-    5. Python 桥仍在文档里，但定位调整成"跨步保持 client 连接"用。
-
-    字面串作为契约锁住模板，防止后续改文案时回退。
+    1. JSON 信封（默认 JSON + ok true/false 两形态）与退出码表。
+    2. shell 是 canonical surface。
+    3. node path 绝对约束（最常见 agent 错误）。
+    4. ``daemon status`` 在 Quickstart 露出。
+    5. 指向 references/ 的路由（渐进披露入口）与 `-h` 现场查帮助的指引。
     """
     from godot_cli_control.skills_install import render_skill
 
-    out = render_skill(version="x", cli_help="<HELP>")
+    out = render_skill(version="x")
 
-    # combo schema：action + wait（不是 press/release）
-    assert '"action"' in out
-    assert '"wait"' in out
-    # JSON 输出契约必须明示
     assert '"ok": true' in out or '"ok":true' in out
     assert '"ok": false' in out or '"ok":false' in out
-    # 退出码语义：shell-if 友好的几个命令必须列在 Exit codes 表里
     assert "Exit codes" in out
-    # shell 优先论调
     assert "shell" in out.lower()
-    # Python 桥的位置：可调用，但是次选
-    assert "wait_for_node" in out
-    assert "get_property" in out
-    # daemon status 在 Quickstart 露出
-    assert "daemon status" in out
-    # node path 绝对约束（最常见的 agent 错误）
     assert "/root/" in out
+    assert "daemon status" in out
+    assert "references/" in out
+    assert "-h" in out
+
+
+def test_render_skill_core_stays_lean() -> None:
+    """核心文件的体积上限是本次拆分的目标本身（每次触发整体进上下文）。
+    上限给宽到 400 行——超过说明有人把细节写回核心了，应挪去 references/。"""
+    from godot_cli_control.skills_install import render_skill
+
+    n_lines = len(render_skill(version="x").splitlines())
+    assert n_lines <= 400, (
+        f"SKILL.md 核心已 {n_lines} 行（>400）——细节请放 references/*.md，"
+        "核心只留契约 + 目录 + 路由"
+    )
+
+
+# ── skill_files（完整文件集） ──
+
+
+def test_skill_files_contains_core_and_references() -> None:
+    from godot_cli_control.skills_install import skill_files
+
+    out = skill_files(version="1.0")
+
+    assert "SKILL.md" in out
+    ref_names = {k for k in out if k.startswith("references/")}
+    # 六个主题文件一个都不能少；新增可以，减少/改名必须同步 SKILL.md 路由表
+    assert {
+        "references/commands.md",
+        "references/error-codes.md",
+        "references/daemon-multi-instance.md",
+        "references/recording.md",
+        "references/python-and-pytest.md",
+        "references/pitfalls.md",
+    } <= ref_names
+
+
+def test_skill_routing_table_covers_every_reference() -> None:
+    """SKILL.md 核心的路由表必须指到每一个实际存在的 reference 文件，
+    否则 agent 不知道该文件存在——渐进披露就断链了。"""
+    from godot_cli_control.skills_install import skill_files
+
+    out = skill_files(version="x")
+    core = out["SKILL.md"]
+    for rel in out:
+        if rel == "SKILL.md":
+            continue
+        name = rel.removeprefix("references/")
+        assert name in core, f"SKILL.md 路由表漏了 {rel}"
+
+
+def test_reference_recording_explains_pipeline() -> None:
+    """录制细节住 references/recording.md —— 最少要点出
+    ``--record`` + ``--movie-path`` + ffmpeg 转 mp4 这条链条。"""
+    from godot_cli_control.skills_install import skill_files
+
+    ref = skill_files(version="x")["references/recording.md"]
+
+    assert "--record" in ref
+    assert "--movie-path" in ref
+    assert "ffmpeg" in ref
+    assert "mp4" in ref
+
+
+def test_reference_pytest_documents_plugin() -> None:
+    """pytest 插件契约住 references/python-and-pytest.md：fixtures、可选依赖组、
+    plugin 注册的 CLI 选项、entry-point 失效时的 conftest.py 退路。"""
+    from godot_cli_control.skills_install import skill_files
+
+    ref = skill_files(version="x")["references/python-and-pytest.md"]
+
+    assert "godot_daemon" in ref
+    assert "godot-cli-control[pytest]" in ref
+    assert "--godot-cli-port" in ref
+    assert "--godot-cli-no-headless" in ref
+    assert "--godot-cli-project-root" in ref
+    assert "pytest_plugins" in ref
+    # python -m 等价入口（PATH 未激活 venv 时的唯一退路）
+    assert "python -m godot_cli_control" in ref
+    # Python 桥定位：跨步保持 client 连接时的次选
+    assert "wait_for_node" in ref
+    assert "get_property" in ref
+
+
+def test_reference_commands_documents_combo_schema() -> None:
+    """combo step 的真实 schema（``action`` / ``wait`` keys）住
+    references/commands.md，agent 写错 schema 是历史高频错误。"""
+    from godot_cli_control.skills_install import skill_files
+
+    ref = skill_files(version="x")["references/commands.md"]
+
+    assert '"action"' in ref
+    assert '"wait"' in ref
 
 
 # ── install_skills ──
@@ -126,24 +169,28 @@ def test_render_skill_documents_combo_schema_and_ai_contract() -> None:
 
 def test_install_skills_writes_both_paths(tmp_path: Path) -> None:
     from godot_cli_control.skills_install import (
+        CLAUDE_DIR,
         CLAUDE_REL,
         CODEX_REL,
         install_skills,
         render_skill,
+        skill_files,
     )
 
-    written = install_skills(
-        tmp_path, version="9.9.9", cli_help="HELPTEXT_MARKER"
-    )
+    written = install_skills(tmp_path, version="9.9.9")
 
     claude = tmp_path / CLAUDE_REL
     codex = tmp_path / CODEX_REL
     assert claude.exists()
     assert codex.exists()
-    expected = render_skill(version="9.9.9", cli_help="HELPTEXT_MARKER")
+    expected = render_skill(version="9.9.9")
     assert claude.read_text(encoding="utf-8") == expected
     assert codex.read_text(encoding="utf-8") == expected
-    assert set(written) == {claude, codex}
+    # references/ 同步落盘，内容与模板一致
+    n_files = len(skill_files(version="9.9.9"))
+    assert len(written) == n_files * 2
+    ref = tmp_path / CLAUDE_DIR / "references" / "commands.md"
+    assert ref.exists()
 
 
 def test_install_skills_creates_parent_dirs(tmp_path: Path) -> None:
@@ -151,10 +198,12 @@ def test_install_skills_creates_parent_dirs(tmp_path: Path) -> None:
     from godot_cli_control.skills_install import install_skills
 
     # 不预建任何目录
-    install_skills(tmp_path, version="0", cli_help="")
+    install_skills(tmp_path, version="0")
 
     assert (tmp_path / ".claude" / "skills" / "godot-cli-control").is_dir()
-    assert (tmp_path / ".codex" / "skills" / "godot-cli-control").is_dir()
+    assert (
+        tmp_path / ".codex" / "skills" / "godot-cli-control" / "references"
+    ).is_dir()
 
 
 def test_install_skills_force_true_overwrites(tmp_path: Path) -> None:
@@ -170,14 +219,17 @@ def test_install_skills_force_true_overwrites(tmp_path: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text("DIRTY", encoding="utf-8")
 
-    install_skills(tmp_path, version="1.0", cli_help="x", force=True)
+    install_skills(tmp_path, version="1.0", force=True)
 
     assert "DIRTY" not in (tmp_path / CLAUDE_REL).read_text(encoding="utf-8")
     assert "DIRTY" not in (tmp_path / CODEX_REL).read_text(encoding="utf-8")
 
 
 def test_install_skills_force_false_skips_existing(tmp_path: Path) -> None:
+    """force=False 逐文件跳过：用户改过的 SKILL.md 保留，缺失的
+    references/ 仍会补上（老版本单文件安装升级到多文件的路径）。"""
     from godot_cli_control.skills_install import (
+        CLAUDE_DIR,
         CLAUDE_REL,
         CODEX_REL,
         install_skills,
@@ -188,11 +240,11 @@ def test_install_skills_force_false_skips_existing(tmp_path: Path) -> None:
     claude.parent.mkdir(parents=True, exist_ok=True)
     claude.write_text("KEEP_ME", encoding="utf-8")
 
-    written = install_skills(
-        tmp_path, version="1.0", cli_help="x", force=False
-    )
+    written = install_skills(tmp_path, version="1.0", force=False)
 
     assert claude.read_text(encoding="utf-8") == "KEEP_ME"
     assert (tmp_path / CODEX_REL).exists()
     assert claude not in written
     assert (tmp_path / CODEX_REL) in written
+    # 同目录缺失的 reference 被补上（force=False 只护已存在的文件）
+    assert (tmp_path / CLAUDE_DIR / "references" / "pitfalls.md").exists()

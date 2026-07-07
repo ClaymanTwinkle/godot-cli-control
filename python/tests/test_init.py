@@ -426,7 +426,10 @@ def test_run_init_json_mode_suppresses_human_prints_and_collects_result(
     assert result["plugin_overwritten"] is False
     assert "autoload/GameBridgeNode" in result["project_godot_changes"]
     assert result["godot_bin"] is None
-    assert len(result["skills_written"]) == 2
+    # 多文件 skill：SKILL.md + references/*.md，写 .claude 与 .codex 两份
+    from godot_cli_control.skills_install import skill_files
+
+    assert len(result["skills_written"]) == 2 * len(skill_files("x"))
 
 
 def test_run_init_json_mode_records_error_message_on_failure(
