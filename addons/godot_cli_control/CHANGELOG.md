@@ -6,7 +6,8 @@
 
 ## [Unreleased]
 
-### Changed
+### Added
+- **错误信封新增可选 `error.hint` 字段——错误发生点当场给「下一步怎么办」**：此前「拿到 1009 该先 `pause`」「拿到 1004 该 `combo-cancel`」这类指引只存在于 SKILL.md 错误码表里，没读过表的 agent 只能瞎重试。现服务端业务码（`1xxx` 全部 16 个 + `-32601`）由 addon 侧 `CliControlErrorCodes.hint_for` 随响应下发（GUT 锁「新增业务码必须登记 hint」），客户端码（`-1001`/`-1002`/`-1004`/`-1006`/`-1099`）由 CLI 在发射点补齐；服务端下发的 hint 优先于客户端映射。message 已足够具体的码（`-32602`/`-1003`/`-1005`）不带 hint，无 hint 的错误不带空字段。`--text` 模式在 stderr 尾部追加「（提示：...）」；`--instance all` 广播的 per-entry error 同样带 hint；`RpcError` 新增 `.hint` 属性供 Python 调用方使用。服务端 hint 需要新 addon——老项目跑一次 `init` 同步（未同步只是没有 hint，无兼容问题）。
 - **SKILL.md 拆成多文件渐进披露结构，触发时上下文占用从 ~1850 行降到 ~160 行**：旧版单文件 SKILL.md 渲染后 1854 行 / ~142KB（其中 1195 行是 `{{cli_help}}` argparse 全量帮助注入），agent 每次触发 skill 都整体灌进上下文——违背本项目「不让大 payload 撑爆 agent 上下文」的 AI 友好契约。现拆为：核心 `SKILL.md`（quickstart / 退出码 / 单行命令目录 / 高频 pitfalls / 路由表，≤400 行有测试锁）+ `references/*.md` 六个主题文件（commands / error-codes / daemon-multi-instance / recording / python-and-pytest / pitfalls，agent 按需 Read）。`{{cli_help}}` 注入删除——agent 现场跑 `godot-cli-control <cmd> -h` 拿永远最新的帮助，顺带消灭「重渲染必须 COLUMNS=80 + Python 3.12」的 argparse 折行漂移坑（CI skill-render-drift 改整目录 diff，新增 `python -m godot_cli_control.skills_install` 一键重渲染入口）。`init` / `init --skills-only` 现在写整个 skill 目录；`--skills-no-clobber` 逐文件跳过已存在的（老单文件安装升级时缺失的 references/ 仍会补上）。旧项目跑一次 `godot-cli-control init --skills-only` 即升级。API 变更：`skills_install.render_skill(version)` 不再收 `cli_help` 参数，新增 `skills_install.skill_files(version)`。
 
 ### Fixed

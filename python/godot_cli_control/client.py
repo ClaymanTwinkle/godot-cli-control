@@ -66,12 +66,16 @@ class RpcError(RuntimeError):
     保留服务端返回的 ``code`` 字段，方便上层（CLI ``--json`` 信封、调用方
     针对特定错误码 retry）做精确处理。继承 ``RuntimeError`` 以保持向后
     兼容——既有 ``except RuntimeError`` 仍能 catch。
+
+    ``hint``：服务端随错误附带的「下一步怎么办」提示（可选）。CLI 信封原样
+    透传给 agent；老 addon 不发该字段时为 None（跑一次 ``init`` 同步后出现）。
     """
 
-    def __init__(self, code: int, message: str) -> None:
+    def __init__(self, code: int, message: str, hint: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.hint = hint
 
 
 class GameClient:
@@ -263,9 +267,11 @@ class GameClient:
         """把服务端帧解包为 result dict，遇到 error 帧抛 RpcError。"""
         if "error" in response:
             err = response["error"]
+            hint = err.get("hint")
             raise RpcError(
                 int(err.get("code", -1)),
                 str(err.get("message", "")),
+                hint=str(hint) if hint else None,
             )
         return response.get("result", {})
 

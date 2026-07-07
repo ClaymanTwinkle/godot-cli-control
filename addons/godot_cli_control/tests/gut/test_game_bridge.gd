@@ -338,6 +338,23 @@ func test_sync_handler_error_dict_emits_error_frame() -> void:
 	assert_eq(str(f.error.message), "Node not found")
 
 
+func test_error_frame_carries_hint_for_registered_code() -> void:
+	# _send_error 是所有错误响应的唯一出口：已登记的码必须带 "hint"（下一步指引）
+	_low.click_return = {"error": {"code": 1001, "message": "Node not found"}}
+	_send('{"id": "x", "method": "click", "params": {"path": "/missing"}}')
+	var f: Dictionary = _last_frame()
+	assert_has(f.error, "hint")
+	assert_string_contains(str(f.error.hint), "find")
+
+
+func test_error_frame_omits_hint_for_unregistered_code() -> void:
+	# -32600 未登记 hint —— 不带空字段占位（信封字段有值才出现）
+	_send('not json at all')
+	var f: Dictionary = _last_frame()
+	assert_eq(int(f.error.code), -32600)
+	assert_does_not_have(f.error, "hint")
+
+
 # ── async 路径 ────────────────────────────────────────────────────
 
 func test_async_handler_success_emits_result_frame() -> void:

@@ -388,7 +388,13 @@ func _send_response(id: String, result: Dictionary) -> void:
 
 
 func _send_error(id: String, code: int, message: String) -> void:
-	var response: Dictionary = {"id": id, "error": {"code": code, "message": message}}
+	# 所有服务端错误响应的唯一出口：按码附加可选 "hint"（下一步指引），
+	# 让 agent 在错误发生点当场拿到动作建议（hint 表在 CliControlErrorCodes）。
+	var err: Dictionary = {"code": code, "message": message}
+	var hint: String = CliControlErrorCodes.hint_for(code)
+	if not hint.is_empty():
+		err["hint"] = hint
+	var response: Dictionary = {"id": id, "error": err}
 	_send_json(response)
 
 

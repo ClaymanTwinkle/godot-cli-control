@@ -137,6 +137,8 @@ All methods callable via `godot-cli-control <method>` or `from godot_cli_control
 
 Three numeric ranges share `error.code`; they never overlap, so a single field is unambiguous.
 
+Most errors also carry an optional **`error.hint`** field — a one-line "what to do next" pointer (e.g. `1009` hints "call `pause` first, then `step-frames`"). Server-side hints (`1xxx` / `-32601`) come from the addon (`CliControlErrorCodes.hint_for`) and require a synced addon (re-run `init` on old projects); client-side hints (`-1xxx`) are added by the CLI itself. Codes whose `message` is already case-specific (`-32602`, `-1003`, `-1005`) carry no hint. Follow the hint before consulting the table below.
+
 | Code | Source | Meaning |
 |---|---|---|
 | `1001` | server | Node not found at the given path |
