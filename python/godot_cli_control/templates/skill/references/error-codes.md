@@ -2,6 +2,8 @@
 
 Three numeric ranges cohabit in `error.code`; they never overlap, so a single `code` field is unambiguous. The range tells you who is wrong; the code tells you retry-vs-fail.
 
+**`error.hint`**: most errors also carry an optional `hint` field with the concrete next step — trust it before this table. Server-side hints (`1xxx` / `-32601`) come from the addon (old, un-synced addons don't send them — re-run `init`); client-side hints (`-1xxx`) come from the CLI. Codes whose `message` is already case-specific (`-32602`, `-1003`, `-1005`) carry no hint.
+
 ## Server-side (Godot plugin) — positive integers
 
 | Code | Meaning |

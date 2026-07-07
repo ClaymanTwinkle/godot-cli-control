@@ -30,7 +30,7 @@ If `references/` is missing, this install is from an older version — re-run `g
 **Output is JSON by default.** Every RPC subcommand prints a single-line envelope on stdout:
 
 - success: `{"ok": true, "result": <data>}`
-- error:   `{"ok": false, "error": {"code": <int>, "message": "..."}}`
+- error:   `{"ok": false, "error": {"code": <int>, "message": "...", "hint": "next step (optional)"}}`
 
 Pipe straight into `jq` or `json.loads`. `--text` / `--no-json` switch to legacy human-readable output.
 
@@ -129,7 +129,7 @@ One line per command; run `<cmd> -h` for flags, read `references/commands.md` fo
 
 ## Error codes in one minute
 
-Three non-overlapping ranges in `error.code` — the range tells you who is wrong:
+**Most errors carry an `error.hint` field — the concrete next step. Follow it first**; the tables exist for the codes that don't (or when you need retry semantics). Three non-overlapping ranges in `error.code` — the range tells you who is wrong:
 
 - **`1xxx`** (server, business): the request was understood but the world refused — `1001` node not found (retry after `wait-node`, or locate with `find`), `1002` property not found, `1003` method/action not found, `1004` combo in progress (`combo-cancel` then retry), `1005` tree too large (`--max-nodes` / subtree), `1006` transient resource (retry once), `1009` not paused (call `pause` first), `1015` emit-signal not enabled.
 - **`-32xxx`** (JSON-RPC): request shape is wrong — `-32602` invalid params (blocked by blacklist, type mismatch, wrong arg count). Don't retry; fix the request.

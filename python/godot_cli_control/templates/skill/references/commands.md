@@ -19,7 +19,7 @@ $ godot-cli-control exists /root/Main
 {"ok": true, "result": true}
 
 $ godot-cli-control click /root/DoesNotExist
-{"ok": false, "error": {"code": 1001, "message": "node not found: /root/DoesNotExist"}}
+{"ok": false, "error": {"code": 1001, "message": "Node not found: /root/DoesNotExist", "hint": "path must start with /root; locate by text/type with `find`, or `wait-node <path>` if it may not be loaded yet"}}
 
 $ godot-cli-control --text exists /root/Main
 true

@@ -66,3 +66,79 @@ const RESPONSE_TOO_LARGE: int = 1016
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600
 const METHOD_UNKNOWN: int = -32601
+
+
+## 错误码 → 「下一步怎么办」提示。空串 = 无提示（该码的 message 已足够具体，
+## 如 -32602 每个 case 有专属文案）。唯一注入点是 GameBridge._send_error：
+## 响应 error 对象带上可选 "hint" 字段，CLI 信封原样透传给 agent——让 agent
+## 在错误发生点当场拿到指引，不依赖它读过 SKILL.md 错误码表。
+## 客户端 -1xxx 的提示在 Python 侧 cli.py 的 _CLIENT_HINTS，两段各管各的
+## （与错误码三段制同构）。hint 只补「下一步动作」，不复述错误本身。
+static func hint_for(code: int) -> String:
+	match code:
+		NODE_NOT_FOUND:
+			return (
+				"path must start with /root; locate by text/type with `find`,"
+				+ " or `wait-node <path>` if it may not be loaded yet"
+			)
+		PROPERTY_NOT_FOUND:
+			return "inspect the node's properties with `tree <path> 1`"
+		METHOD_NOT_FOUND:
+			return (
+				"inspect node methods with `tree`; for input actions run"
+				+ " `actions` (or `actions --all`)"
+			)
+		COMBO_IN_PROGRESS:
+			return "run `combo-cancel` (or `release-all`), then retry"
+		SCENE_TREE_TOO_LARGE:
+			return (
+				"pass --max-nodes N, or query a subtree:"
+				+ " `tree <path>` / `children <path>`"
+			)
+		RESOURCE_UNAVAILABLE:
+			return (
+				"usually transient - retry after `wait-time 0.05`; on a"
+				+ " headless daemon screenshots never work (restart with --gui)"
+			)
+		SIGNAL_NOT_FOUND:
+			return "list the node's signals with `tree`; check the spelling"
+		SCENE_UNAVAILABLE:
+			return (
+				"check the res:// path; if loading hangs, inspect"
+				+ " `daemon logs --tail 50`"
+			)
+		NOT_PAUSED:
+			return "call `pause` first, then `step-frames`"
+		UNSUPPORTED_NODE_TYPE:
+			return (
+				"aim at a drawable node (often the child sprite),"
+				+ " or use another command"
+			)
+		NODE_NOT_ON_SCREEN:
+			return "move the camera/node into view (or wait for it), then retry"
+		FEATURE_UNAVAILABLE:
+			return (
+				"requires a newer Godot (errors capture needs 4.5+);"
+				+ " upgrade the engine or drop this call"
+			)
+		WRITE_FAILED:
+			return "fix the destination path/permissions (daemon-side), then retry"
+		DRAG_IN_PROGRESS:
+			return (
+				"wait for the in-flight drag to finish,"
+				+ " or `release-all` to cancel it"
+			)
+		EMIT_SIGNAL_DISABLED:
+			return "restart the daemon with --allow-emit-signal"
+		RESPONSE_TOO_LARGE:
+			return (
+				"pass a file path so the daemon writes to disk,"
+				+ " or raise godot_cli_control/outbound_buffer_mb"
+			)
+		METHOD_UNKNOWN:
+			return (
+				"client and addon versions drifted - re-run"
+				+ " `godot-cli-control init` to sync the addon"
+			)
+		_:
+			return ""

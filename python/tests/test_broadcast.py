@@ -162,9 +162,12 @@ def test_rpc_failure_envelope_mapping(
     try:
         raise excs[raise_exc]
     except Exception as e:  # noqa: BLE001
-        code, msg, rc = _rpc_failure_envelope(e)
+        code, msg, rc, hint = _rpc_failure_envelope(e)
     assert (code, rc) == (want_code, want_rc)
     assert msg  # message 永不为空（str(e) 为空时落 fallback）
+    # hint 第 4 元：客户端异常分支恒 None（发射侧按 _CLIENT_HINTS 补），
+    # RpcError 分支透传服务端 hint（此处构造时未带 → 也是 None）
+    assert hint is None
 
 
 # ── Task 4: {instance} 占位符 + screenshot preflight ──
@@ -567,7 +570,7 @@ def test_rpc_failure_envelope_network_oserror_is_connection() -> None:
     try:
         raise OSError(errno.ECONNREFUSED, "refused")
     except Exception as e:  # noqa: BLE001
-        code, _msg, rc = _rpc_failure_envelope(e)
+        code, _msg, rc, _hint = _rpc_failure_envelope(e)
     assert (code, rc) == (-1001, 2)
 
 
@@ -578,7 +581,7 @@ def test_rpc_failure_envelope_real_jsondecodeerror() -> None:
     try:
         json.loads("{bad")
     except json.JSONDecodeError as e:
-        code, _msg, rc = _rpc_failure_envelope(e)
+        code, _msg, rc, _hint = _rpc_failure_envelope(e)
     assert (code, rc) == (-1003, 64)
 
 
