@@ -23,6 +23,7 @@ mktemp / cp -r / 路径分隔符这些平台差异，让 CI 能在 ubuntu / macO
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,14 @@ renderer/rendering_method.mobile="gl_compatibility"
 """
 
 _SUCCESS_MARKER = "All tests passed!"
+
+# 假绿守卫（issue #188）：GUT 遇到解析失败的测试脚本只告警并跳过（不计入统计、
+# 不判失败），_SUCCESS_MARKER 对整文件被跳过是盲区。引擎/GUT 在跳过脚本时固定
+# 打这三类字样之一。
+_SILENT_SKIP_RE = re.compile(r"Parse Error|Failed to load script|Ignoring script")
+
+# GUT 汇总里 "Scripts" 一行：summary.gd 用 rpad(18) 对齐，形如 "Scripts           12"。
+_SCRIPTS_TOTAL_RE = re.compile(r"^Scripts\s+(\d+)", re.MULTILINE)
 
 
 def _log(msg: str) -> None:
@@ -175,7 +184,26 @@ def main() -> int:
         # 5) 跑 GUT
         output = _run_gut_cmdln(godot, proj)
 
-    # 6) Godot 在 cmdln 脚本加载失败时仍可能 exit 0 —— 额外断言 GUT 成功 marker。
+    # 6) 判 PASS 前两道独立守卫，任一命中即 FAIL（issue #188）。
+    if _SILENT_SKIP_RE.search(output):
+        _fail(
+            "检测到脚本解析失败被 GUT 静默跳过"
+            "（Parse Error / Failed to load script / Ignoring script）—— 看上面输出排查"
+        )
+
+    gut_dir = REPO_ROOT / "addons" / "godot_cli_control" / "tests" / "gut"
+    expected_scripts = len(list(gut_dir.glob("test_*.gd")))
+    match = _SCRIPTS_TOTAL_RE.search(output)
+    if match is None:
+        _fail("未能从 GUT 输出中解析出 'Scripts' 计数 —— 看上面输出排查")
+    actual_scripts = int(match.group(1))
+    if actual_scripts < expected_scripts:
+        _fail(
+            f"GUT 实际执行脚本数 ({actual_scripts}) 少于 tests/gut/test_*.gd "
+            f"文件数 ({expected_scripts}) —— 有脚本被静默跳过"
+        )
+
+    # 7) Godot 在 cmdln 脚本加载失败时仍可能 exit 0 —— 额外断言 GUT 成功 marker。
     if _SUCCESS_MARKER in output:
         _log("GUT PASS")
         return 0

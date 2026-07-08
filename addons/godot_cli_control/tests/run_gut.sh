@@ -87,6 +87,29 @@ trap 'rm -rf "$PROJ" "$GUT_SRC" "$RUN_LOG"' EXIT
     -gdir=res://addons/godot_cli_control/tests/gut \
     -gexit 2>&1 | tee "$RUN_LOG"
 
+# 假绿守卫（issue #188）：GUT 遇到解析失败的测试脚本只告警并跳过（不计入统计、
+# 不判失败），"All tests passed!" marker 对整文件被跳过是盲区。判 PASS 前加两道
+# 独立检测，任一命中即 FAIL：
+
+# 1) 引擎/GUT 在跳过脚本时固定打这三类字样之一。
+if grep -qE 'Parse Error|Failed to load script|Ignoring script' "$RUN_LOG"; then
+    echo "FAIL: 检测到脚本解析失败被 GUT 静默跳过（Parse Error / Failed to load script / Ignoring script）—— 看上面输出排查" >&2
+    exit 1
+fi
+
+# 2) 比对 GUT 汇总的 "Scripts" 计数与 tests/gut/ 下实际的 test_*.gd 文件数
+#    （add_directory 不递归子目录，这里也用 -maxdepth 1 对齐）。
+EXPECTED_SCRIPTS="$(find "$REPO_ROOT/addons/godot_cli_control/tests/gut" -maxdepth 1 -name 'test_*.gd' | wc -l | tr -d ' ')"
+ACTUAL_SCRIPTS="$(grep -E '^Scripts[[:space:]]+[0-9]+' "$RUN_LOG" | grep -oE '[0-9]+' | tail -1)"
+if [[ -z "$ACTUAL_SCRIPTS" ]]; then
+    echo "FAIL: 未能从 GUT 输出中解析出 'Scripts' 计数 —— 看上面输出排查" >&2
+    exit 1
+fi
+if [[ "$ACTUAL_SCRIPTS" -lt "$EXPECTED_SCRIPTS" ]]; then
+    echo "FAIL: GUT 实际执行脚本数 ($ACTUAL_SCRIPTS) 少于 tests/gut/test_*.gd 文件数 ($EXPECTED_SCRIPTS) —— 有脚本被静默跳过" >&2
+    exit 1
+fi
+
 # Godot 在 cmdln 脚本加载失败时仍可能 exit 0；额外断言：GUT 的成功 marker。
 if grep -q "All tests passed!" "$RUN_LOG"; then
     echo "==> GUT PASS"
