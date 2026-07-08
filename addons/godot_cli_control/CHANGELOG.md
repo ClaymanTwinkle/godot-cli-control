@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-08
+
 ### Added
 - **`daemon restart`——改启动 flags 一步到位**：容忍未运行的 stop + 以本次给出的 flags 启动（与 `daemon start` 同一套参数，共享注册函数防漂移；**不记忆**上次 start 的 flags）。选靶走 stop 的自动语义（0 个在跑 → default；1 个 → 它；≥2 → 须 `--name`）。stop 硬失败（进程在但停不掉）中止不起新实例（exit 2）；仅 ffmpeg 转码失败（AVI 保留）不阻断重启、最终 exit 4 透出（对齐 `run` 语义）。信封 `{"restarted", "was_running", "stop_rc", "instance", "port", "pid"}`。
 
