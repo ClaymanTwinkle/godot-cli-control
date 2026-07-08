@@ -24,6 +24,7 @@ Three numeric ranges cohabit in `error.code`; they never overlap, so a single `c
 | `1014` | DRAG_IN_PROGRESS: a `drag` issued while another is interpolating. One mouse drag at a time — wait for it to finish or `release-all` to cancel. |
 | `1015` | EMIT_SIGNAL_DISABLED: `emit-signal` called but the daemon wasn't started with `--allow-emit-signal`. Restart the daemon with the flag (explicit opt-in on top of debug-build + localhost). `call <node> emit_signal` is always blocked by the blacklist regardless. |
 | `1016` | RESPONSE_TOO_LARGE: a single response exceeded the daemon's outbound WebSocket buffer (default 10 MB, `godot_cli_control/outbound_buffer_mb`). Almost always a bytes-API screenshot on a hiDPI/4K frame — pass a file path so the daemon writes to disk, or raise the buffer. Retrying re-overflows. |
+| `1017` | AMBIGUOUS_MATCH: `click` with finder filters matched ≥ 2 nodes (message lists the candidate paths). State-class error — narrow the filters (`--exact` / `--type` / `--from` / `--name-pattern`) until exactly one matches, or `find` and click the path directly. Deliberately fail-loud instead of clicking the first BFS hit. |
 
 ## JSON-RPC standard — negative integers `-32xxx`
 

@@ -93,7 +93,7 @@ One line per command; run `<cmd> -h` for flags, read `references/commands.md` fo
 **Write / call:**
 - `set <path> <prop> <json-value>` — write a property (JSON-first value parsing; see footgun in pitfalls)
 - `call <path> <method> [json-args...]` — call a method (typed-signature coercion, fails loud on mismatch)
-- `click <path>` — UI click on a Control/Button node
+- `click <path>` — UI click on a Control/Button node. Or locate-and-click in one atomic RPC: `click --contains <text> [--type <Class>] [--exact] [--name-pattern] [--from]` (find-style filters; must match exactly one node — 0 → `1001`, ≥2 → `1017` listing candidates). **The one-liner for "click the button labeled X".**
 - `emit-signal <path> <signal> [args...]` — fire a signal (test seam); needs daemon started with `--allow-emit-signal`, else error `1015`
 
 **Input simulation** (InputMap actions; both polling and `_input` callbacks see them):
@@ -131,7 +131,7 @@ One line per command; run `<cmd> -h` for flags, read `references/commands.md` fo
 
 **Most errors carry an `error.hint` field — the concrete next step. Follow it first**; the tables exist for the codes that don't (or when you need retry semantics). Three non-overlapping ranges in `error.code` — the range tells you who is wrong:
 
-- **`1xxx`** (server, business): the request was understood but the world refused — `1001` node not found (retry after `wait-node`, or locate with `find`), `1002` property not found, `1003` method/action not found, `1004` combo in progress (`combo-cancel` then retry), `1005` tree too large (`--max-nodes` / subtree), `1006` transient resource (retry once), `1009` not paused (call `pause` first), `1015` emit-signal not enabled.
+- **`1xxx`** (server, business): the request was understood but the world refused — `1001` node not found (retry after `wait-node`, or locate with `find`), `1002` property not found, `1003` method/action not found, `1004` combo in progress (`combo-cancel` then retry), `1005` tree too large (`--max-nodes` / subtree), `1006` transient resource (retry once), `1009` not paused (call `pause` first), `1015` emit-signal not enabled, `1017` click filters matched ≥ 2 nodes (narrow them).
 - **`-32xxx`** (JSON-RPC): request shape is wrong — `-32602` invalid params (blocked by blacklist, type mismatch, wrong arg count). Don't retry; fix the request.
 - **`-1xxx`** (client CLI): `-1001` daemon not running (`daemon status`), `-1002` timeout, `-1003` usage error (always exit 64), `-1005` your `run` script raised, `-1006` infra failure (always exit 2).
 
@@ -142,7 +142,7 @@ Full table with retry semantics per code: `references/error-codes.md`.
 1. **`tap` / `hold` / `combo` return *before* the motion finishes.** They arm the input and return immediately; `get position` right after reads a mid-motion value. Add `--wait` to block until the duration elapses, or insert `wait-time <duration>`.
 2. **`wait-signal` must be armed before the trigger.** Each CLI call is a fresh process — fire-then-wait always times out. Use `--trigger`: `wait-signal /root/Area door_opened 3 --trigger 'tap interact'` (arms first, fires second, same connection).
 3. **`set`/`call` values parse as JSON first.** Bare `null`/`true`/`42` become JSON literals, not strings. Force strings with `--text-value` (best for generated commands) or explicit quotes: `'"42"'`.
-4. **Locate buttons with `find`, never a client-side tree walk.** `find --type BaseButton --contains OK` is one RPC; a `children`+`text` recursion is one RPC *per node* (once burned 57 s in a recorded demo). Note: exact-text flag is `--exact` (`--text` is the global output toggle).
+4. **"Click the button labeled X" is one command: `click --contains X`** (server-side atomic find+click; must match exactly one node, else `1001`/`1017`). For locating without clicking use `find` — never a client-side `children`+`text` walk (one RPC *per node*; once burned 57 s in a recorded demo). Note: exact-text flag is `--exact` (`--text` is the global output toggle).
 5. **After `scene-change` / `scene-reload`, every cached node path is stale** — re-locate via `wait-node` / `find` before touching them.
 6. **A sticky `press` outlives the CLI call** — by design (clean disconnects don't release). Character stuck moving? `release-all`.
 7. **`pause` / `time-scale` are engine-global and outlive your script** — restore them in `try/finally`; only the pytest `bridge` fixture auto-restores.

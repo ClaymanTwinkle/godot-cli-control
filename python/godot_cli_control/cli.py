@@ -396,6 +396,28 @@ def _preflight_find(ns: argparse.Namespace) -> None:
         raise ValueError("find: --exact（精确）与 --contains（子串）互斥，二选一")
 
 
+def _preflight_click(ns: argparse.Namespace) -> None:
+    """click 的定位方式校验（契约 #5）：path 与过滤器二选一、恰好一种。
+
+    过滤器语义同 find（--exact/--contains 互斥、--from 只是子树限定不算
+    独立过滤器）。服务端有同款守卫（-32602）兜裸 RPC 调用方。
+    """
+    has_filters = bool(ns.type or ns.exact or ns.contains or ns.name_pattern)
+    if ns.exact and ns.contains:
+        raise ValueError("click: --exact（精确）与 --contains（子串）互斥，二选一")
+    if ns.node_path and (has_filters or ns.from_path):
+        raise ValueError(
+            "click: 节点路径与过滤器（--type/--exact/--contains/--name-pattern/--from）"
+            "互斥——直接给 path 就不需要再找"
+        )
+    if not ns.node_path and not has_filters:
+        raise ValueError(
+            "click: 给一个节点路径，或至少一个过滤器"
+            "（--type / --exact / --contains / --name-pattern）按文本/类型定位；"
+            "--from 只是子树限定，不算独立过滤器"
+        )
+
+
 def _read_combo_steps(ns: argparse.Namespace) -> list[dict]:
     """三选一读 combo steps：``--steps-json`` / 位置 ``-`` (stdin) / 文件路径。"""
     steps_json: str | None = getattr(ns, "steps_json", None)
@@ -624,7 +646,15 @@ async def _maybe_block_for_duration(
 
 
 async def cmd_click(client: GameClient, ns: argparse.Namespace) -> dict:
-    return await client.click(ns.node_path)
+    # getattr 兜底：老测试/调用方构造的 Namespace 可能缺过滤器字段
+    return await client.click(
+        getattr(ns, "node_path", None),
+        node_type=getattr(ns, "type", None),
+        text=getattr(ns, "exact", None),
+        text_contains=getattr(ns, "contains", None),
+        name_pattern=getattr(ns, "name_pattern", None),
+        from_path=getattr(ns, "from_path", None),
+    )
 
 
 async def cmd_click_at(client: GameClient, ns: argparse.Namespace) -> dict:
@@ -1191,7 +1221,8 @@ def _register_tree_args(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _register_find_args(p: argparse.ArgumentParser) -> None:
+def _add_finder_filter_args(p: argparse.ArgumentParser) -> None:
+    """find 的四个过滤器 + ``--from`` 子树限定（find 与 click 过滤器定位共用）。"""
     p.add_argument(
         "--from",
         dest="from_path",  # ``from`` 是 Python 关键字，不能直接做 ns 属性名
@@ -1228,6 +1259,10 @@ def _register_find_args(p: argparse.ArgumentParser) -> None:
         metavar="GLOB",
         help="按节点名通配匹配（``*``/``?``，大小写敏感），如 'Inventory*'",
     )
+
+
+def _register_find_args(p: argparse.ArgumentParser) -> None:
+    _add_finder_filter_args(p)
     p.add_argument(
         "--limit",
         type=int,
@@ -1341,15 +1376,24 @@ RPC_SPECS: tuple[RpcSpec, ...] = (
     RpcSpec(
         name="click",
         handler=cmd_click,
-        description="对 Control/Button 节点触发点击。",
+        description=(
+            "对 Control/Button 节点触发点击。两种定位方式二选一：给绝对路径，"
+            "或给 find 同款过滤器（--type/--exact/--contains/--name-pattern"
+            "[/--from]）由服务端同帧原子 find+click——「点击文案为 X 的按钮」"
+            "一条命令完成，不再 find→解析 path→click 三步。过滤器须恰好命中 "
+            "1 个节点：0 个报 1001，≥2 个报 1017（列出候选，收窄再试）。"
+        ),
         positionals=(
             Positional(
                 "node_path",
-                None,
-                "绝对节点路径（必须以 /root/ 开头），如 /root/Main/StartButton",
+                "?",
+                "绝对节点路径（必须以 /root/ 开头），如 /root/Main/StartButton；"
+                "用过滤器定位时省略",
             ),
         ),
-        example="click /root/Main/StartButton",
+        example="click /root/Main/StartButton ｜ click --contains 开始 --type BaseButton",
+        extra_args=_add_finder_filter_args,
+        preflight=_preflight_click,
         text_formatter=lambda r: f"clicked: {r}",
     ),
     RpcSpec(

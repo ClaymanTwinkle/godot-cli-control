@@ -139,9 +139,28 @@ class GameBridge:
 
     # ── UI 交互 ──
 
-    def click(self, path: str) -> dict:
-        """点击 UI 节点。"""
-        return self._run(self._client.click(path))
+    def click(
+        self,
+        path: str | None = None,
+        *,
+        node_type: str | None = None,
+        text: str | None = None,
+        text_contains: str | None = None,
+        name_pattern: str | None = None,
+        from_path: str | None = None,
+    ) -> dict:
+        """点击 UI 节点：给 ``path`` 直接定位，或给 find 同款过滤器由服务端
+        同帧原子 find+click（恰好 1 个匹配才点：0 个 → 1001，≥2 个 → 1017）。"""
+        return self._run(
+            self._client.click(
+                path,
+                node_type=node_type,
+                text=text,
+                text_contains=text_contains,
+                name_pattern=name_pattern,
+                from_path=from_path,
+            )
+        )
 
     def click_at(
         self,

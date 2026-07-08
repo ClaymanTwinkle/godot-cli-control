@@ -146,9 +146,57 @@ func _merge_extra(base: PackedStringArray, setting_key: String) -> PackedStringA
 
 
 func handle_click(params: Dictionary) -> Dictionary:
+	# 两种定位方式：绝对 path（原始形态），或 find 同款过滤器（type / text /
+	# text_contains / name_pattern / from）——「点击文案为 X 的按钮」此前要
+	# find → 解析 matches[0].path → click 三步两次 RPC，中间还有 stale-path
+	# 竞态窗口；现在服务端同帧内 find+click 原子完成。
+	if _has_find_filters(params):
+		var path_given: String = params.get("path", "") as String
+		if not path_given.is_empty():
+			return _err(
+				CliControlErrorCodes.INVALID_PARAMS,
+				"click: give either a node path or finder filters, not both",
+			)
+		return _click_by_filters(params)
 	var node: Node = _get_node_or_error(params)
 	if node == null:
 		return _node_not_found(params.get("path", "") as String)
+	return _click_node(node)
+
+
+## 过滤器定位 + 点击。恰好 1 个匹配才点：0 个 → 1001；≥2 个 → 1017 列出
+## 匹配路径让 agent 收窄（宁可 fail-loud 也不静默点第一个——BFS 序对 agent
+## 不可预期，点错按钮比报错贵得多）。成功信封带 "path"（实际点到的节点）。
+func _click_by_filters(params: Dictionary) -> Dictionary:
+	# 取 1 个足以点击、多取 4 个用于歧义报错时展示候选（够收窄用）
+	var found: Dictionary = _collect_find_matches(params, 5)
+	if found.has("error"):
+		return found
+	var nodes: Array = found["nodes"] as Array
+	if nodes.is_empty():
+		return _err(
+			CliControlErrorCodes.NODE_NOT_FOUND,
+			"click: no node matches the given filters",
+		)
+	if nodes.size() > 1:
+		var paths: PackedStringArray = PackedStringArray()
+		for entry: Dictionary in found["matches"] as Array:
+			paths.append(str(entry["path"]))
+		var more: String = ", ..." if (found.get("truncated", false) as bool) else ""
+		return _err(
+			CliControlErrorCodes.AMBIGUOUS_MATCH,
+			"click: %d nodes match the filters: %s%s"
+			% [nodes.size(), ", ".join(paths), more],
+		)
+	var result: Dictionary = _click_node(nodes[0] as Node)
+	if not result.has("error"):
+		var entry: Dictionary = (found["matches"] as Array)[0] as Dictionary
+		result["path"] = str(entry["path"])
+	return result
+
+
+## click 的实际派发（path 定位与过滤器定位共用）。
+func _click_node(node: Node) -> Dictionary:
 	if node is BaseButton:
 		(node as BaseButton).emit_signal("pressed")
 		return {"success": true}
@@ -694,9 +742,39 @@ func handle_find_nodes(params: Dictionary) -> Dictionary:
 	# 服务端节点搜索（issue #153）：程序化匿名 UI（@Button@12，编号跨运行不稳定）
 	# 只能按文本/类型定位，客户端 children+get_text 逐层 BFS 在录制模式下
 	# 每个 RPC 等帧渲染（50-150ms/次），一次全树遍历曾拖出 57s 死时间——
-	# 这里把几十次往返折成一次。不用 Node.find_children：它先建全量匹配数组
-	# 没法 limit 短路，且手写 BFS 才有「浅层优先」的稳定排序（UI 搜索友好）。
-	# 空字符串 = 过滤器未启用（与 get_children 的 type_filter 约定一致）。
+	# 这里把几十次往返折成一次。遍历本体抽在 _collect_find_matches，与
+	# click 的过滤器定位（原子 find+click）共用。
+	var limit: int = params.get("limit", 20) as int
+	if limit <= 0:
+		limit = 20
+	limit = mini(limit, _FIND_MAX_MATCHES)
+	var found: Dictionary = _collect_find_matches(params, limit)
+	if found.has("error"):
+		return found
+	var response: Dictionary = {"matches": found["matches"]}
+	if found.get("truncated", false) as bool:
+		response["truncated"] = true
+	return response
+
+
+## params 里是否带任一 find 过滤器（click 用它区分 path 定位 / 过滤器定位）。
+## 空字符串 = 过滤器未启用（与 get_children 的 type_filter 约定一致）。
+func _has_find_filters(params: Dictionary) -> bool:
+	return (
+		not (params.get("type", "") as String).is_empty()
+		or not (params.get("name_pattern", "") as String).is_empty()
+		or not (params.get("text", "") as String).is_empty()
+		or not (params.get("text_contains", "") as String).is_empty()
+		or not (params.get("from", "") as String).is_empty()
+	)
+
+
+## find 遍历本体（handle_find_nodes 与 click 过滤器定位共用）：校验过滤器 →
+## 解析 from 子树 → 迭代 BFS。返回 {"matches": Array[Dictionary]（序列化 entry）,
+## "nodes": Array[Node]（与 matches 一一对应，供 click 直接派发）, "truncated"?}
+## 或 {"error": ...}。不用 Node.find_children：它先建全量匹配数组没法 limit
+## 短路，且手写 BFS 才有「浅层优先」的稳定排序（UI 搜索友好）。
+func _collect_find_matches(params: Dictionary, limit: int) -> Dictionary:
 	var type_filter: String = params.get("type", "") as String
 	var name_pattern: String = params.get("name_pattern", "") as String
 	var text_exact: String = params.get("text", "") as String
@@ -714,10 +792,6 @@ func handle_find_nodes(params: Dictionary) -> Dictionary:
 			CliControlErrorCodes.INVALID_PARAMS,
 			"find_nodes: 'text' (exact) and 'text_contains' (substring) are mutually exclusive",
 		)
-	var limit: int = params.get("limit", 20) as int
-	if limit <= 0:
-		limit = 20
-	limit = mini(limit, _FIND_MAX_MATCHES)
 	# 默认搜全树（root 而非 current_scene）：弹窗 / autoload 常直接挂 root，
 	# 「按文本找按钮」必须能命中它们。
 	var start: Node = get_tree().root
@@ -729,6 +803,7 @@ func handle_find_nodes(params: Dictionary) -> Dictionary:
 	# 迭代 BFS（数组 + 头指针）：浅层匹配排前；不递归 → 深树不爆栈；
 	# 与 find_children(owned=true) 不同，代码创建的无 owner 节点照常命中。
 	var matches: Array[Dictionary] = []
+	var match_nodes: Array[Node] = []
 	var truncated: bool = false
 	var queue: Array[Node] = []
 	for child: Node in start.get_children():
@@ -743,12 +818,13 @@ func handle_find_nodes(params: Dictionary) -> Dictionary:
 				truncated = true
 				break
 			matches.append(_node_entry(node))
+			match_nodes.append(node)
 		for child: Node in node.get_children():
 			queue.append(child)
-	var response: Dictionary = {"matches": matches}
+	var result: Dictionary = {"matches": matches, "nodes": match_nodes}
 	if truncated:
-		response["truncated"] = true
-	return response
+		result["truncated"] = true
+	return result
 
 
 ## find_nodes 的过滤判定（AND 语义）。text 两档共享前置：节点必须有 text 属性。

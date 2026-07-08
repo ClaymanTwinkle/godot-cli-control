@@ -1265,6 +1265,62 @@ def test_client_port_takes_precedence_over_instance(tmp_path: Path, monkeypatch:
     assert c._port == 1234
 
 
+# ── click 过滤器定位（原子 find+click）──
+
+
+@pytest.mark.asyncio
+async def test_click_by_filters_builds_find_style_params() -> None:
+    """click 过滤器形态：params 与 find_nodes 同 key（type/text_contains/from），
+    未设的过滤器不进 params，path 缺省时不带 path key。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"success": True, "path": "/root/UI/@Button@3"}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.click(
+            node_type="BaseButton", text_contains="开始", from_path="/root/UI"
+        )
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["method"] == "click"
+    assert captured["params"] == {
+        "type": "BaseButton",
+        "text_contains": "开始",
+        "from": "/root/UI",
+    }
+
+
+@pytest.mark.asyncio
+async def test_click_by_path_keeps_legacy_params() -> None:
+    """原始 path 形态零回归：positional 调用、params 只有 path。"""
+    import godot_cli_control.client as client_mod
+
+    captured: dict = {}
+
+    async def fake_request(self, method, params=None, timeout=30.0):
+        captured["method"] = method
+        captured["params"] = params
+        return {"success": True}
+
+    client = client_mod.GameClient(port=1)
+    target = client_mod.GameClient.request
+    client_mod.GameClient.request = fake_request  # type: ignore
+    try:
+        await client.click("/root/Main/StartButton")
+    finally:
+        client_mod.GameClient.request = target
+    assert captured["method"] == "click"
+    assert captured["params"] == {"path": "/root/Main/StartButton"}
+
+
 # ── issue #154：坐标级鼠标事件（click_at / mouse_move，P1）──
 
 

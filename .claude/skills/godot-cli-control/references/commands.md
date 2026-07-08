@@ -79,9 +79,19 @@ $ godot-cli-control run broken.py
 - `--type` matches subclasses (`--type BaseButton` finds `Button`s) and `class_name` script classes. `--exact` / `--contains` match the node's `text` property (mutually exclusive; `--exact` is NOT `--text` — that's the global output toggle). `--name-pattern` is a case-sensitive glob (`*`/`?`) on the node name.
 - Searches from `/root` by default (popups + autoloads included); scope with `--from`.
 - Returns `{"matches": [{name, type, path, text?, visible?}], "truncated"?: true}` in BFS order (shallowest first); default `--limit 20`, server cap 500.
-- Exit codes: 0 = ≥ 1 match, 1 = zero matches — so `find --contains OK && click ...` works.
+- Exit codes: 0 = ≥ 1 match, 1 = zero matches — so `find --contains OK && ...` works.
+- **Just want to click what you'd find?** Use `click` with the same filters directly (next section) — one atomic RPC, no path parsing, no stale-path window.
 
 ## Write / call
+
+### `click` — by path or by filters (atomic find+click)
+
+Two mutually exclusive ways to target (both flags → `-32602`; CLI preflight rejects earlier with `-1003`):
+
+- `click <path>` — the original form (BaseButton → emits `pressed`; other Controls → synthesized `gui_input` click; Area2D → `input_event`).
+- `click --contains <substr> | --exact <text> [--type <Class>] [--name-pattern <glob>] [--from <path>]` — find-style filters resolved **server-side in the same frame**, then clicked. The one-liner for "click the button labeled X" on programmatically-built UI; replaces the `find` → parse `matches[0].path` → `click` three-step and its stale-path race.
+- The filters must match **exactly one** node: 0 matches → `1001`; ≥ 2 → `1017` with the candidate paths in the message — narrow with `--exact` / `--type` / `--from`, or `find` first and click the path. Deliberately fail-loud: BFS order is not something an agent should bet a click on.
+- On success the filter form returns `{"success": true, "path": "<actual node clicked>"}` — cache the path if you need to hit the same node again cheaply.
 
 ### Security blacklist
 

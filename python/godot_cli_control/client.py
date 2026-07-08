@@ -321,8 +321,38 @@ class GameClient:
 
     # ---- Low-level API ----
 
-    async def click(self, path: str) -> dict:
-        return await self.request("click", {"path": path})
+    async def click(
+        self,
+        path: str | None = None,
+        *,
+        node_type: str | None = None,
+        text: str | None = None,
+        text_contains: str | None = None,
+        name_pattern: str | None = None,
+        from_path: str | None = None,
+    ) -> dict:
+        """点击节点：给 ``path`` 直接定位（原始形态），或给 find 同款过滤器
+        由服务端**同帧原子** find+click（「点击文案为 X 的按钮」不再需要
+        find → 解析 path → click 三步，也没有两步之间的 stale-path 竞态）。
+
+        过滤器语义与 :meth:`find_nodes` 相同；恰好 1 个匹配才点——0 个报
+        1001，≥2 个报 1017（message 列出候选路径，收窄过滤器再试）。过滤器
+        命中时返回值带 ``path``（实际点到的节点）。``path`` 与过滤器互斥
+        （服务端 -32602 兜底）。"""
+        params: dict = {}
+        if path:
+            params["path"] = path
+        if node_type:
+            params["type"] = node_type
+        if text:
+            params["text"] = text
+        if text_contains:
+            params["text_contains"] = text_contains
+        if name_pattern:
+            params["name_pattern"] = name_pattern
+        if from_path:
+            params["from"] = from_path
+        return await self.request("click", params)
 
     async def get_property(self, path: str, prop: str) -> Any:
         result = await self.request(

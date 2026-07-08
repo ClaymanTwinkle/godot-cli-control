@@ -62,6 +62,11 @@ const EMIT_SIGNAL_DISABLED: int = 1015
 # 容量/资源类永久错——同一响应重试必再超；agent 应改用 path 落盘（screenshot）
 # 或调大 buffer。daemon 用它替换发不出去的大响应，避免 client 干等到 -1002 假超时。
 const RESPONSE_TOO_LARGE: int = 1016
+# click 过滤器定位命中多于一个节点（find+click 原子化）：BFS 序对 agent 不可
+# 预期，静默点第一个可能点错按钮（比报错贵得多）——宁可 fail-loud 列出候选
+# 让 agent 收窄。状态类错（与 1004/1014 同族）：过滤器本身合法，是场景里
+# 恰好有多个匹配。
+const AMBIGUOUS_MATCH: int = 1017
 
 const INVALID_PARAMS: int = -32602
 const INVALID_REQUEST: int = -32600
@@ -134,6 +139,12 @@ static func hint_for(code: int) -> String:
 			return (
 				"pass a file path so the daemon writes to disk,"
 				+ " or raise godot_cli_control/outbound_buffer_mb"
+			)
+		AMBIGUOUS_MATCH:
+			return (
+				"narrow the filters (--exact / --type / --from / --name-pattern)"
+				+ " until exactly one node matches, or run `find` and click"
+				+ " the path directly"
 			)
 		METHOD_UNKNOWN:
 			return (
