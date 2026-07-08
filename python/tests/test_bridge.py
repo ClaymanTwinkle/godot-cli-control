@@ -69,8 +69,27 @@ class _StubClient:
     async def wait_for_node(self, path: str, timeout: float = 5.0) -> bool:
         return self._record("wait_for_node", (path,), {"timeout": timeout})
 
-    async def click(self, path: str) -> dict:
-        return self._record("click", (path,), {})
+    async def click(
+        self,
+        path: str | None = None,
+        *,
+        node_type: str | None = None,
+        text: str | None = None,
+        text_contains: str | None = None,
+        name_pattern: str | None = None,
+        from_path: str | None = None,
+    ) -> dict:
+        return self._record(
+            "click",
+            (path,),
+            {
+                "node_type": node_type,
+                "text": text,
+                "text_contains": text_contains,
+                "name_pattern": name_pattern,
+                "from_path": from_path,
+            },
+        )
 
     async def hold(self, action: str, duration: float) -> dict:
         return self._record("hold", (action, duration), {})
@@ -408,8 +427,23 @@ def test_click_passes_path(stub_client: dict) -> None:
     b, c = _make_bridge(stub_client)
     c.returns["click"] = {"ok": True}
     result = b.click("/root/Btn")
-    assert c.calls[-1] == ("click", ("/root/Btn",), {})
+    name, args, kwargs = c.calls[-1]
+    assert (name, args) == ("click", ("/root/Btn",))
+    assert all(v is None for v in kwargs.values())  # 过滤器缺省全 None
     assert result == {"ok": True}
+    b.close()
+
+
+def test_click_passes_filters(stub_client: dict) -> None:
+    """过滤器形态（原子 find+click）：kwargs 全量透传到 client.click。"""
+    b, c = _make_bridge(stub_client)
+    c.returns["click"] = {"success": True, "path": "/root/UI/@Button@3"}
+    result = b.click(text_contains="开始", node_type="BaseButton")
+    name, args, kwargs = c.calls[-1]
+    assert (name, args) == ("click", (None,))
+    assert kwargs["text_contains"] == "开始"
+    assert kwargs["node_type"] == "BaseButton"
+    assert result["path"] == "/root/UI/@Button@3"
     b.close()
 
 

@@ -37,7 +37,10 @@ def test_cmd_click_passes_path() -> None:
     client = AsyncMock()
     client.click = AsyncMock(return_value={"success": True})
     result = _run(cli.cmd_click(client, _ns(node_path="/root/B")))
-    client.click.assert_awaited_once_with("/root/B")
+    client.click.assert_awaited_once_with(
+        "/root/B", node_type=None, text=None, text_contains=None,
+        name_pattern=None, from_path=None,
+    )
     assert result == {"success": True}
 
 

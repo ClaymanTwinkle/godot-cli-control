@@ -2472,6 +2472,78 @@ def test_find_preflight_text_and_contains_exclusive() -> None:
     _preflight_find(parser.parse_args(["find", "--contains", "b"]))
 
 
+def test_click_preflight_path_and_filters_exclusive() -> None:
+    """click 定位方式二选一：path 与过滤器（含 --from）同给 / 都不给 都是用法错。"""
+    from godot_cli_control.cli import _preflight_click, build_parser
+
+    parser = build_parser()
+    # path + 过滤器 → 互斥
+    with pytest.raises(ValueError, match="互斥"):
+        _preflight_click(
+            parser.parse_args(["click", "/root/Btn", "--contains", "开始"])
+        )
+    # path + --from（单独）也互斥——--from 只在过滤器定位时有意义
+    with pytest.raises(ValueError, match="互斥"):
+        _preflight_click(
+            parser.parse_args(["click", "/root/Btn", "--from", "/root/UI"])
+        )
+    # 都不给 → 用法错
+    with pytest.raises(ValueError, match="过滤器"):
+        _preflight_click(parser.parse_args(["click"]))
+    # --from 不算独立过滤器
+    with pytest.raises(ValueError, match="过滤器"):
+        _preflight_click(parser.parse_args(["click", "--from", "/root/UI"]))
+    # --exact / --contains 互斥（与 find 同款）
+    with pytest.raises(ValueError, match="互斥"):
+        _preflight_click(
+            parser.parse_args(["click", "--exact", "a", "--contains", "b"])
+        )
+    # 合法形态：纯 path / 纯过滤器 / 过滤器 + --from
+    _preflight_click(parser.parse_args(["click", "/root/Btn"]))
+    _preflight_click(parser.parse_args(["click", "--contains", "开始"]))
+    _preflight_click(
+        parser.parse_args(["click", "--type", "Button", "--from", "/root/UI"])
+    )
+
+
+def test_cmd_click_passes_filters_to_client() -> None:
+    """cmd_click 过滤器形态：全部 flag 透传 client.click；path 传 None。"""
+    from unittest.mock import AsyncMock
+
+    from godot_cli_control.cli import cmd_click
+
+    mock_client = AsyncMock()
+    mock_client.click = AsyncMock(return_value={"success": True, "path": "/root/B"})
+    ns = __import__("argparse").Namespace(
+        node_path=None, type="BaseButton", exact=None, contains="开始",
+        name_pattern=None, from_path="/root/UI",
+    )
+    result = asyncio.run(cmd_click(mock_client, ns))
+    assert result == {"success": True, "path": "/root/B"}
+    mock_client.click.assert_awaited_once_with(
+        None, node_type="BaseButton", text=None, text_contains="开始",
+        name_pattern=None, from_path="/root/UI",
+    )
+
+
+def test_cmd_click_legacy_namespace_without_filter_fields() -> None:
+    """老调用方只给 node_path 的 Namespace（缺过滤器字段）不能 AttributeError
+    ——cmd_click 用 getattr 兜底（test_cli Namespace mock 缺字段坑的既往回归）。"""
+    from unittest.mock import AsyncMock
+
+    from godot_cli_control.cli import cmd_click
+
+    mock_client = AsyncMock()
+    mock_client.click = AsyncMock(return_value={"success": True})
+    ns = __import__("argparse").Namespace(node_path="/root/Btn")
+    result = asyncio.run(cmd_click(mock_client, ns))
+    assert result == {"success": True}
+    mock_client.click.assert_awaited_once_with(
+        "/root/Btn", node_type=None, text=None, text_contains=None,
+        name_pattern=None, from_path=None,
+    )
+
+
 def test_cmd_find_passes_namespace_args() -> None:
     """cmd_find 必须把 ns 的全部 flag 透传给 client.find_nodes。"""
     from unittest.mock import AsyncMock

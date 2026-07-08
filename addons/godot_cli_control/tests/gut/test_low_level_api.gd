@@ -1395,6 +1395,72 @@ func test_find_nodes_from_scopes_search_to_subtree() -> void:
 	assert_string_contains(str((matches[0] as Dictionary).get("name")), "@Button@")
 
 
+# ── handle_click 过滤器定位（原子 find+click） ────────────────────
+
+
+func _find_fixture_button(text: String) -> Button:
+	for child: Node in (_target.get_node("Panel") as Node).get_children():
+		if child is Button and (child as Button).text == text:
+			return child as Button
+	return null
+
+
+func test_click_by_text_clicks_unique_match() -> void:
+	_build_find_fixture()
+	var btn: Button = _find_fixture_button("开始游戏")
+	assert_not_null(btn)
+	watch_signals(btn)
+	var result: Dictionary = _api.handle_click({
+		"from": str(_target.get_path()), "text": "开始游戏",
+	})
+	assert_does_not_have(result, "error")
+	assert_eq(result.get("success"), true)
+	assert_eq(
+		str(result.get("path")), str(btn.get_path()),
+		"信封应带实际点到的节点路径（agent 可缓存复用）"
+	)
+	assert_signal_emitted(btn, "pressed")
+
+
+func test_click_by_filters_zero_matches_is_1001() -> void:
+	_build_find_fixture()
+	var result: Dictionary = _api.handle_click({
+		"from": str(_target.get_path()), "text": "不存在的按钮文案",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1001)
+
+
+func test_click_by_filters_multiple_matches_is_1017_listing_paths() -> void:
+	_build_find_fixture()
+	# type=BaseButton 命中两个按钮 → 歧义必须 fail-loud（BFS 序不可预期，
+	# 静默点第一个可能点错），message 列出候选路径供 agent 收窄
+	var result: Dictionary = _api.handle_click({
+		"from": str(_target.get_path()), "type": "BaseButton",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), 1017)
+	assert_string_contains(str(result.error.message), "@Button@")
+
+
+func test_click_path_plus_filters_is_invalid_params() -> void:
+	_build_find_fixture()
+	var result: Dictionary = _api.handle_click({
+		"path": str(_target.get_path()), "text": "开始游戏",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+
+
+func test_click_by_filters_invalid_combo_propagates_find_validation() -> void:
+	# 过滤器校验复用 find 侧：text 与 text_contains 互斥（-32602）
+	var result: Dictionary = _api.handle_click({
+		"text": "a", "text_contains": "b",
+	})
+	assert_has(result, "error")
+	assert_eq(int(result.error.code), -32602)
+
+
 # ── _mark_screenshot_stale_check (#156 子问题 B / B3) ────────────────
 
 func test_stale_check_first_call_not_stale() -> void:

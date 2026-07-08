@@ -46,7 +46,7 @@ Every entry below was hit in real agent sessions. Organized by theme; the highes
 - **Arrays/Dicts nested inside compounds encode as arrays without `type`** — read a typed leaf with a sub-path (`get <node> mydict:somekey`).
 - **Sub-path leaf typos on closed compound types fail loud on both `get` and `set`** (`1002` listing valid leaves; nested paths validate per level). Open/dynamic types (Dictionary, Array, Object) still return `{"value": null}` / pass a `set` through for unknown leaves.
 - **`tree` returns `1005 "scene tree too large"`** — more than 5000 visible nodes. `--max-nodes 200`, or `tree <path>` / `children <path>` for a subtree.
-- **Locating a button by its label — use `find`, never a client-side `children`/`text` walk.** Programmatic UI gets anonymous unstable paths (`@Button@12`); a client-side walk costs one RPC per node (50–150 ms each under `--record`; once burned 57 s of recorded dead time). `find --type Button --contains 开始` → feed `matches[0].path` into `click`. Exact-text flag is `--exact`, not `--text`. Re-run `find` after `scene-change`/`scene-reload`.
+- **"Click the button labeled X" — `click --contains X` directly (atomic find+click); use `find` only when you need the path without clicking. Never a client-side `children`/`text` walk.** Programmatic UI gets anonymous unstable paths (`@Button@12`); a client-side walk costs one RPC per node (50–150 ms each under `--record`; once burned 57 s of recorded dead time). `click` filters must match exactly one node (0 → `1001`, ≥ 2 → `1017` listing candidates — narrow with `--exact`/`--type`/`--from`). Exact-text flag is `--exact`, not `--text`. Re-run `find` after `scene-change`/`scene-reload`.
 
 ## Scene & engine-global state
 
