@@ -7,6 +7,7 @@ godot-cli-control daemon start                           # boot daemon for cwd p
 godot-cli-control daemon start --name server             # boot a named instance
 godot-cli-control daemon start --name client1 --port 0   # second instance on an OS-assigned port
 godot-cli-control daemon start --time-scale 5            # start at 5× game speed
+godot-cli-control daemon restart --allow-emit-signal     # change flags in one step: stop (tolerates stopped) + start with THESE flags
 godot-cli-control daemon status                          # exit 0 = running, 1 = stopped
 godot-cli-control daemon status --name server            # status for a specific instance
 godot-cli-control daemon stop                            # stop cwd-project daemon (auto-selects if 1 running)
@@ -25,6 +26,10 @@ godot-cli-control daemon logs --name server --tail 50    # logs for a specific i
 - `daemon ls`: `{"daemons": [{"project_root", "pid", "port", "instance", "started_at", "godot_bin", "log_path"}, ...]}`. Dead records (PID gone) auto-prune on each call — the canonical machine-wide list of actually-alive daemons.
 - `daemon stop --all`: `{"stopped": [{"project_root","pid","port","instance","rc"[, "error"]}, ...], "rc": 0|3}`. A per-instance transcode-only failure shows as that entry's `rc: 4` but does not bump the aggregate.
 - `daemon logs [--tail N]`: `{"path", "lines", "returned", "instance"}` (default 50, max 1000). Read client-side — **no RPC**, works post-mortem. No log file yet → `-1006`, exit 2.
+
+### `daemon restart`
+
+`daemon restart [same flags as start]` = tolerant stop (a stopped daemon is fine) + start. **It does not remember the previous start's flags** — pass everything you want the new daemon to have (`--record`, `--headless`, `--allow-emit-signal`, `--time-scale`, …). Target selection follows `stop`'s auto semantics (0 running → `default`; 1 → it; ≥ 2 → `--name` required). If stopping a recording daemon fails only at the ffmpeg transcode (raw `.avi` kept), the restart still proceeds and the command exits `4`; a hard stop failure aborts before starting anything (exit 2). Success envelope: `{"restarted": true, "was_running": bool, "stop_rc": 0|4, "instance", "port", "pid"}`.
 
 ### Start flags worth knowing
 

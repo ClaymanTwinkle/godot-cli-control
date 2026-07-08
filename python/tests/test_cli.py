@@ -1337,6 +1337,168 @@ def test_daemon_start_text_mode_keeps_silent_success(
     assert capsys.readouterr().out == ""
 
 
+def _restart_ns(**overrides: Any) -> Any:
+    """cmd_daemon_restart 的最小 Namespace（name 显式给定以跳过实例扫描）。"""
+    base: dict[str, Any] = dict(
+        record=False,
+        movie_path=None,
+        headless=True,
+        fps=30,
+        port=9877,
+        always_on_top=True,
+        name="default",
+        output_format="json",
+    )
+    base.update(overrides)
+    return __import__("argparse").Namespace(**base)
+
+
+def test_daemon_restart_stops_then_starts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """restart 编排：stop 先于 start；信封带 restarted/was_running/stop_rc/pid。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import cmd_daemon_restart
+
+    calls: list[str] = []
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: True)
+    monkeypatch.setattr(
+        daemon_mod.Daemon, "stop", lambda self: (calls.append("stop"), 0)[1]
+    )
+    monkeypatch.setattr(
+        daemon_mod.Daemon, "start", lambda self, **kw: calls.append("start")
+    )
+    monkeypatch.setattr(daemon_mod.Daemon, "current_port", lambda self: 9901)
+    monkeypatch.setattr(daemon_mod.Daemon, "read_pid", lambda self: 4321)
+
+    rc = cmd_daemon_restart(_restart_ns())
+    assert rc == 0
+    assert calls == ["stop", "start"]
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["result"]["restarted"] is True
+    assert payload["result"]["was_running"] is True
+    assert payload["result"]["stop_rc"] == 0
+    assert payload["result"]["pid"] == 4321
+
+
+def test_daemon_restart_tolerates_not_running(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """未运行时 restart 不报错：stop 容忍（返回 0）后照常 start，was_running=false。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import cmd_daemon_restart
+
+    started: list[bool] = []
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: False)
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", lambda self: 0)
+    monkeypatch.setattr(
+        daemon_mod.Daemon, "start", lambda self, **kw: started.append(True)
+    )
+    monkeypatch.setattr(daemon_mod.Daemon, "current_port", lambda self: 9901)
+    monkeypatch.setattr(daemon_mod.Daemon, "read_pid", lambda self: None)
+
+    rc = cmd_daemon_restart(_restart_ns())
+    assert rc == 0
+    assert started == [True]
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["result"]["was_running"] is False
+
+
+def test_daemon_restart_stop_hard_failure_aborts_without_start(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """stop 硬失败（进程在但停不掉）必须中止：不带着旧进程再起新的。-1006/exit 2。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import cmd_daemon_restart
+
+    def _boom(self: Any) -> int:
+        raise daemon_mod.DaemonError("PID 99 进程名不像 Godot")
+
+    started: list[bool] = []
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: True)
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", _boom)
+    monkeypatch.setattr(
+        daemon_mod.Daemon, "start", lambda self, **kw: started.append(True)
+    )
+
+    rc = cmd_daemon_restart(_restart_ns())
+    assert rc == 2
+    assert started == []
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == -1006
+
+
+def test_daemon_restart_transcode_soft_fail_restarts_with_rc4(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """stop 仅转码失败（rc=4，AVI 保留）不阻断重启：start 照常，最终 exit 4 透出。"""
+    import json as _json
+
+    import godot_cli_control.daemon as daemon_mod
+    from godot_cli_control.cli import cmd_daemon_restart
+
+    started: list[bool] = []
+    monkeypatch.setattr(daemon_mod.Daemon, "is_running", lambda self: True)
+    monkeypatch.setattr(daemon_mod.Daemon, "stop", lambda self: 4)
+    monkeypatch.setattr(
+        daemon_mod.Daemon, "start", lambda self, **kw: started.append(True)
+    )
+    monkeypatch.setattr(daemon_mod.Daemon, "current_port", lambda self: 9901)
+    monkeypatch.setattr(daemon_mod.Daemon, "read_pid", lambda self: 4321)
+
+    rc = cmd_daemon_restart(_restart_ns())
+    assert rc == 4
+    assert started == [True]
+    payload = _json.loads(capsys.readouterr().out.strip())
+    assert payload["result"]["restarted"] is True
+    assert payload["result"]["stop_rc"] == 4
+
+
+def test_daemon_restart_parses_start_flags() -> None:
+    """restart 接受与 start 同一套 flags（共享注册函数，防两处漂移）。"""
+    from godot_cli_control.cli import build_parser
+
+    ns = build_parser().parse_args(
+        ["daemon", "restart", "--headless", "--name", "server", "--time-scale", "5"]
+    )
+    assert ns.cmd == "daemon"
+    assert ns.action == "restart"
+    assert ns.name == "server"
+    assert ns.time_scale == 5.0
+
+
+def test_command_groups_cover_every_spec() -> None:
+    """顶层 help 分组表必须恰好覆盖全部命令：RPC_SPECS 全集 + daemon/run/init，
+    无重复无遗漏——新增子命令忘了归组、或删了命令忘了清组，这里红。"""
+    from godot_cli_control.cli import RPC_SPECS, _COMMAND_GROUPS
+
+    grouped = [n for _, names in _COMMAND_GROUPS for n in names]
+    assert len(grouped) == len(set(grouped)), "分组表存在重复命令"
+    expected = {s.name for s in RPC_SPECS} | {"daemon", "run", "init"}
+    assert set(grouped) == expected
+
+
+def test_top_help_shows_grouped_overview() -> None:
+    """顶层 --help 输出分组总览：每个命令以缩进行出现（替代旧的平铺全描述列表）。"""
+    from godot_cli_control.cli import RPC_SPECS, build_parser
+
+    help_text = build_parser().format_help()
+    assert "命令总览" in help_text
+    for spec in RPC_SPECS:
+        assert f"\n    {spec.name} " in help_text, f"分组总览缺 {spec.name}"
+    # 生成的总览区（RawDescription 不回卷）：摘要不残留未闭合的全角括号
+    overview = help_text.split("命令总览", 1)[1].split("输出契约", 1)[0]
+    for line in overview.splitlines():
+        assert line.count("（") <= line.count("）"), f"摘要残留未闭合括号: {line}"
+
+
 def test_daemon_start_rejects_record_with_explicit_headless(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

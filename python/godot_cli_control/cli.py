@@ -1914,11 +1914,29 @@ def _resolve_idle_timeout(ns: argparse.Namespace) -> int:
     return parse_duration(raw)
 
 
+def _daemon_start_kwargs(ns: argparse.Namespace) -> dict[str, Any]:
+    """``daemon.start(**kwargs)`` 的实参装配（start / restart 共用，防两处漂移）。
+
+    ``ValueError``（idle_timeout 解析失败）由调用方兜成 -1003 / exit 64。
+    """
+    return {
+        "record": ns.record,
+        "movie_path": ns.movie_path,
+        "headless": _resolve_headless(ns),
+        "fps": ns.fps,
+        "port": ns.port,
+        "idle_timeout": _resolve_idle_timeout(ns),
+        "time_scale": getattr(ns, "time_scale", None),
+        "always_on_top": ns.always_on_top,
+        "allow_emit_signal": getattr(ns, "allow_emit_signal", False),
+    }
+
+
 def cmd_daemon_start(ns: argparse.Namespace) -> int:
     from .daemon import Daemon, DaemonError
 
     try:
-        idle_seconds = _resolve_idle_timeout(ns)
+        start_kwargs = _daemon_start_kwargs(ns)
     except ValueError as e:
         _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
         return EXIT_USAGE
@@ -1941,17 +1959,7 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
         return EXIT_USAGE
     daemon = Daemon(Path.cwd(), instance=inst)
     try:
-        daemon.start(
-            record=ns.record,
-            movie_path=ns.movie_path,
-            headless=_resolve_headless(ns),
-            fps=ns.fps,
-            port=ns.port,
-            idle_timeout=idle_seconds,
-            time_scale=getattr(ns, "time_scale", None),
-            always_on_top=ns.always_on_top,
-            allow_emit_signal=getattr(ns, "allow_emit_signal", False),
-        )
+        daemon.start(**start_kwargs)
     except DaemonError as e:
         _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))  # infra 前置失败 → -1006（#92）
         return EXIT_INFRA_ERROR
@@ -1967,6 +1975,58 @@ def cmd_daemon_start(ns: argparse.Namespace) -> int:
             result["pid"] = pid
         _emit_success_payload(result)
     return EXIT_OK
+
+
+def cmd_daemon_restart(ns: argparse.Namespace) -> int:
+    """restart = 容忍未运行的 stop + start（flags 以本次给出的为准，不记忆旧 flags）。
+
+    选靶走 stop 的自动语义（0 个在跑 → default；1 个 → 它；≥2 → 必须 --name），
+    改 flags（--record / --allow-emit-signal / --time-scale …）不再手敲两条命令。
+    退出码：stop 硬失败（进程在但停不掉）→ -1006 / exit 2 直接中止，不带着旧进程
+    再起新的；stop 仅转码失败（rc=4，AVI 已保留）不阻断重启，start 成功后以 4 透出
+    （对齐 run 的转码软失败语义）；start 阶段失败用其原有码。
+    """
+    from .daemon import Daemon, DaemonError
+
+    try:
+        start_kwargs = _daemon_start_kwargs(ns)
+    except ValueError as e:
+        _emit_top_error(ns, code=CLIENT_CODE_USAGE, message=str(e))
+        return EXIT_USAGE
+    inst = _resolve_daemon_instance(ns, Path.cwd())
+    if inst is None:
+        # 冲突 / 广播哨兵 / 多实例歧义，_resolve_daemon_instance 已 emit 信封
+        return EXIT_USAGE
+    daemon = Daemon(Path.cwd(), instance=inst)
+    was_running = daemon.is_running()
+    try:
+        stop_rc = daemon.stop()  # 未运行时自身容忍（清理陈旧 pid 文件并返回 0）
+    except DaemonError as e:
+        _emit_top_error(
+            ns,
+            code=CLIENT_CODE_PRECONDITION,
+            message=f"restart：停止旧 daemon 失败，未启动新实例——{e}",
+        )
+        return EXIT_INFRA_ERROR
+    try:
+        daemon.start(**start_kwargs)
+    except DaemonError as e:
+        _emit_top_error(ns, code=CLIENT_CODE_PRECONDITION, message=str(e))
+        return EXIT_INFRA_ERROR
+    if _output_format(ns) == OUTPUT_JSON:
+        port = daemon.current_port() or ns.port
+        pid = daemon.read_pid() if daemon.is_running() else None
+        result: dict[str, Any] = {
+            "restarted": True,
+            "was_running": was_running,
+            "stop_rc": stop_rc,
+            "instance": daemon.instance,
+            "port": port,
+        }
+        if pid is not None:
+            result["pid"] = pid
+        _emit_success_payload(result)
+    return EXIT_TRANSCODE_FAILED if stop_rc == EXIT_TRANSCODE_FAILED else EXIT_OK
 
 
 def _emit_stop_summary(
@@ -2678,38 +2738,83 @@ def _namespace_for_instance(ns: argparse.Namespace, instance: str) -> argparse.N
 # ── argparse 装配 ──
 
 
-_TOP_EPILOG = """\
-命令分组：
+# 顶层 --help 的命令分组。每个 RPC 子命令必须归入恰好一组（有测试锁：
+# test_command_groups_cover_every_spec）——渲染由 _build_top_epilog 从
+# RpcSpec.description 首句自动生成，不再手写命令清单（旧版手维护的
+# _TOP_EPILOG 曾静默漂移掉 find / wait-prop / scene-* / drag 等十余条）。
+_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Daemon / 项目接入", ("daemon", "run", "init")),
+    (
+        "读状态",
+        (
+            "get", "text", "exists", "visible", "children", "tree", "find",
+            "pressed", "actions",
+        ),
+    ),
+    ("写 / 调用", ("set", "call", "click", "emit-signal")),
+    (
+        "输入模拟",
+        (
+            "press", "release", "tap", "hold", "combo", "combo-cancel",
+            "release-all", "click-at", "mouse-move", "drag",
+        ),
+    ),
+    ("等待", ("wait-node", "wait-time", "wait-prop", "wait-signal", "wait-frames")),
+    (
+        "场景 / 时间",
+        ("scene-reload", "scene-change", "time-scale", "pause", "unpause", "step-frames"),
+    ),
+    ("渲染 / 诊断", ("screenshot", "sprite-info", "errors")),
+)
 
-  Daemon 管理:
-    daemon start    启动 Godot daemon（可选录制 / headless）
-    daemon stop     停止当前 daemon
-    daemon status   显示 daemon 状态（pid / port），exit 0=运行中，1=未运行
-    daemon logs     输出 godot.log 尾部（--tail N；daemon 停了也能 post-mortem）
-    run <script>    自动启停 daemon 并跑用户脚本（脚本需定义 run(bridge)）
+# 非 RpcSpec 命令的一句话摘要（RPC 命令的摘要取 RpcSpec.description 首句）
+_NON_RPC_SUMMARIES: dict[str, str] = {
+    "daemon": "管理 Godot daemon：start / restart / stop / status / logs / ls",
+    "run": "自动启停 daemon 并跑用户脚本（脚本需定义 run(bridge)）",
+    "init": "在 Godot 项目根一键接入插件 + 写 AI skill",
+}
 
-  接入:
-    init            在 Godot 项目根一键复制插件、patch project.godot
-
-  RPC 一发命令（需先 daemon 在跑）:
-    读：     get / text / exists / visible / children / tree / pressed / actions / sprite-info
-    写：     set / call / click
-    输入：   press / release / tap / hold / combo / combo-cancel / release-all
-    等待：   wait-node / wait-time
-    截图：   screenshot（--node 按节点裁剪）
-    诊断：   errors（push_error 结构化增量查询）
-
+_EPILOG_TAIL = """\
 输出契约（默认 --json，AI 友好）:
   成功： {"ok": true, "result": <data>}        单行 stdout，exit 0
-  失败： {"ok": false, "error": {"code":N,"message":"..."}}
-                                              单行 stdout，exit 1（RPC）/ 2（连接、用法）
+  失败： {"ok": false, "error": {"code":N,"message":"...","hint":"下一步（可选）"}}
+                                              单行 stdout，exit 1（RPC）/ 2（连接）/ 64（用法）
   --text / --no-json 可切回旧的人类可读模式。
 
-任意子命令后追加 -h 查看详情，例如：
+任意子命令后追加 -h 查看全部参数与示例，例如：
   godot-cli-control click -h
   godot-cli-control combo -h        # 含 step JSON schema 与示例
   godot-cli-control daemon start -h
 """
+
+
+def _summary_of(description: str) -> str:
+    """取描述首句（。/；/换行 最先出现处截断），超长再截到 ~56 字符。"""
+    text = description
+    for sep in ("。", "；", "\n"):
+        idx = text.find(sep)
+        if idx > 0:
+            text = text[:idx]
+    text = text.strip()
+    if len(text) > 56:
+        text = text[:55] + "…"
+    # 截断残留未闭合的全角括号时，连同括号内的半截一起裁掉
+    while text.count("（") > text.count("）"):
+        text = text[: text.rfind("（")].rstrip()
+    return text
+
+
+def _build_top_epilog() -> str:
+    by_name = {s.name: s for s in RPC_SPECS}
+    lines: list[str] = ["命令总览：", ""]
+    for title, names in _COMMAND_GROUPS:
+        lines.append(f"  {title}:")
+        for n in names:
+            summary = _NON_RPC_SUMMARIES.get(n) or _summary_of(by_name[n].description)
+            lines.append(f"    {n:<14} {summary}")
+        lines.append("")
+    lines.append(_EPILOG_TAIL)
+    return "\n".join(lines)
 
 
 def _tail_arg(raw: str) -> int:
@@ -3024,7 +3129,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _EnvelopeArgumentParser(
         prog="godot-cli-control",
         description="Godot CLI Control —— 通过命令行远程驱动 Godot 项目",
-        epilog=_TOP_EPILOG,
+        epilog=_build_top_epilog(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -3065,29 +3170,47 @@ def build_parser() -> argparse.ArgumentParser:
     subs = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     # daemon 组
+    # 顶层子命令一律不传 help= —— argparse 的平铺列表被 epilog 的分组总览
+    # 取代（_build_top_epilog，见 _COMMAND_GROUPS）；各命令详情走 <cmd> -h。
     daemon_p = subs.add_parser(
         "daemon",
-        help="管理 Godot daemon 进程",
         description="管理 Godot daemon 进程的启停与状态查询。",
     )
     daemon_subs = daemon_p.add_subparsers(
         dest="action", required=True, metavar="<action>"
     )
 
+    def _register_daemon_start_args(p: argparse.ArgumentParser) -> None:
+        # start / restart 同一套启动参数（restart 的 start 阶段语义完全一致）
+        _add_daemon_flags(p)
+        _add_instance_name_flag(p)
+        p.add_argument(
+            "--time-scale",
+            type=_time_scale_arg,
+            default=None,
+            help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 提速用",
+        )
+        _add_output_format_flags(p)
+
     start_p = daemon_subs.add_parser(
         "start",
         help="启动 daemon",
         description="启动 Godot daemon 并写入 .cli_control/{godot.pid,port}。",
     )
-    _add_daemon_flags(start_p)
-    _add_instance_name_flag(start_p)
-    start_p.add_argument(
-        "--time-scale",
-        type=_time_scale_arg,
-        default=None,
-        help="启动即设 Engine.time_scale（>0 且 <=100），整套 e2e 提速用",
+    _register_daemon_start_args(start_p)
+
+    restart_p = daemon_subs.add_parser(
+        "restart",
+        help="重启 daemon（stop + start 一步；flags 以本次给出的为准）",
+        description=(
+            "重启 daemon：先停（未运行视为已停，不报错）再以本次给出的 flags 启动。"
+            "不记忆上次 start 的 flags——要 --record / --headless / --allow-emit-signal 等"
+            "请在本次给全。典型用途：改启动 flags（如补 --allow-emit-signal）一步到位。"
+            "选靶同 stop（0 个在跑 → default；1 个 → 它；≥2 → 须 --name）。"
+            "旧 daemon 停止时转码失败（AVI 保留）不阻断重启，最终 exit 4 透出。"
+        ),
     )
-    _add_output_format_flags(start_p)
+    _register_daemon_start_args(restart_p)
 
     stop_p = daemon_subs.add_parser(
         "stop",
@@ -3161,7 +3284,6 @@ def build_parser() -> argparse.ArgumentParser:
     # run：自动启停 + 跑用户脚本
     run_p = subs.add_parser(
         "run",
-        help="启动 daemon → 跑脚本 → 停 daemon",
         description=(
             "若 daemon 未运行则先启动，加载用户脚本调用其 run(bridge) 函数，"
             "脚本结束后停掉刚启动的 daemon（已在跑的 daemon 保持原状）。"
@@ -3203,7 +3325,6 @@ def build_parser() -> argparse.ArgumentParser:
     # init：一键接入
     init_p = subs.add_parser(
         "init",
-        help="在 Godot 项目根一键接入插件",
         description=(
             "复制 addons/godot_cli_control 到目标项目、patch project.godot 启用插件、"
             "校验 GODOT_BIN、在 .gitignore 忽略 .cli_control/。"
@@ -3284,7 +3405,6 @@ def build_parser() -> argparse.ArgumentParser:
         epilog = "\n\n".join(epilog_parts) if epilog_parts else None
         sp = subs.add_parser(
             spec.name,
-            help=spec.description,
             description=spec.description,
             epilog=epilog,
             formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3509,6 +3629,8 @@ def main() -> None:
     if ns.cmd == "daemon":
         if ns.action == "start":
             sys.exit(cmd_daemon_start(ns))
+        if ns.action == "restart":
+            sys.exit(cmd_daemon_restart(ns))
         if ns.action == "stop":
             sys.exit(cmd_daemon_stop(ns))
         if ns.action == "status":

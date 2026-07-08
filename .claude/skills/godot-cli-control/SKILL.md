@@ -125,7 +125,7 @@ One line per command; run `<cmd> -h` for flags, read `references/commands.md` fo
 - `errors [--since MARKER] [--limit N]` — structured `push_error`/`push_warning` query (Godot 4.5+). Cursor pattern: `errors --limit 0` → act → `errors --since <marker>`.
 - `daemon logs [--tail N]` — tail `godot.log` client-side; works after the daemon died
 
-**Daemon:** `daemon start [--headless|--gui] [--name X] [--port N] [--time-scale N] [--record --movie-path out.avi] [--allow-emit-signal]` / `status` / `stop [--all]` / `ls` / `logs`. Details: `references/daemon-multi-instance.md`.
+**Daemon:** `daemon start [--headless|--gui] [--name X] [--port N] [--time-scale N] [--record --movie-path out.avi] [--allow-emit-signal]` / `restart` (stop-if-running + start with the flags you pass **now** — the one-step way to change daemon flags) / `status` / `stop [--all]` / `ls` / `logs`. Details: `references/daemon-multi-instance.md`.
 
 ## Error codes in one minute
 
