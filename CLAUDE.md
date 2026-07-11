@@ -62,18 +62,6 @@
    - method/property blacklist 是防 RCE 的最后一道，不能让单条新功能的 PR 把它松开。第三方项目要扩需求请走 `godot_cli_control/method_blacklist_extra` ProjectSettings 走"增量"路径。
    - `emit_signal` 的逃生门走 `daemon start --allow-emit-signal`（debug-build + localhost 之上的显式第三重门）+ 专用 `emit-signal` 子命令（服务端 1015 门控）：这是「单点白名单式放开」，emit_signal 仍在方法黑名单、`call` 面不动，整张黑名单不松。
 
-## Repo layout 速查
-
-```
-addons/godot_cli_control/   # Godot 4 GDScript 插件 + GUT 测试
-python/godot_cli_control/   # Python CLI / GameClient (async) / GameBridge (sync) / pytest plugin / SKILL.md 模板
-python/tests/               # pytest 套件（pytest-asyncio）
-docs/                       # 设计文档
-release.sh                  # 发版脚本
-```
-
-依赖：`websockets>=14,<16`，Python ≥ 3.10。覆盖率门槛 80%（`pyproject.toml [tool.coverage.report] fail_under=80`）。
-
 ## 测试 & 覆盖率
 
 - 测试不能用 `pytest --cov` 跑，必须 `coverage run -m pytest`。原因写在 `pyproject.toml` 的注释里：pytest11 entry-point 在 pytest 启动时 import 包，pytest-cov 上得太晚会 miss 掉 import-time 语句。
